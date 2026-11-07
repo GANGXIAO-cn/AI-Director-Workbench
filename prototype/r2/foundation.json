@@ -1,0 +1,54 @@
+{
+  "createdNodeIds": [
+    "33:296",
+    "33:297",
+    "33:298",
+    "33:299",
+    "33:328",
+    "33:329",
+    "33:330",
+    "33:331",
+    "33:332",
+    "33:333",
+    "33:334",
+    "33:335",
+    "33:336",
+    "33:337",
+    "I33:337;4185:3781"
+  ],
+  "pages": {
+    "02": "33:296",
+    "03": "33:297",
+    "04": "33:298",
+    "05": "33:299"
+  },
+  "variables": {
+    "canvas": "VariableID:33:303",
+    "panel": "VariableID:33:305",
+    "card": "VariableID:33:307",
+    "elevated": "VariableID:33:309",
+    "text": "VariableID:33:311",
+    "muted": "VariableID:33:313",
+    "accent": "VariableID:33:315",
+    "selected": "VariableID:33:317",
+    "positive": "VariableID:33:319",
+    "warning": "VariableID:33:321",
+    "danger": "VariableID:33:323"
+  },
+  "styles": {
+    "body": "S:ad3c56d04a65084189812dc78aa1cede9c273155,",
+    "chat": "S:4d5cf34907ac399c41c1a766768f62b4f128368f,",
+    "small": "S:071b38655497b27f5b2d861728f5242c7ec990fb,",
+    "title": "S:508a6868254dd80ca71eb05a3a14930c3a33225d,"
+  },
+  "components": {
+    "Message": "33:328",
+    "Scene": "33:331",
+    "Stage": "33:334"
+  },
+  "collections": [
+    "VariableCollectionId:33:300",
+    "VariableCollectionId:33:301"
+  ],
+  "buttonSource": "33:337"
+}

@@ -1,0 +1,373 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "导演工作台 · 执行器归一化输出 v1",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/draft"
+    },
+    {
+      "$ref": "#/$defs/review"
+    },
+    {
+      "$ref": "#/$defs/proposal"
+    },
+    {
+      "$ref": "#/$defs/imageAssessment"
+    }
+  ],
+  "$defs": {
+    "location": {
+      "type": "object",
+      "properties": {
+        "objectId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "versionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "unit": {
+          "enum": [
+            "episode",
+            "scene",
+            "paragraph",
+            "shot",
+            "segment",
+            "grid_cell",
+            "asset"
+          ]
+        },
+        "anchor": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "objectId",
+        "versionId",
+        "unit",
+        "anchor",
+        "evidence"
+      ],
+      "additionalProperties": false
+    },
+    "draft": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inputFingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "kind": {
+          "const": "draft"
+        },
+        "baseVersionId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "targetId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "field": {
+                "type": "string",
+                "minLength": 1
+              },
+              "value": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "targetId",
+              "field",
+              "value"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "runId",
+        "inputFingerprint",
+        "kind",
+        "baseVersionId",
+        "changes"
+      ],
+      "additionalProperties": false
+    },
+    "review": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inputFingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "kind": {
+          "const": "review"
+        },
+        "reviewedVersionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pass": {
+          "enum": [
+            "story",
+            "cold_read",
+            "comparison"
+          ]
+        },
+        "decision": {
+          "enum": [
+            "pass",
+            "return",
+            "uncertain"
+          ]
+        },
+        "observations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/location"
+          },
+          "minItems": 1
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "location": {
+                "$ref": "#/$defs/location"
+              },
+              "category": {
+                "enum": [
+                  "continuity",
+                  "clarity",
+                  "setting",
+                  "format",
+                  "other"
+                ]
+              },
+              "settingId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "decision": {
+                "enum": [
+                  "return",
+                  "uncertain"
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "location",
+              "category",
+              "settingId",
+              "decision",
+              "reason"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 0
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "runId",
+        "inputFingerprint",
+        "kind",
+        "reviewedVersionId",
+        "pass",
+        "decision",
+        "observations",
+        "issues"
+      ],
+      "additionalProperties": false
+    },
+    "proposal": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inputFingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "kind": {
+          "const": "proposal"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "category": {
+                "enum": [
+                  "character",
+                  "relationship",
+                  "rule",
+                  "space",
+                  "signature",
+                  "prop"
+                ]
+              },
+              "content": {
+                "type": "string",
+                "minLength": 1
+              },
+              "source": {
+                "$ref": "#/$defs/location"
+              },
+              "suggestedStrength": {
+                "enum": [
+                  "required",
+                  "variable"
+                ]
+              },
+              "rationale": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "category",
+              "content",
+              "source",
+              "suggestedStrength",
+              "rationale"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 0
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "runId",
+        "inputFingerprint",
+        "kind",
+        "items"
+      ],
+      "additionalProperties": false
+    },
+    "imageAssessment": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inputFingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "kind": {
+          "const": "image_assessment"
+        },
+        "assetVersionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "intendedShotIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "visibleValue": {
+          "type": "string",
+          "minLength": 1
+        },
+        "useDefects": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/location"
+          },
+          "minItems": 1
+        },
+        "recommendation": {
+          "enum": [
+            "candidate",
+            "conditional",
+            "revise"
+          ]
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "runId",
+        "inputFingerprint",
+        "kind",
+        "assetVersionId",
+        "intendedShotIds",
+        "visibleValue",
+        "useDefects",
+        "evidence",
+        "recommendation"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
