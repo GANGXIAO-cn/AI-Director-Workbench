@@ -1,0 +1,17 @@
+{
+  "id": "short-film@v1",
+  "files": {
+    "story_standard": {
+      "path": "story/story-standard.md",
+      "sha256": "43e15b64f18a9aa5e61e4898c6849269a0b3d29b726e17a2a904bbd405482957"
+    },
+    "story_draft": {
+      "path": "story/story-draft.md",
+      "sha256": "00828ca3bcadbda0168ba9f99a0ea9cb53d17364dc476fd54957bdccfdc3164f"
+    },
+    "story_review": {
+      "path": "review/story-review.md",
+      "sha256": "c30cf716f9ce9d678fcbe11a2c4f8bbe7a1e45f0b028943b8ab3711b6f51dff0"
+    }
+  }
+}

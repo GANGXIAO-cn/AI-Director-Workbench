@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "configId": "puggy",
+  "name": "PUGGY ROOM",
+  "summary": "胖橘猫 MILO 与 LEO、女主人的家庭荒诞喜剧短片系列。",
+  "methodPack": "short-film@v1",
+  "extractedFrom": [
+    "~/.codex/skills/milo-leo-story/references/story-standard.md#二、整体风格",
+    "/Users/xiaogang/Documents/自媒体 2/series/milo-leo/系列设定.md"
+  ],
+  "settings": [
+    {"key": "cat-no-dialogue", "category": "rule", "strength": "required",
+     "content": "MILO、LEO 不说话、不唱歌，无拟人配音或内心独白；喜剧是无对白的肢体与视觉喜剧。",
+     "sourceRef": "系列设定.md#固定角色资产", "userReason": "系列已确认的生产边界"},
+    {"key": "biped-paws", "category": "rule", "strength": "required",
+     "content": "两猫默认用两条后腿站立、行走和跑动，前爪取拿与操作物件，仍为毛茸茸猫爪；可以正常坐卧休息。人、家具、车辆都是正常尺寸，两猫为普通家猫尺寸。",
+     "sourceRef": "系列设定.md#固定角色资产", "userReason": "三层 IP 基线之一"},
+    {"key": "milo-active", "category": "character", "strength": "required",
+     "content": "MILO 精力旺盛、主动捣乱、有真实本领，胖不等于懒笨；他凭本领改变局面，可以得逞、失算或补救。",
+     "sourceRef": "系列设定.md#固定角色资产", "userReason": "IP 核心人物"},
+    {"key": "leo-own-goal", "category": "character", "strength": "required",
+     "content": "LEO 与女主人有自己的目标，行动能实际改变局面，不只负责受害、训斥或救场。",
+     "sourceRef": "系列设定.md#系列创作方向", "userReason": "关系身份"},
+    {"key": "owner-relationship", "category": "relationship", "strength": "required",
+     "content": "主人与猫的关系不变：猫还是猫，主人有自己的生活与判断；猫的离谱本领不等于人默认承认它的职业身份或领导权。",
+     "sourceRef": "story-standard.md#三、准则 13", "userReason": "三层 IP 基线之一"},
+    {"key": "tone-not-cruel", "category": "rule", "strength": "variable",
+     "content": "语气亲近、捣乱但不残忍；出糗多于受伤，不说教，不硬加温情和好。",
+     "sourceRef": "story-standard.md#二、整体风格", "userReason": "系列语气"},
+    {"key": "complete-light-continuity", "category": "rule", "strength": "variable",
+     "content": "单集完整＋轻连续：每集独立兑现核心冲突，以道具、关系、信誉和前集后果延续期待。",
+     "sourceRef": "系列设定.md#系列连续性", "userReason": "系列结构"},
+    {"key": "recent-difference", "category": "rule", "strength": "variable",
+     "content": "与最近 5 集至少在主机制或结尾上有实质不同。",
+     "sourceRef": "story-standard.md#五、E3", "userReason": "避免重复"}
+  ],
+  "specPreset": {
+    "aspectRatio": "9:16",
+    "targetDuration": "over_60",
+    "sound": "猫无对白；人类实际对白为英语、通用美式口音",
+    "segmentMaxSeconds": 15,
+    "packaging": "full"
+  },
+  "production": {
+    "assetRoot": "/Users/xiaogang/Documents/自媒体 2/series/milo-leo",
+    "characterStandard": "制作基准/角色外观标准.json",
+    "productPlacement": "每集视频至少有一个场景自然出现一款已上线商品（第 2 阶段启用）",
+    "brandSting": "品牌片尾/",
+    "publishSettings": "发布设置.json"
+  }
+}

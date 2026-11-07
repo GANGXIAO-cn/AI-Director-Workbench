@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "configId": "_template",
+  "name": "",
+  "summary": "",
+  "methodPack": "short-film@v1",
+  "settings": [],
+  "specPreset": {
+    "aspectRatio": "9:16",
+    "targetDuration": "story_driven",
+    "sound": "按本集故事决定",
+    "segmentMaxSeconds": 15,
+    "packaging": "full"
+  },
+  "production": {}
+}

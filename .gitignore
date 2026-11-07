@@ -4,14 +4,14 @@ workbench.sqlite*
 *.sqlite-wal
 *.sqlite-shm
 *.db
-data/
-projects/
-blobs/
-runs/
-backups/
-deliveries/
-imports/
-outputs/
+/data/
+/projects/
+/blobs/
+/runs/
+/backups/
+/deliveries/
+/imports/
+/outputs/
 
 # 凭证与本机配置
 .env
@@ -35,3 +35,4 @@ build/
 .DS_Store
 .idea/
 .vscode/
+*.tsbuildinfo
