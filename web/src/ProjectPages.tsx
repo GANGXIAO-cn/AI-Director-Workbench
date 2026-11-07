@@ -294,6 +294,10 @@ function RefFilm({ id, packId, p }: any) {
   const frames = useQuery<any>("ref_frames", { pack_id: packId }, [pack.data?.shots?.length]);
   const [cutFrames, setCutFrames] = useState<any>(null);
   useEffect(() => { if (cur) q("ref_frames", { pack_id: packId, around_ms: cur.start_ms }).then(setCutFrames); }, [cur?.id]);
+  const asks = useQuery<any[]>("ref_questions", { pack_id: packId });
+  const [askText, setAskText] = useState("");
+  const [askBy, setAskBy] = useState("codex");
+  usePoll(!!asks.data?.some((a: any) => a.state === "running"), asks.reload);
   if (!pack.data) return null;
   const pk = pack.data;
   const unconfirmed = pk.shots.filter((s: any) => !s.confirmed).length;
@@ -327,6 +331,23 @@ function RefFilm({ id, packId, p }: any) {
             {cutFrames && cur.start_ms > 0 && <div className="row" style={{ marginTop: 8 }}>{["before", "after"].map((k) => (
               <figure key={k} style={{ margin: 0 }}><img src={blob(cutFrames[k]?.sha256)} style={{ width: 200, borderRadius: 6 }} /><figcaption className="muted tiny">{k === "before" ? "切点前" : "切点后"} {fmtMs(cutFrames[k]?.ms ?? 0)}.{String((cutFrames[k]?.ms ?? 0) % 1000).padStart(3, "0")}</figcaption></figure>))}
               <span className="muted small">相邻时点画面，用来判断是切镜还是镜内动作</span></div>}
+            {cur.start_ms > 0 && <div style={{ marginTop: 10 }}>
+              <div className="row">
+                <input className="input" style={{ flex: 1 }} placeholder={`例如：${fmtMs(cur.start_ms)} 是切镜吗？`} value={askText} onChange={(e) => setAskText(e.target.value)} />
+                <select className="input" value={askBy} onChange={(e) => setAskBy(e.target.value)}>{Object.keys(PROVIDER_LABEL).map((k) => <option key={k} value={k}>{PROVIDER_LABEL[k]}</option>)}</select>
+                <button className="btn" disabled={!askText.trim()} onClick={() => act.run(async () => { await cmd("ask_cut", { pack_id: packId, at_ms: cur.start_ms, question: askText, provider: askBy }); setAskText(""); asks.reload(); })}>问模型</button></div>
+              {(asks.data ?? []).filter((a: any) => a.at_ms === cur.start_ms).map((a: any) => (
+                <div key={a.id} className="card" style={{ marginTop: 8 }}>
+                  <div className="small"><b>问：</b>{a.question} <span className="muted tiny">· {PROVIDER_LABEL[a.provider] ?? a.provider}</span></div>
+                  {a.state === "running" && <div className="muted small">模型在看切点前后两张图…</div>}
+                  {a.state === "failed" && <div className="small" style={{ color: "var(--red)" }}>没有得到有效回答：{a.diagnostic}</div>}
+                  {a.state === "waiting_quota" && <div className="small">额度用尽，稍后再问：{a.diagnostic}</div>}
+                  {a.state === "answered" && <>
+                    <div className="row" style={{ marginTop: 4 }}><Tag tone={a.judgement === "cut" ? "green" : a.judgement === "in_shot" ? "cyan" : "amber"}>{({ cut: "判断：切镜", in_shot: "判断：镜内动作", uncertain: "无法确定" } as any)[a.judgement]}</Tag><span className="small">{a.reason}</span></div>
+                    <div className="row" style={{ marginTop: 6, alignItems: "flex-start" }}>{["before", "after"].map((k) => <img key={k} src={blob(a.frames?.[k]?.sha256)} style={{ width: 120, borderRadius: 4 }} />)}
+                      <ul className="small" style={{ margin: 0 }}>{(a.evidence ?? []).map((e: any, i: number) => <li key={i}>{fmtMs(e.atMs)}.{String(e.atMs % 1000).padStart(3, "0")} {e.observation}</li>)}</ul></div>
+                    <div className="muted tiny">模型解释只作参考，切点仍由你拆、并或确认。</div></>}
+                </div>))}</div>}
             <div className="row" style={{ marginTop: 8 }}>
               <button className="btn" onClick={() => act.run(async () => { const at = Math.round((cur.start_ms + cur.end_ms) / 2); const r = await cmd("edit_cuts", { pack_id: packId, op: "split", code: cur.code, at_ms: at }); if (r.affectedBeats.length) alert("受影响节拍：" + r.affectedBeats.join("、")); pack.reload(); })}>从中间拆镜</button>
               <button className="btn" onClick={() => act.run(async () => { await cmd("edit_cuts", { pack_id: packId, op: "merge", code: cur.code }); pack.reload(); })}>与下一镜合并</button>

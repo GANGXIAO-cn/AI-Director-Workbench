@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { blob, cmd, deliveryFile, q, upload } from "./api";
 import Assistant, { Selection, artifactFor } from "./Assistant";
+import Canvas from "./Canvas";
 import { ErrorLine, Modal, PROVIDER_LABEL, Pills, STAGES, Tag, fmtMs, go, rno, useAction, usePoll, useQuery } from "./ui";
 
 type Ctx = {
@@ -50,6 +51,7 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
   if (!view.data) return <div className="page">{view.error ?? "读取中…"}</div>;
   const v = view.data;
   if (!v.kickoff) return <div className="page">本集尚未开工。<a className="btn primary" href={`#/p/${v.episode.project_id}`}>去开工</a></div>;
+  const canvasMode = stage === "assets" && new URLSearchParams(location.hash.split("?")[1] ?? "").get("tab") === "canvas";
   const ctx: Ctx = { view: v, eid: id, reload, sel, setSel, assets: assets.data ?? [], batches: batches.data ?? [], focus, setFocus,
     openBatch: setBatch };
   const adopted = (s: string) => !!v.artifacts.find((a: any) => a.stage === s)?.adopted_version_id;
@@ -67,14 +69,14 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
         <a href={`#/p/${v.episode.project_id}`} title="项目主页">▶</a>
         <a href="#/sys/tasks" title="任务记录">▣</a>
       </nav>
-      <div className="ws" style={{ flex: 1, gridTemplateColumns: `${cols[0]}px minmax(0, 1fr) ${cols[1]}px` }}>
-        <div className="catalog">
+      <div className="ws" style={{ flex: 1, gridTemplateColumns: canvasMode ? "minmax(0, 1fr)" : `${cols[0]}px minmax(0, 1fr) ${cols[1]}px` }}>
+        {!canvasMode && <div className="catalog">
           <div className="spread" style={{ padding: "0 8px 12px" }}><b>目录</b><a className="muted" href={`#/p/${v.episode.project_id}`}>⇤</a></div>
           {STAGES.map(([k, label], i) => (
             <a key={k} className={`item ${k === stage ? "on" : ""}`} href={`#/e/${id}/${k}`}>
               <span className="n">{String(i + 1).padStart(2, "0")}</span>{label}<span className={`st ${status(k)}`} />
             </a>))}
-        </div>
+        </div>}
         <div className="center"><div className="colgrip left" onMouseDown={drag(0)} title="拖动调整目录宽度" /><div className="colgrip right" onMouseDown={drag(1)} title="拖动调整助手宽度" />
           <div className="topbar">
             <span className="title">{v.episode.display_code} · {v.episode.title || "未命名"}</span>
@@ -85,7 +87,7 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
           </div>
           <StageView stage={stage} ctx={ctx} />
         </div>
-        <Assistant view={v} stage={stage} sel={sel} setSel={setSel} reload={reload} focus={focus} batches={ctx.batches} onOpenBatch={setBatch} />
+        {!canvasMode && <Assistant view={v} stage={stage} sel={sel} setSel={setSel} reload={reload} focus={focus} batches={ctx.batches} onOpenBatch={setBatch} />}
       </div>
       {batch && <BatchModal batch={batch} assets={ctx.assets} close={() => { setBatch(null); reload(); }} />}
     </div>
@@ -480,7 +482,8 @@ function CastView({ ctx }: { ctx: Ctx }) {
 
 // ---------------------------------------------------------------- 06 素材与选图 (J10, J14, J15, J18, J27, J41)
 function AssetsView({ ctx }: { ctx: Ctx }) {
-  const [tab, setTab] = useState("round");
+  const [tab, setTabState] = useState(new URLSearchParams(location.hash.split("?")[1] ?? "").get("tab") ?? "round");
+  const setTab = (t: string) => { setTabState(t); history.replaceState(null, "", `#/e/${ctx.eid}/assets${t === "canvas" ? "?tab=canvas" : ""}`); dispatchEvent(new HashChangeEvent("hashchange")); };
   const [mode, setMode] = useState("原图");
   const [detail, setDetail] = useState<any>(null);
   const [newBatch, setNewBatch] = useState<any>(null);
@@ -496,13 +499,13 @@ function AssetsView({ ctx }: { ctx: Ctx }) {
     <div>
       <div className="stagehead">
         <div><h1>素材与选图</h1><div className="muted small">{images.length} 张 · 已采用 {images.filter((a) => marked(a, "adopted")).length} · 本集图像批次 {ctx.batches.length}</div></div>
-        <div className="row"><div className="tabs">{[["needs", "需求"], ["round", "本轮出图"], ["backup", "补选区"]].map(([t, l]) => (
+        <div className="row"><div className="tabs">{[["needs", "需求"], ["round", "本轮出图"], ["backup", "补选区"], ["canvas", "画布"]].map(([t, l]) => (
           <button key={t} className={`tab ${tab === t ? "on" : ""}`} onClick={() => setTab(t)}>{l}</button>))}</div>
           <button className="btn primary" onClick={() => setNewBatch({ operation: "generate" })}>出图</button>
           <select value={upKind} onChange={(e) => setUpKind(e.target.value)} style={{ padding: "4px 6px" }}><option value="state">场面 / 状态图</option><option value="grid">九宫格</option><option value="identity">身份图</option><option value="scene">空景</option></select>
           <label className="btn">上传<input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => e.target.files?.[0] && act.run(async () => { await upload("asset", e.target.files![0], { projectId: ctx.view.episode.project_id, episodeId: ctx.eid, category: upKind, grid: upKind === "grid" }); ctx.reload(); })} /></label></div>
       </div>
-      {tab === "needs" ? <NeedsTable ctx={ctx} /> : (
+      {tab === "canvas" ? <Canvas ctx={ctx} providers={providers.data ?? {}} openBatch={ctx.openBatch} /> : tab === "needs" ? <NeedsTable ctx={ctx} /> : (
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 150px", gap: 14 }}>
           {filter.slice(0, 2).map((a, i) => (
             <div key={a.id}>

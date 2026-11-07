@@ -28,6 +28,8 @@ class Core:
         self.clock = clock
         initialize(self.db_path)
         self.mark_interrupted_requests()
+        with transaction(self.db_path) as db:   # text runs left running by a previous process: retryable, no paid side effect
+            db.execute("UPDATE run SET status='failed', reason='服务重启时中断', ended_at=? WHERE status='running'", (self.clock(),))
 
     # ------------------------------------------------------------------ idempotency
     def _command(self, db, command_id, kind, payload, fn):
@@ -414,7 +416,8 @@ class Core:
             return self._finish(run_id, "failed", reason="输入清单指纹不符")
         entries = self.store.manifest_texts(manifest)
         kind = "review" if run["purpose"] in REVIEW_PASSES else "draft"
-        clarify = bool(manifest.get("allowClarify")) and kind == "draft"
+        clarify = bool(manifest.get("allowClarify")) and kind == "draft" \
+            and getattr(self.executors[run["provider"]], "union_schema", True)
         if kind == "review":
             required = [s["key"] for s in self._snapshot_for(task)[1] if s["strength"] == "required"]
             if run["purpose"] == "review":

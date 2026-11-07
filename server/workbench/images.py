@@ -530,3 +530,23 @@ class ImagesMixin:
                 return dict(versionId=version_id, recheck=self._record_impacts(
                     db, dict(project_id=ep["project_id"], episode_id=ep["id"]), items, "image_adopted", f"asset:{version_id}"))
             return self._command(db, command_id, "adopt_image", dict(e=episode_id, v=version_id), run)
+
+    # ============================================================ generation canvas (J15)
+    def canvas_view(self, episode_id):
+        with connect(self.db_path) as db:
+            r = db.execute("SELECT doc, revision FROM canvas WHERE episode_id=?", (episode_id,)).fetchone()
+        return dict(doc=json.loads(r["doc"]) if r else dict(nodes=[], edges=[]), revision=r["revision"] if r else 0)
+
+    def save_canvas(self, episode_id, doc, expected_revision, command_id=None):
+        """Layout and wiring only; generation still goes through create_batch + authorization."""
+        with transaction(self.db_path) as db:
+            r = db.execute("SELECT revision FROM canvas WHERE episode_id=?", (episode_id,)).fetchone()
+            cur = r["revision"] if r else 0
+            if cur != expected_revision:
+                raise Conflict("画布已在别处更新，请刷新后再改", current=cur)
+            ids = {n["id"] for n in doc.get("nodes", [])}
+            if any(e["from"] not in ids or e["to"] not in ids for e in doc.get("edges", [])):
+                raise Rejected("连线指向不存在的节点")
+            db.execute("INSERT INTO canvas VALUES(?,?,?) ON CONFLICT(episode_id) DO UPDATE SET doc=excluded.doc, "
+                       "revision=excluded.revision", (episode_id, dumps(doc), cur + 1))
+            return dict(revision=cur + 1)

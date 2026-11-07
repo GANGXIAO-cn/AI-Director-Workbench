@@ -220,6 +220,11 @@ CREATE TABLE IF NOT EXISTS pack_adoption(
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES project(id), ref TEXT NOT NULL,
   regression TEXT NOT NULL, created_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS task_pack(task_id TEXT NOT NULL, pack_id TEXT NOT NULL, PRIMARY KEY(task_id, pack_id));
+CREATE TABLE IF NOT EXISTS canvas(episode_id TEXT PRIMARY KEY REFERENCES episode(id), doc TEXT NOT NULL, revision INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS ref_question(
+  id TEXT PRIMARY KEY, pack_id TEXT NOT NULL REFERENCES ref_pack(id), at_ms INTEGER NOT NULL, question TEXT NOT NULL,
+  provider TEXT NOT NULL, state TEXT NOT NULL, judgement TEXT, reason TEXT, evidence TEXT, frames TEXT NOT NULL,
+  input_hash TEXT NOT NULL, diagnostic TEXT, created_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS backup(
   id TEXT PRIMARY KEY, relpath TEXT NOT NULL, manifest_hash TEXT NOT NULL, files INTEGER NOT NULL,
   note TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL);

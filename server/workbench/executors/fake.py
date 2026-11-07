@@ -121,6 +121,13 @@ def directed(req: ExecRequest, name: str):
     request = sec.get("request", "")
     if MARK_QUOTA in request and name == "codex":
         return quota_exhausted(req)
+    if req.kind == "cut_explanation":
+        ctx = context(p)
+        at = int(re.search(r"atMs 填 (\d+)", p).group(1))
+        return dict(schemaVersion=1, kind="cut_explanation", runId=ctx["runId"], inputFingerprint=ctx["inputFingerprint"],
+                    atMs=at, judgement="cut", reason="（替身）两图主色与构图完全不同，没有连续运动的物体，判断为切镜。",
+                    evidence=[dict(atMs=max(0, at - 500), observation="（替身）切点前画面"),
+                              dict(atMs=at + 500, observation="（替身）切点后画面")])
     if req.kind == "proposal":
         ctx = context(p)
         src = dict(objectId="story", versionId="adopted", unit="paragraph", anchor="第2段", evidence="见采用稿")

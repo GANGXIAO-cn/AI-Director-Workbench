@@ -77,13 +77,24 @@ def invoke(args, cwd: Path, stdin: str, timeout: int, run_id: str | None = None)
         try:
             out, err = proc.communicate(stdin, timeout=timeout)
         except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGTERM)
             try:
+                os.killpg(proc.pid, signal.SIGTERM)
                 out, err = proc.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
-                out, err = proc.communicate()
-            return 124, out, (err or "") + "\ntimeout"
+            except (subprocess.TimeoutExpired, ProcessLookupError):
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:   # a grandchild may still hold the pipes open: never wait without a bound
+                    out, err = proc.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    for stream in (proc.stdout, proc.stderr):
+                        try:
+                            stream.close()
+                        except OSError:
+                            pass
+                    out, err = "", ""
+            return 124, out or "", (err or "") + "\ntimeout"
         finally:
             RUNNING.pop(run_id, None)
         return proc.returncode, out, err
@@ -285,6 +296,7 @@ class ClaudeExecutor(CliExecutor):
 class AntigravityExecutor(CliExecutor):
     """Google Antigravity `agy` headless mode (structured_output in a SUCCESS receipt)."""
     name = "antigravity"
+    union_schema = False       # verified 2026-11-07: an anyOf wrapper yields status ERROR
     isolation = "unverified"   # review isolation flags not yet verified → required reviews wait
     reads_images = False
     required_flags = ("--print", "--output-format", "--json-schema", "--print-timeout", "--sandbox")

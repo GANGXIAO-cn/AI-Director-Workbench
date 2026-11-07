@@ -58,7 +58,7 @@ def default_image_providers():
 
 COMMANDS = {
     "create_project", "create_episode", "record_leftovers", "start_episode", "create_task", "post_message", "retry_run",
-    "save_manual", "submit_review", "waive", "adopt", "answer_clarification", "abandon_task", "stop_run", "open_stage", "combine", "split_segment",
+    "save_manual", "submit_review", "waive", "adopt", "answer_clarification", "abandon_task", "stop_run", "open_stage", "save_canvas", "combine", "split_segment",
     "resolve_impact", "create_pack", "edit_cuts", "add_beat", "bookmark", "save_pack", "adapt_from_pack",
     "add_space_item", "confirm_space_item", "set_cast", "reorder_refs", "set_sound", "submit_reuse", "review_library",
     "copy_to_episode", "create_batch", "authorize_batch", "cancel_batch", "reconcile_request", "resubmit_request",
@@ -73,9 +73,9 @@ QUERIES = {
     "asset_version", "library", "image_providers", "batch_view", "episode_batches", "compare_cells", "image_references",
     "prompt_review_status", "publish_settings", "compose_publish", "delivery_problems", "delivery_view", "verify_delivery",
     "closure_view", "similar", "topics", "group_view", "model_catalog", "validate_selection", "regress_pack",
-    "storage_status", "project_todos", "project_overview", "adoption_preview", "expert_view", "task_records", "run_manifest", "probe",
+    "storage_status", "project_todos", "project_overview", "adoption_preview", "expert_view", "canvas_view", "ref_questions", "task_records", "run_manifest", "probe",
 }
-ASYNC = {"execute_batch", "expert_run"}
+ASYNC = {"execute_batch", "expert_run", "ask_cut"}
 
 
 def create_app(wb: Workbench | None = None, inline_worker=False, token: str | None = None) -> FastAPI:
@@ -243,6 +243,8 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
     @app.post("/api/cmd/{name}")
     def command(name: str, body: dict = Body(default={})):
         if name in ASYNC:
+            if hasattr(wb, name + "_precheck"):
+                getattr(wb, name + "_precheck")(**body)       # refusals reach the UI before the run is queued
             if worker.inline:
                 return getattr(wb, name)(**body)
             worker.pool.submit(getattr(wb, name), **body)

@@ -762,3 +762,25 @@ def test_32_long_content_and_compare_api(env):
     b = wb.save_manual(art["id"], a, dict(scenes=[dict(id="场01", action=long.replace("第100段", "第一百段"))]), "b")["versionId"]
     diff = wb.compare(a, b)["fields"]["scenes"]
     assert any(d["op"] == "add" and "一百" in d["text"] for d in diff)
+
+
+# 拉片问答（模拟执行器；真实读图未实测） -----------------------------------------------------------
+def test_33_ask_about_cut(env):
+    wb = env.wb
+    pid, eid = env.new_episode(name="末班渡轮", idea="末班渡轮上的检票员认出旧人")
+    _, pack = make_pack(env, pid, eid)
+    shas = [wb.store.put_blob(b"frame-before"), wb.store.put_blob(b"frame-after")]
+    wb.ref_frames = lambda pack_id, around_ms=None: dict(before=dict(ms=around_ms - 500, sha256=shas[0]),
+                                                         after=dict(ms=around_ms + 500, sha256=shas[1]))
+    with pytest.raises(Rejected):                                              # 不能读图的执行器直接拒绝
+        wb.ask_cut(pack["packId"], 9000, "00:09 是切镜吗？", "antigravity")
+    q = wb.ask_cut(pack["packId"], 9000, "00:09 是切镜吗？", "codex")
+    req = env.codex.calls[-1]
+    assert req.kind == "cut_explanation" and len(req.images) == 2 and "00:09 是切镜吗" in req.prompt
+    a = wb.ref_questions(pack["packId"])[0]
+    assert a["id"] == q["questionId"] and a["state"] == "answered" and a["judgement"] == "cut"
+    assert [e["atMs"] for e in a["evidence"]] == [8500, 9500] and a["frames"]["before"]["sha256"] == shas[0]
+    env.codex.script = [lambda r: dict(schemaVersion=1, kind="cut_explanation", runId="别的运行", inputFingerprint="a" * 64,
+                                       atMs=9000, judgement="cut", reason="x", evidence=[dict(atMs=1, observation="y")])]
+    wb.ask_cut(pack["packId"], 9000, "再问一次", "codex")
+    assert wb.ref_questions(pack["packId"])[0]["state"] == "failed"           # 不属于本次提问的回包不入库

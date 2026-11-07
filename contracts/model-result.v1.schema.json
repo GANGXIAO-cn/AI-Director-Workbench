@@ -16,6 +16,9 @@
     },
     {
       "$ref": "#/$defs/clarification"
+    },
+    {
+      "$ref": "#/$defs/cutExplanation"
     }
   ],
   "$defs": {
@@ -420,7 +423,72 @@
         "relatedIds"
       ],
       "additionalProperties": false
+    },
+    "cutExplanation": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inputFingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "kind": {
+          "const": "cut_explanation"
+        },
+        "atMs": {
+          "type": "integer"
+        },
+        "judgement": {
+          "enum": [
+            "cut",
+            "in_shot",
+            "uncertain"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "properties": {
+              "atMs": {
+                "type": "integer"
+              },
+              "observation": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "atMs",
+              "observation"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "runId",
+        "inputFingerprint",
+        "kind",
+        "atMs",
+        "judgement",
+        "reason",
+        "evidence"
+      ],
+      "additionalProperties": false
     }
   },
-  "$comment": "2026-11-07: clarification branch added (product §4 message type 澄清); the original four branches are unchanged."
+  "$comment": "2026-11-07: clarification and cut_explanation branches added (product §4 澄清, §1.1 拉片问答); the original four branches are unchanged."
 }

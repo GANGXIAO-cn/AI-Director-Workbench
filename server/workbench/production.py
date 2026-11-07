@@ -659,3 +659,64 @@ class ProductionMixin:
             if prev and not self._adopted_content(db, episode_id, prev):
                 raise Rejected(f"上一步（{prev}）尚未采用")
             return dict(artifactId=self._ensure_artifact(db, ep, stage))
+
+    # ============================================================ 拉片问答：这一刻是不是切镜
+    def ask_cut(self, pack_id, at_ms, question, provider, command_id=None):
+        """The executor looks at the frames 500 ms before/after `at_ms` and explains. Evidence frames are stored."""
+        from . import contracts
+        from .executors.base import ExecRequest
+        self.ask_cut_precheck(pack_id, at_ms, question, provider)
+        frames = self.ref_frames(pack_id, around_ms=at_ms)
+        if not all(f["sha256"] for f in frames.values()):
+            raise Rejected("取不到该时点的画面")
+        pv = self.pack_view(pack_id)
+        qid = new_id()
+        text = (f"参考片 {pv['source']['name']}（参考包 v{pv['version']}）。导演问：{question}\n"
+                f"附两张图：图1 为 {frames['before']['ms']} 毫秒，图2 为 {frames['after']['ms']} 毫秒。"
+                "只根据这两张图判断 {at} 毫秒处是切镜（cut）、镜内动作（in_shot）还是无法确定（uncertain），"
+                "说明依据，evidence 逐条写看到的画面及其毫秒时点。").replace("{at}", str(at_ms))
+        digest = sha256_bytes(dumps(dict(q=text, f=[frames["before"]["sha256"], frames["after"]["sha256"]])).encode())
+        with transaction(self.db_path) as db:
+            db.execute("INSERT INTO ref_question VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (qid, pack_id, at_ms, question, provider, "running", None, None, None, dumps(frames), digest, None,
+                        self.clock()))
+        workdir = self.store.root / "runs" / f"ask-{qid}"
+        workdir.mkdir(parents=True, exist_ok=True)
+        images = []
+        for k in ("before", "after"):
+            path = workdir / f"{k}.png"
+            path.write_bytes(self.store.read_blob(frames[k]["sha256"]))
+            images.append(path)
+        trailer = f"\n运行号：{qid}\n输入指纹：{digest}\n回包为 kind=cut_explanation，atMs 填 {at_ms}。"
+        outcome = self.executors[provider].start(ExecRequest(
+            run_id=qid, purpose="ask", kind="cut_explanation", prompt=text + trailer,
+            schema=contracts.branch_schema("cut_explanation"), session_mode="ephemeral", workdir=workdir, images=images,
+            timeout=int(self.get_setting("executor_timeout", 600))))
+        res = outcome.structured if outcome.ok else None
+        problems = contracts.validate(res) if res else [outcome.error_class or "failed"]
+        if res and not problems and (res.get("kind") != "cut_explanation" or res["runId"] != qid
+                                     or res["inputFingerprint"] != digest or res["atMs"] != at_ms):
+            problems = ["回包不属于本次提问"]
+        with transaction(self.db_path) as db:
+            if problems:
+                db.execute("UPDATE ref_question SET state=?, diagnostic=? WHERE id=?",
+                           ("waiting_quota" if outcome.error_class == "quota" else "failed", "; ".join(problems)[:300], qid))
+            else:
+                db.execute("UPDATE ref_question SET state='answered', judgement=?, reason=?, evidence=? WHERE id=?",
+                           (res["judgement"], res["reason"], dumps(res["evidence"]), qid))
+        return dict(questionId=qid)
+
+    def ask_cut_precheck(self, pack_id, at_ms, question, provider, command_id=None):
+        """Synchronous checks, so the HTTP layer can refuse before handing the run to the worker pool."""
+        if provider not in self.executors:
+            raise Rejected("未配置的执行器")
+        if not getattr(self.executors[provider], "reads_images", True):
+            raise Rejected(f"{provider} 在当前隔离配置下不能读图，请选择能读图的执行器")
+        if not str(question).strip():
+            raise Rejected("先写下要问的问题")
+        self.pack_view(pack_id)
+
+    def ref_questions(self, pack_id):
+        with connect(self.db_path) as db:
+            return [loads(dict(r), "evidence", "frames") for r in db.execute(
+                "SELECT * FROM ref_question WHERE pack_id=? ORDER BY created_at DESC", (pack_id,))]

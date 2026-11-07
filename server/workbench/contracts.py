@@ -8,7 +8,7 @@ from .methodpack import CONTRACT
 
 SCHEMA = json.loads(CONTRACT.read_text())
 VALIDATOR = Draft202012Validator(SCHEMA)
-BRANCH = {"draft": "draft", "review": "review", "proposal": "proposal", "image_assessment": "imageAssessment", "clarification": "clarification"}
+BRANCH = {"draft": "draft", "review": "review", "proposal": "proposal", "image_assessment": "imageAssessment", "clarification": "clarification", "cut_explanation": "cutExplanation"}
 
 
 def validate(result) -> list[str]:
