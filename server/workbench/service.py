@@ -9,48 +9,25 @@ from .db import dumps, initialize, new_id, transaction, connect
 from .executors.base import ExecRequest
 from .methodpack import load_config, load_pack
 from .storage import Store, canonical, sha256_bytes
-from .storycheck import WRITABLE, check_content, render_story
+from .stages import NEXT, WRITABLE, check_content, normalize, render as render_stage
+from .storycheck import render_story
 
 ROUND_LIMIT = 2
+REVIEW_PASSES = {"review": "story", "cold_read": "cold_read", "comparison": "comparison"}
 
 
-class NotFound(Exception):
-    status = 404
+from .errors import Conflict, NotFound, Rejected, row as _row, loads as _loads
 
 
-class Rejected(Exception):
-    status = 422
-
-
-class Conflict(Exception):
-    status = 409
-
-    def __init__(self, message, current=None):
-        super().__init__(message)
-        self.current = current
-
-
-def _row(db, sql, *args, missing="对象不存在"):
-    row = db.execute(sql, args).fetchone()
-    if row is None:
-        raise NotFound(missing)
-    return dict(row)
-
-
-def _loads(row, *keys):
-    for key in keys:
-        if row.get(key) is not None:
-            row[key] = json.loads(row[key])
-    return row
-
-
-class Workbench:
-    def __init__(self, data_dir: Path, executors: dict, clock=time.time):
+class Core:
+    def __init__(self, data_dir: Path, executors: dict, clock=time.time, image_providers=None):
         self.store = Store(data_dir)
         self.db_path = self.store.db_path
         self.executors = executors
+        self.image_providers_map = image_providers or {}
         self.clock = clock
         initialize(self.db_path)
+        self.mark_interrupted_requests()
 
     # ------------------------------------------------------------------ idempotency
     def _command(self, db, command_id, kind, payload, fn):
@@ -245,6 +222,8 @@ class Workbench:
                         raise Rejected("该导入材料不能作为故事来源")
                     db.execute("UPDATE import_record SET episode_id=? WHERE id=?", (episode_id, source_import_id))
                 carried = self._carried(db, ep, relation, predecessor_ids)
+                if source_type == "topic":
+                    self._topic_on_kickoff(db, episode_id, topic_id)
                 project = _row(db, "SELECT spec_preset FROM project WHERE id=?", ep["project_id"])
                 spec = dict(json.loads(project["spec_preset"]), **(spec_overrides or {}))
                 revision, settings = self._settings(db, ep["project_id"])
@@ -268,7 +247,10 @@ class Workbench:
         if kickoff["source_type"] == "import":
             return db.execute("SELECT parsed_text FROM import_record WHERE id=?",
                               (kickoff["source_import_id"],)).fetchone()[0]
-        return kickoff["idea_text"] or kickoff["topic_id"]
+        if kickoff["source_type"] == "topic":
+            t = db.execute("SELECT * FROM topic WHERE id=?", (kickoff["topic_id"],)).fetchone()
+            return f"选题卡 {t['code']}：{t['premise']}\n机制：{t['mechanism']}\n角色动机：{t['motivation']}"
+        return kickoff["idea_text"]
 
     # ------------------------------------------------------------------ tasks, threads, runs
     def create_task(self, episode_id, stage, goal, auto_revise=False, executor=None, command_id=None):
@@ -280,17 +262,16 @@ class Workbench:
                 plan = dict(kickoff["executor_plan"])
                 if executor:
                     plan.update(executor)
-                if stage == "script":
-                    story = db.execute("SELECT adopted_version_id FROM artifact WHERE episode_id=? AND stage='story'",
-                                       (episode_id,)).fetchone()
-                    if not story or not story[0]:
-                        raise Rejected("故事未通过独审并采用前，不能写剧本")
-                    if not db.execute("SELECT 1 FROM artifact WHERE episode_id=? AND stage='script'",
-                                      (episode_id,)).fetchone():
-                        db.execute("INSERT INTO artifact(id,project_id,episode_id,stage) VALUES(?,?,?,?)",
-                                   (new_id(), ep["project_id"], episode_id, "script"))
-                elif stage != "story":
-                    raise Rejected("第 1 阶段只支持 story / script")
+                if stage not in WRITABLE:
+                    raise Rejected("未知阶段")
+                prev = next((k for k, v in NEXT.items() if v == stage), None)
+                if prev:
+                    up = db.execute("SELECT adopted_version_id FROM artifact WHERE episode_id=? AND stage=?",
+                                    (episode_id, prev)).fetchone()
+                    if not up or not up[0]:
+                        raise Rejected("故事未通过独审并采用前，不能写剧本" if stage == "script"
+                                       else f"上一步（{prev}）尚未采用")
+                    self._ensure_artifact(db, ep, stage)
                 aid = db.execute("SELECT id FROM artifact WHERE episode_id=? AND stage=?", (episode_id, stage)).fetchone()[0]
                 tid = new_id()
                 db.execute("INSERT INTO task(id,project_id,episode_id,artifact_id,stage,goal,auto_revise,max_rounds,"
@@ -305,12 +286,12 @@ class Workbench:
                 return dict(taskId=tid, threadId=thread, runId=run_id, artifactId=aid)
             return self._command(db, command_id, "create_task", payload, run)
 
-    def _message(self, db, thread_id, role, text, selection, command_id, run_id=None):
+    def _message(self, db, thread_id, role, text, selection, command_id, run_id=None, kind="text", payload=None):
         seq = db.execute("SELECT coalesce(max(seq),0)+1 FROM message WHERE thread_id=?", (thread_id,)).fetchone()[0]
         mid = new_id()
-        db.execute("INSERT INTO message VALUES(?,?,?,?,?,?,?,?,?)",
+        db.execute("INSERT INTO message VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                    (mid, thread_id, seq, role, text, dumps(selection) if selection else None, command_id, run_id,
-                    self.clock()))
+                    self.clock(), kind, dumps(payload) if payload is not None else None))
         return mid
 
     def _latest_version(self, db, artifact_id):
@@ -344,10 +325,10 @@ class Workbench:
         return v
 
     def _queue_run(self, db, task_id, purpose, base_version_id, request, selection=None, counted=False,
-                   target_version_id=None, provider=None, model=None, effort=None):
+                   target_version_id=None, provider=None, model=None, effort=None, entries=None, extra_header=None):
         task = _row(db, "SELECT * FROM task WHERE id=?", task_id)
         plan = json.loads(task["executor_plan"])
-        role = plan["review"] if purpose == "review" else plan["create"]
+        role = plan["review"] if purpose in REVIEW_PASSES else plan["create"]
         provider = provider or role["provider"]
         if provider not in self.executors:
             raise Rejected(f"未配置的执行器：{provider}")
@@ -358,31 +339,34 @@ class Workbench:
         pack = load_pack(project["method_pack"])
         settings_text = prompts.render_settings(kickoff["settings_snapshot"])
         kickoff_text = prompts.render_kickoff(kickoff, self._source_text(db, kickoff))
-        if purpose == "review":
+        if entries is not None:
+            pass
+        elif purpose == "review":
             version = self._version_of(db, target_version_id, task["artifact_id"])
-            entries = prompts.review_inputs(pack, settings_text, kickoff_text, render_story(json.loads(version["content"])))
+            entries = prompts.review_inputs(pack, settings_text, kickoff_text,
+                                            render_stage(task["stage"], json.loads(version["content"])))
+            entries += self._extra_review_inputs(db, task, version)
         else:
             base_content = json.loads(self._version_of(db, base_version_id, task["artifact_id"])["content"]) \
                 if base_version_id else None
-            adopted_story = None
-            if task["stage"] == "script":
-                sid = db.execute("SELECT adopted_version_id FROM artifact WHERE episode_id=? AND stage='story'",
-                                 (task["episode_id"],)).fetchone()[0]
-                adopted_story = render_story(json.loads(self._version_of(
-                    db, sid, db.execute("SELECT id FROM artifact WHERE episode_id=? AND stage='story'",
-                                        (task["episode_id"],)).fetchone()[0])["content"]))
+            adopted_story = self._upstream_text(db, task)
             req_text = request if not selection else f"{request}\n（选区：{json.dumps(selection, ensure_ascii=False)}）"
             entries = prompts.creation_inputs(pack, settings_text, kickoff_text, task["stage"], base_content,
                                               req_text, adopted_story)
+            entries += self._extra_creation_inputs(db, task)
         run_id = new_id()
         header = dict(schemaVersion=1, purpose=purpose, projectId=task["project_id"], episodeId=task["episode_id"],
                       taskId=task_id, artifactId=task["artifact_id"], stage=task["stage"], provider=provider,
                       requestedModel=model, requestedEffort=effort, methodPack=dict(id=pack["id"], files=pack["files"]),
                       settingsRevision=kickoff["settings_revision"], baseVersionId=base_version_id,
                       reviewedVersionId=target_version_id,
-                      sessionMode="ephemeral" if purpose == "review" else "new",
-                      isolationLevel="session" if purpose == "review" else None)
+                      sessionMode="ephemeral" if purpose in REVIEW_PASSES else "new", allowClarify=bool(selection),
+                      isolationLevel="session" if purpose in REVIEW_PASSES else None, **(extra_header or {}))
         fingerprint, rel = self.store.freeze(run_id, header, entries)
+        if header["sessionMode"] == "ephemeral":
+            iso = self._isolation_status(provider)
+            if iso != "session":
+                raise Rejected(f"{provider} 的会话隔离未验证，必需审核等待", detail=dict(isolation=iso))
         db.execute("INSERT INTO run(id,task_id,purpose,counted_round,provider,requested_model,requested_effort,"
                    "session_mode,isolation_level,base_version_id,target_version_id,input_hash,manifest_relpath,"
                    "created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -428,20 +412,34 @@ class Workbench:
         if digest != run["input_hash"]:
             return self._finish(run_id, "failed", reason="输入清单指纹不符")
         entries = self.store.manifest_texts(manifest)
-        kind = "review" if run["purpose"] == "review" else "draft"
+        kind = "review" if run["purpose"] in REVIEW_PASSES else "draft"
+        clarify = bool(manifest.get("allowClarify")) and kind == "draft"
         if kind == "review":
             required = [s["key"] for s in self._snapshot_for(task)[1] if s["strength"] == "required"]
-            trailer = prompts.review_trailer(run_id, digest, run["target_version_id"], required)
+            if run["purpose"] == "review":
+                trailer = prompts.review_trailer(run_id, digest, run["target_version_id"], required)
+            else:
+                trailer = prompts.segment_review_trailer(run_id, digest, run["target_version_id"], run["purpose"],
+                                                         manifest.get("scope"), required)
         else:
             trailer = prompts.draft_trailer(run_id, digest, task["artifact_id"], run["base_version_id"], task["stage"])
+            if clarify:
+                trailer += ("\n回包放在 result 字段里。若要求含义不明、无法确定修改范围，先返回 kind=clarification："
+                            "question 写一个问题，options 给可点选的答案，relatedIds 写相关对象编号；否则返回 draft。")
         prompt = prompts.prompt_from(entries, trailer, run["purpose"])
         workdir = self.store.run_dir(run_id) / "work"
         workdir.mkdir(parents=True, exist_ok=True)
+        images = []
+        for n, e in enumerate(x for x in entries if x.get("binary")):
+            path = workdir / f"{n + 1:02d}_{e['name']}"
+            path.write_bytes(self.store.read_blob(e["sha256"]))
+            images.append(path)
         executor = self.executors[run["provider"]]
         request = ExecRequest(run_id=run_id, purpose=run["purpose"], kind=kind, prompt=prompt,
-                              schema=contracts.branch_schema(kind), session_mode=run["session_mode"],
+                              schema=contracts.wrapped_schema() if clarify else contracts.branch_schema(kind),
+                              session_mode=run["session_mode"],
                               workdir=workdir, model=run["requested_model"], effort=run["requested_effort"],
-                              timeout=int(self.get_setting("executor_timeout", 600)))
+                              timeout=int(self.get_setting("executor_timeout", 600)), images=images)
         try:
             outcome = executor.start(request)
         except Exception as exc:  # adapter crash is a failed run, never a success
@@ -449,7 +447,11 @@ class Workbench:
         self._event(run_id, dict(type="executor_finished", ok=outcome.ok, error=outcome.error_class,
                                  events=outcome.events, isolation=outcome.isolation))
         attempts = 0
+        if outcome.ok and clarify and isinstance(outcome.structured, dict) and "result" in outcome.structured:
+            outcome.structured = outcome.structured["result"]
         while outcome.ok:
+            if clarify and isinstance(outcome.structured, dict) and outcome.structured.get("kind") == "clarification":
+                kind = "clarification"
             problems = self._precheck(run, task, kind, outcome.structured)
             if not problems:
                 break
@@ -505,6 +507,8 @@ class Workbench:
             return ["runId 与本次运行不符"]
         if result["inputFingerprint"] != run["input_hash"]:
             return ["inputFingerprint 与输入清单不符"]
+        if kind == "clarification":
+            return []
         if kind == "draft":
             if result["baseVersionId"] != run["base_version_id"]:
                 return ["baseVersionId 与本次基版不符"]
@@ -521,15 +525,18 @@ class Workbench:
         problems = []
         if result["reviewedVersionId"] != vid:
             problems.append("reviewedVersionId 与被审版本不符")
-        if result["pass"] != "story":
-            problems.append("遍次应为 story")
+        expected_pass = REVIEW_PASSES[run["purpose"]]
+        if result["pass"] != expected_pass:
+            problems.append(f"遍次应为 {expected_pass}")
+        if expected_pass == "cold_read" and any(i["settingId"] for i in result["issues"]):
+            problems.append("冷读不开放设定，settingId 须为 null")
         for issue in result["issues"]:
             if issue["settingId"] is not None and issue["settingId"] not in keys:
                 problems.append(f"不存在的设定编号：{issue['settingId']}")
             if issue["location"]["versionId"] != vid:
                 problems.append("问题位置不属于被审版本")
         covered = {o["objectId"] for o in result["observations"]}
-        if missing := sorted(required - covered):
+        if expected_pass == "story" and (missing := sorted(required - covered)):
             problems.append("未逐条核对必守设定：" + "、".join(missing))
         if result["decision"] == "pass" and result["issues"]:
             problems.append("pass 不能带未解决问题")
@@ -544,27 +551,46 @@ class Workbench:
         with transaction(self.db_path) as db:
             run = _row(db, "SELECT * FROM run WHERE id=?", run_id)
             task = _row(db, "SELECT * FROM task WHERE id=?", run["task_id"])
-            if kind == "draft":
+            if kind == "clarification":
+                thread = db.execute("SELECT id FROM thread WHERE task_id=?", (task["id"],)).fetchone()[0]
+                self._message(db, thread, "assistant", result["question"], None, None, run_id, kind="clarify",
+                              payload=dict(options=result["options"], relatedIds=result["relatedIds"],
+                                           baseVersionId=run["base_version_id"]))
+                self._finish(run_id, "succeeded", outcome=outcome, attempts=attempts,
+                             result_hash=sha256_bytes(body), db=db)
+                db.execute("UPDATE task SET state='clarifying' WHERE id=?", (task["id"],))
+            elif kind == "draft":
                 if db.execute("SELECT 1 FROM version WHERE source_run_id=?", (run_id,)).fetchone():
                     raise Conflict("该运行的结果已入库")   # runId is consumed once
                 base = json.loads(self._version_of(db, run["base_version_id"], task["artifact_id"])["content"]) \
                     if run["base_version_id"] else {}
-                content = dict(base, **{c["field"]: c["value"] for c in result["changes"]})
+                try:
+                    content = dict(base, **{c["field"]: normalize(task["stage"], c["field"], c["value"])
+                                            for c in result["changes"]})
+                except ValueError:
+                    raise Rejected("字段内容不是有效 JSON")
                 vid = self._new_version(db, task["artifact_id"], run["base_version_id"], "ai", content, run_id)
                 thread = db.execute("SELECT id FROM thread WHERE task_id=?", (task["id"],)).fetchone()[0]
-                self._message(db, thread, "assistant", f"已生成草稿 R{self._display_no(db, vid):02d}", None, None, run_id)
+                self._message(db, thread, "assistant", f"已生成草稿 R{self._display_no(db, vid):02d}", None, None, run_id,
+                              kind="draft", payload=dict(versionId=vid, baseVersionId=run["base_version_id"],
+                                                         provider=run["provider"]))
                 self._finish(run_id, "succeeded", outcome=outcome, attempts=attempts,
                              result_hash=sha256_bytes(body), db=db)
                 if task["auto_revise"] and task["stage"] == "story":   # expert mode: draft goes straight to review
                     follow.append(self._queue_run(db, task["id"], "review", None, "", target_version_id=vid))
             else:
                 rid = new_id()
-                pass_no = db.execute("SELECT count(*)+1 FROM review WHERE version_id=? AND pass='story'",
-                                     (run["target_version_id"],)).fetchone()[0]
+                manifest, _ = self.store.load_manifest(run["manifest_relpath"])
+                scope, scope_hash = manifest.get("scope") or "", manifest.get("scopeHash")
+                pass_name = REVIEW_PASSES[run["purpose"]]
+                pass_no = db.execute("SELECT count(*)+1 FROM review WHERE version_id=? AND pass=? AND scope=?",
+                                     (run["target_version_id"], pass_name, scope)).fetchone()[0]
                 snapshot = {s["key"]: s for s in self._kickoff(db, task["episode_id"])["settings_snapshot"]}
-                db.execute("INSERT INTO review VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                           (rid, run["target_version_id"], run_id, run["input_hash"], pass_no, "story",
-                            result["decision"], "session", run["provider"], dumps(result["observations"]), self.clock()))
+                db.execute("INSERT INTO review(id,version_id,run_id,input_hash,pass_no,pass,original_decision,isolation_level,"
+                           "reviewer,observations,created_at,scope,scope_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                           (rid, run["target_version_id"], run_id, run["input_hash"], pass_no, pass_name,
+                            result["decision"], "session", run["provider"], dumps(result["observations"]), self.clock(),
+                            scope, scope_hash))
                 for n, issue in enumerate(result["issues"], 1):
                     setting = snapshot.get(issue["settingId"]) if issue["settingId"] else None
                     blocking = issue["category"] == "format" or bool(setting and setting["strength"] == "required")
@@ -576,7 +602,8 @@ class Workbench:
                               f"{len(result['issues'])} 条意见", None, None, run_id)
                 self._finish(run_id, "succeeded", outcome=outcome, attempts=attempts,
                              result_hash=sha256_bytes(body), db=db)
-                if result["decision"] != "pass" and task["auto_revise"]:
+                follow += self._after_review(db, task, run, rid, result)
+                if result["decision"] != "pass" and task["auto_revise"] and pass_name == "story":
                     if task["used_rounds"] < task["max_rounds"]:
                         db.execute("UPDATE task SET used_rounds=used_rounds+1 WHERE id=?", (task["id"],))
                         request = "按独立审查意见修订：\n" + "\n".join(
@@ -621,8 +648,8 @@ class Workbench:
             def run():
                 version = _row(db, "SELECT * FROM version WHERE id=?", version_id, missing="版本不存在")
                 art = _row(db, "SELECT * FROM artifact WHERE id=?", version["artifact_id"])
-                if art["stage"] != "story":
-                    raise Rejected("第 1 阶段只实现故事独审")
+                if art["stage"] not in ("story", "script"):
+                    raise Rejected("提示词使用两遍独审，其余阶段没有文本独审")
                 tid = task_id
                 if tid:
                     task = _row(db, "SELECT * FROM task WHERE id=?", tid)
@@ -636,6 +663,8 @@ class Workbench:
                     tid = row[0]
                 run_id = self._queue_run(db, tid, "review", None, "", target_version_id=version_id,
                                          provider=provider, model=model, effort=effort)
+                if art["stage"] == "story":
+                    db.execute("UPDATE topic SET status='待审稿' WHERE episode_id=? AND status='开发中'", (art["episode_id"],))
                 return dict(runId=run_id, taskId=tid)
             return self._command(db, command_id, "submit_review", payload, run)
 
@@ -660,7 +689,7 @@ class Workbench:
                 if not reason.strip():
                     raise Rejected("放行须写理由")
                 wid = new_id()
-                db.execute("INSERT INTO waiver VALUES(?,?,?,?,?)", (wid, issue_id, version_id, reason.strip(), self.clock()))
+                db.execute("INSERT INTO waiver(id,issue_id,version_id,reason,created_at) VALUES(?,?,?,?,?)", (wid, issue_id, version_id, reason.strip(), self.clock()))
                 return dict(waiverId=wid)
             return self._command(db, command_id, "waive", payload, run)
 
@@ -669,7 +698,9 @@ class Workbench:
             version = _row(db, "SELECT * FROM version WHERE id=?", version_id, missing="版本不存在")
             art = _row(db, "SELECT * FROM artifact WHERE id=?", version["artifact_id"])
             content = json.loads(version["content"])
-            gate = dict(versionId=version_id, formatErrors=check_content(art["stage"], content), review=None,
+            gate = dict(versionId=version_id, formatErrors=check_content(art["stage"], content,
+                                                                         self._adopted_plan(db, art["episode_id"])),
+                        review=None,
                         blocking=[], unresolved=[], reviewRequired=art["stage"] == "story")
             if art["stage"] == "story":
                 review = self._latest_review(db, version_id)
@@ -720,18 +751,53 @@ class Workbench:
                 db.execute("UPDATE task SET state='closed' WHERE artifact_id=? AND state IN ('awaiting_decision',"
                            "'rounds_exhausted','active')", (artifact_id,))
                 result = dict(adoptionId=aid, adoptedVersionId=version_id)
-                if and_continue and art["stage"] == "story":
-                    nxt = db.execute("SELECT id FROM artifact WHERE episode_id=? AND stage='script'",
-                                     (art["episode_id"],)).fetchone()
-                    if not nxt:
-                        nid = new_id()
-                        db.execute("INSERT INTO artifact(id,project_id,episode_id,stage) VALUES(?,?,?,?)",
-                                   (nid, art["project_id"], art["episode_id"], "script"))
-                    result["next"] = dict(stage="script", artifactId=nxt[0] if nxt else nid)
+                result["impacts"] = self._after_adopt(db, art, version_id, expected_adopted_version_id)
+                if and_continue and art["stage"] in NEXT:
+                    ep = _row(db, "SELECT * FROM episode WHERE id=?", art["episode_id"])
+                    result["next"] = dict(stage=NEXT[art["stage"]],
+                                          artifactId=self._ensure_artifact(db, ep, NEXT[art["stage"]]))
                 return result
             if not command_id:
                 raise Rejected("采用需要命令号")
             return self._command(db, command_id, "adopt", payload, run)
+
+    # ------------------------------------------------------------------ stage helpers (overridden by mixins)
+    def _ensure_artifact(self, db, ep, stage):
+        row = db.execute("SELECT id FROM artifact WHERE episode_id=? AND stage=?", (ep["id"], stage)).fetchone()
+        if row:
+            return row[0]
+        aid = new_id()
+        db.execute("INSERT INTO artifact(id,project_id,episode_id,stage) VALUES(?,?,?,?)",
+                   (aid, ep["project_id"], ep["id"], stage))
+        return aid
+
+    def _adopted_content(self, db, episode_id, stage):
+        row = db.execute("SELECT v.content FROM artifact a JOIN version v ON v.id=a.adopted_version_id "
+                         "WHERE a.episode_id=? AND a.stage=?", (episode_id, stage)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def _adopted_plan(self, db, episode_id):
+        return self._adopted_content(db, episode_id, "plan")
+
+    def _upstream_text(self, db, task):
+        prev = next((k for k, v in NEXT.items() if v == task["stage"]), None)
+        content = self._adopted_content(db, task["episode_id"], prev) if prev else None
+        return render_stage(prev, content) if content else None
+
+    def _extra_creation_inputs(self, db, task):
+        return []
+
+    def _isolation_status(self, provider):
+        return getattr(self.executors[provider], "isolation", "session")
+
+    def _extra_review_inputs(self, db, task, version):
+        return []
+
+    def _after_adopt(self, db, art, version_id, previous_id):
+        return []
+
+    def _after_review(self, db, task, run, review_id, result):
+        return []
 
     # ------------------------------------------------------------------ read models
     def episode_view(self, episode_id):
@@ -785,3 +851,14 @@ class Workbench:
 
     def probe(self):
         return {name: ex.probe() for name, ex in self.executors.items()}
+
+
+from .delivery import DeliveryMixin          # noqa: E402
+from .images import ImagesMixin              # noqa: E402
+from .production import ProductionMixin      # noqa: E402
+from .projectops import ProjectOpsMixin      # noqa: E402
+from .reviews2 import PromptReviewMixin      # noqa: E402
+
+
+class Workbench(ProductionMixin, ImagesMixin, PromptReviewMixin, DeliveryMixin, ProjectOpsMixin, Core):
+    """The application service: core commands plus the production, image, review, delivery and project mixins."""

@@ -17,6 +17,7 @@ def context(prompt: str) -> dict:
         return match.group(1) if match else None
     base = grab("基版")
     return dict(runId=grab("运行号"), inputFingerprint=grab("输入指纹"), targetId=grab("目标对象"),
+                passName=grab("遍次") or "story", segment=grab("被审段"),
                 baseVersionId=None if base in (None, "null") else base, reviewedVersionId=grab("被审版本"),
                 requiredSettings=re.findall(r"\[(\S+)\]（必守）", prompt))
 
@@ -32,22 +33,28 @@ def draft(req: ExecRequest, **fields) -> dict:
 def review(req: ExecRequest, decision="pass", issues=()) -> dict:
     ctx = context(req.prompt)
     vid = ctx["reviewedVersionId"]
-    obs = [dict(objectId=vid, versionId=vid, unit="paragraph", anchor="梗概", evidence="冷读复述：阿福值夜班。")]
-    obs += [dict(objectId=s, versionId=vid, unit="paragraph", anchor="梗概", evidence="已核对")
-            for s in ctx["requiredSettings"]]
-    out_issues = [dict(location=dict(objectId=vid, versionId=vid, unit="paragraph", anchor=i.get("anchor", "第1段"),
+    seg = ctx["segment"]
+    if seg:
+        obs = [dict(objectId=seg, versionId=vid, unit="segment", anchor="00:00", evidence="看到角色与动作")]
+    else:
+        obs = [dict(objectId=vid, versionId=vid, unit="paragraph", anchor="梗概", evidence="冷读复述：阿福值夜班。")]
+        obs += [dict(objectId=s, versionId=vid, unit="paragraph", anchor="梗概", evidence="已核对")
+                for s in ctx["requiredSettings"]]
+    out_issues = [dict(location=dict(objectId=seg or vid, versionId=vid, unit="segment" if seg else "paragraph",
+                                     anchor=i.get("anchor", "第1段"),
                                      evidence=i.get("evidence", "原句")),
                        category=i.get("category", "clarity"), settingId=i.get("settingId"),
                        decision="return", reason=i.get("reason", "意见")) for i in issues]
     return dict(schemaVersion=1, kind="review", runId=ctx["runId"], inputFingerprint=ctx["inputFingerprint"],
-                reviewedVersionId=vid, pass_="story", decision=decision, observations=obs, issues=out_issues)
+                reviewedVersionId=vid, pass_=ctx["passName"], decision=decision, observations=obs, issues=out_issues)
 
 
 class FakeExecutor(Executor):
     """script: list of callables(req) -> ExecOutcome | dict, consumed in order; default: valid result."""
 
-    def __init__(self, name="fake", script=None):
+    def __init__(self, name="fake", script=None, isolation="session", reads_images=True):
         self.name = name
+        self.isolation, self.reads_images = isolation, reads_images
         self.script = list(script or [])
         self.calls: list[ExecRequest] = []
 
@@ -71,3 +78,15 @@ class FakeExecutor(Executor):
 def quota_exhausted(req):
     return ExecOutcome(ok=False, error_class="quota", diagnostic="usage limit reached",
                        quota_resets_at="2026-11-07T20:00:00Z")
+
+
+def clarify(req, question="只改动作，还是需要换机位？", options=("只改动作", "换机位")):
+    ctx = context(req.prompt)
+    return dict(schemaVersion=1, kind="clarification", runId=ctx["runId"], inputFingerprint=ctx["inputFingerprint"],
+                question=question, options=list(options), relatedIds=[])
+
+
+def proposal(req, items):
+    ctx = context(req.prompt)
+    return dict(schemaVersion=1, kind="proposal", runId=ctx["runId"], inputFingerprint=ctx["inputFingerprint"],
+                items=items)

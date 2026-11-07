@@ -16,6 +16,7 @@ class ExecRequest:
     model: Optional[str] = None
     effort: Optional[str] = None
     timeout: int = 300
+    images: list = field(default_factory=list)   # local files the reviewer must look at, in order
 
 
 @dataclass

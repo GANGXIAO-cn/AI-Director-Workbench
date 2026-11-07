@@ -64,9 +64,11 @@ class Store:
         """inputs: [{role, name, text}] -> blobs + manifest. Returns (fingerprint, relpath)."""
         entries = []
         for item in inputs:
-            data = item["text"].encode("utf-8")
-            entries.append(dict(role=item["role"], name=item["name"], sha256=self.put_blob(data),
-                                bytes=len(data)))
+            data = item["data"] if "data" in item else item["text"].encode("utf-8")
+            entry = dict(role=item["role"], name=item["name"], sha256=self.put_blob(data), bytes=len(data))
+            if "data" in item:
+                entry["binary"] = True
+            entries.append(entry)
         manifest = dict(header, runId=run_id, inputs=entries)
         body = canonical(manifest)
         fingerprint = sha256_bytes(body)
@@ -79,7 +81,8 @@ class Store:
         return manifest, sha256_bytes(canonical(manifest))
 
     def manifest_texts(self, manifest: dict) -> list[dict]:
-        return [dict(e, text=self.read_blob(e["sha256"]).decode("utf-8")) for e in manifest["inputs"]]
+        return [dict(e, text=None if e.get("binary") else self.read_blob(e["sha256"]).decode("utf-8"))
+                for e in manifest["inputs"]]
 
 
 def write_atomic(path: Path, data: bytes):

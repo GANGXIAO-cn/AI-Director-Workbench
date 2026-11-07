@@ -1,5 +1,5 @@
 from .base import ExecOutcome, Executor, ExecRequest
-from .cli import ClaudeExecutor, CodexExecutor
+from .cli import AntigravityExecutor, ClaudeExecutor, CodexExecutor
 from .fake import FakeExecutor
 
-__all__ = ["ExecOutcome", "Executor", "ExecRequest", "ClaudeExecutor", "CodexExecutor", "FakeExecutor"]
+__all__ = ["AntigravityExecutor", "ExecOutcome", "Executor", "ExecRequest", "ClaudeExecutor", "CodexExecutor", "FakeExecutor"]

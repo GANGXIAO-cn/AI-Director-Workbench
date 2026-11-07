@@ -3,7 +3,7 @@
 Everything a model reads comes from manifest entries; the trailer only adds the fixed fields
 (run id, fingerprint, target ids) that the service then checks on the way back.
 """
-from .storycheck import WRITABLE, render_story
+from .stages import WRITABLE, render
 
 
 def render_settings(snapshot: list[dict]) -> str:
@@ -40,7 +40,7 @@ def creation_inputs(pack: dict, settings_text: str, kickoff_text: str, stage: st
     if adopted_story is not None:
         items.append(dict(role="adopted_story", name="story.md", text=adopted_story))
     if base_content:
-        body = render_story(base_content) if stage == "story" else base_content.get("scenes", "")
+        body = render(stage, base_content)
         items.append(dict(role="base_version", name="base.md", text=body))
     items.append(dict(role="request", name="request.txt", text=request))
     return items
@@ -58,7 +58,8 @@ def prompt_from(entries: list[dict], trailer: str, purpose: str) -> str:
     head = ("你是独立故事审查者。只依据下列材料审查，不使用任何工具，不读取其他文件。"
             if purpose == "review" else
             "你是短片故事作者。只依据下列材料写作，不使用任何工具，不读取其他文件。")
-    body = "\n\n".join(f"===== {e['role']} · {e['name']} =====\n{e['text']}" for e in entries)
+    body = "\n\n".join(f"===== {e['role']} · {e['name']} =====\n" + (e['text'] if e.get('text') is not None
+                         else f"（图片，按顺序附在本次请求中，sha256={e['sha256']}）") for e in entries)
     return f"{head}\n\n{body}\n\n===== 固定字段（回包原样填写） =====\n{trailer}\n"
 
 
@@ -79,3 +80,14 @@ def review_trailer(run_id, fingerprint, version_id, required_keys) -> str:
             "issues 中 location.objectId 与 versionId 填被审版本，anchor 写段落或原句位置；违反设定时 category=setting、"
             "settingId 填该设定编号，否则 settingId 为 null。没有问题时 decision=pass 且 issues 为空；"
             "有问题时 decision=return 或 uncertain。")
+
+
+def segment_review_trailer(run_id, fingerprint, version_id, pass_name, segment, required_keys) -> str:
+    extra = ("本遍为冷读：只描述实际看到的角色、方向、动作和不确定处，settingId 一律为 null。"
+             if pass_name == "cold_read" else
+             "本遍为对照：阅读第一遍观察、同一份 TXT/原图及故事、设定、方案与本集意图，检查叙事、连续性、相邻接点及遗漏。")
+    return (f"运行号：{run_id}\n输入指纹：{fingerprint}\n被审版本：{version_id}\n遍次：{pass_name}\n被审段：{segment}\n"
+            f"必守设定编号：{'、'.join(required_keys) or '（无）'}\n"
+            f"回包为 kind=review，pass={pass_name}，reviewedVersionId 填被审版本。observations 至少一条，objectId 填被审段，"
+            "versionId 填被审版本，unit 用 segment 或 grid_cell，anchor 写秒数、原句或格号。" + extra +
+            "没有问题时 decision=pass 且 issues 为空；有问题时 decision=return 或 uncertain。")

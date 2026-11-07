@@ -8,7 +8,7 @@ from .methodpack import CONTRACT
 
 SCHEMA = json.loads(CONTRACT.read_text())
 VALIDATOR = Draft202012Validator(SCHEMA)
-BRANCH = {"draft": "draft", "review": "review", "proposal": "proposal", "image_assessment": "imageAssessment"}
+BRANCH = {"draft": "draft", "review": "review", "proposal": "proposal", "image_assessment": "imageAssessment", "clarification": "clarification"}
 
 
 def validate(result) -> list[str]:
@@ -29,3 +29,9 @@ def branch_schema(kind: str) -> dict:
         return node
 
     return inline(copy.deepcopy(defs[BRANCH[kind]]))
+
+
+def wrapped_schema() -> dict:
+    """{result: draft | clarification} for runs where the assistant may ask first."""
+    return {"type": "object", "properties": {"result": {"anyOf": [branch_schema("draft"), branch_schema("clarification")]}},
+            "required": ["result"], "additionalProperties": False}

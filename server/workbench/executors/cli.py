@@ -64,11 +64,16 @@ def redact(text: str, limit=2000) -> str:
     return text[-limit:]
 
 
-def invoke(args, cwd: Path, stdin: str, timeout: int):
+RUNNING: dict = {}
+
+
+def invoke(args, cwd: Path, stdin: str, timeout: int, run_id: str | None = None):
     env = {k: os.environ[k] for k in ENV_KEEP if k in os.environ}
     env.update(local_proxy_env())
     with subprocess.Popen(args, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, text=True, start_new_session=True) as proc:
+        if run_id:
+            RUNNING[run_id] = proc
         try:
             out, err = proc.communicate(stdin, timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -79,7 +84,24 @@ def invoke(args, cwd: Path, stdin: str, timeout: int):
                 os.killpg(proc.pid, signal.SIGKILL)
                 out, err = proc.communicate()
             return 124, out, (err or "") + "\ntimeout"
+        finally:
+            RUNNING.pop(run_id, None)
         return proc.returncode, out, err
+
+
+def stop(run_id) -> bool:
+    """Stop: SIGTERM the run's process group, then SIGKILL after 5 s."""
+    proc = RUNNING.get(run_id)
+    if not proc:
+        return False
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    return True
 
 
 def find_claude(configured: str | None = None) -> Path | None:
@@ -134,9 +156,14 @@ class CliExecutor(Executor):
     def auth_status(self, binary):
         return None
 
+    def cancel(self, run_id):
+        return stop(run_id)
+
 
 class CodexExecutor(CliExecutor):
     name = "codex"
+    isolation = "session"      # verified live 2026-11-07 (story review)
+    reads_images = True        # --image; not yet verified live
     help_args = ("exec",)
     required_flags = ("--json", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--output-schema",
                       "--sandbox")
@@ -170,8 +197,9 @@ class CodexExecutor(CliExecutor):
                 "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check",
                 "--disable", "shell_tool", "--disable", "apps", "--disable", "plugins",
                 "--disable", "multi_agent", "--disable", "skill_search", "-c", 'web_search="disabled"',
+                *[a for p in req.images for a in ("--image", str(p))],
                 "--output-schema", str(schema_path), "-"]
-        rc, out, err = invoke(args, req.workdir, req.prompt, req.timeout)
+        rc, out, err = invoke(args, req.workdir, req.prompt, req.timeout, req.run_id)
         events, session, messages, failed = [], None, [], []
         for line in out.splitlines():
             try:
@@ -202,6 +230,8 @@ class CodexExecutor(CliExecutor):
 
 class ClaudeExecutor(CliExecutor):
     name = "claude"
+    isolation = "session"      # verified live 2026-11-07 (story review)
+    reads_images = False       # tools are disabled in the isolated review, so files cannot be opened
     required_flags = ("--output-format", "--json-schema", "--strict-mcp-config", "--restricted",
                       "--no-session-persistence", "--tools", "--disable-slash-commands")
 
@@ -228,7 +258,7 @@ class ClaudeExecutor(CliExecutor):
         args = [str(binary), *opts, "-p", "--restricted", "--strict-mcp-config", "--tools", "",
                 "--disable-slash-commands", *isolation, "--output-format", "json",
                 "--json-schema", json.dumps(req.schema, ensure_ascii=False)]
-        rc, out, err = invoke(args, req.workdir, req.prompt, req.timeout)
+        rc, out, err = invoke(args, req.workdir, req.prompt, req.timeout, req.run_id)
         base = dict(executable=str(binary),
                     isolation=dict(session=req.session_mode, tools="none", mcp="strict-empty",
                                    settings="restricted", slash_commands="disabled", cwd="empty run dir"))
@@ -250,3 +280,47 @@ class ClaudeExecutor(CliExecutor):
             usage = receipt.get("modelUsage")
             model = next(iter(usage)) if isinstance(usage, dict) and len(usage) == 1 else None
         return ExecOutcome(ok=True, structured=receipt["structured_output"], reported_model=model, **base)
+
+
+class AntigravityExecutor(CliExecutor):
+    """Google Antigravity `agy` headless mode (structured_output in a SUCCESS receipt)."""
+    name = "antigravity"
+    isolation = "unverified"   # review isolation flags not yet verified → required reviews wait
+    reads_images = False
+    required_flags = ("--print", "--output-format", "--json-schema", "--print-timeout", "--sandbox")
+
+    def binary(self):
+        if self.configured and os.access(self.configured, os.X_OK):
+            return Path(self.configured)
+        found = shutil.which("agy") or (str(Path.home() / ".local/bin/agy")
+                                        if os.access(Path.home() / ".local/bin/agy", os.X_OK) else None)
+        return Path(found) if found else None
+
+    def auth_status(self, binary):
+        return None   # only a real request proves it (phase 0)
+
+    def start(self, req: ExecRequest) -> ExecOutcome:
+        binary = self.binary()
+        if not binary:
+            return ExecOutcome(ok=False, error_class="unavailable", diagnostic="agy not found")
+        opts = []
+        if req.model:
+            opts += ["--model", req.model]
+        if req.effort:
+            opts += ["--effort", req.effort]
+        args = [str(binary), *opts, "--sandbox", "--print-timeout", f"{max(30, req.timeout - 10)}s",
+                "--output-format", "json", "--json-schema", json.dumps(req.schema, ensure_ascii=False), "-p", req.prompt]
+        rc, out, err = invoke(args, req.workdir, "", req.timeout, req.run_id)
+        base = dict(executable=str(binary), isolation=dict(session=req.session_mode, sandbox="on"))
+        try:
+            receipt = json.loads(out)
+        except ValueError:
+            text = out + "\n" + err
+            return ExecOutcome(ok=False, error_class=classify(text), diagnostic=redact(text),
+                               quota_resets_at=resets_at(text), **base)
+        if receipt.get("status") != "SUCCESS" or not isinstance(receipt.get("structured_output"), dict):
+            text = json.dumps(receipt, ensure_ascii=False)[:2000] + err
+            return ExecOutcome(ok=False, error_class=classify(text), diagnostic=redact(text),
+                               quota_resets_at=resets_at(text), **base)
+        return ExecOutcome(ok=True, structured=receipt["structured_output"], session_id=receipt.get("session_id"),
+                           reported_model=receipt.get("model") if isinstance(receipt.get("model"), str) else None, **base)
