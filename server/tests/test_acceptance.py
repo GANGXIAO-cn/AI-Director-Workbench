@@ -446,6 +446,17 @@ def test_19_batch_partial_unknown(tmp_path):
     nid = wb2.resubmit_request(unknown["id"], "resub")["requestId"]
     final = wb2.execute_batch(b["batchId"])
     assert env.images.sent == 3 and next(r for r in final["requests"] if r["id"] == nid)["state"] == "succeeded"
+    # regression (found in the browser walkthrough): a resubmitted request that is again unknown can be registered
+    b2 = wb2.create_batch(eid, "fake-image", "generate", [dict(prompt="再来", target=dict(name="y", category="state"))], "64x64",
+                          budget_cents=100)
+    env.images.script = ["timeout", "timeout"]
+    wb2.authorize_batch(b2["batchId"], b2["summaryHash"], "auth2")
+    r1 = wb2.execute_batch(b2["batchId"])["requests"][0]
+    wb2.reconcile_request(r1["id"], "not_executed")
+    r2 = wb2.resubmit_request(r1["id"], "resub2")["requestId"]
+    wb2.execute_batch(b2["batchId"])
+    done = wb2.reconcile_request(r2, "completed", png_bytes(64, 64))
+    assert done["state"] == "completed"
     assert final["state"] == "completed"
 
 

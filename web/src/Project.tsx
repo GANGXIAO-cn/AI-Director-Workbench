@@ -17,11 +17,14 @@ export default function Project({ id }: { id: string }) {
   if (!o.data) return <div className="page">{o.error ?? "读取中…"}</div>;
   const { project, episodes, settings, todos } = o.data;
   const inProduction = episodes.filter((e: any) => e.label !== "待开工" && !e.label.startsWith("图文已交付")).length;
-  const addEpisode = () => act.run(async () => {
+  const nextCode = () => {
     const nums = episodes.map((e: any) => parseInt(e.display_code.replace(/\D/g, ""), 10)).filter((n: number) => !isNaN(n));
     const prefix = episodes[0]?.display_code.replace(/\d+/g, "") || "E";
-    const code = `${prefix}${String((nums.length ? Math.max(...nums) : 0) + 1).padStart(2, "0")}`;
-    const ep = await cmd("create_episode", { project_id: id, display_code: code });
+    return `${prefix}${String((nums.length ? Math.max(...nums) : 0) + 1).padStart(2, "0")}`;
+  };
+  const addEpisode = (code: string, facts: string) => act.run(async () => {
+    const ep = await cmd("create_episode", { project_id: id, display_code: code || nextCode(),
+      leftover_facts: facts.split("\n").map((x) => x.trim()).filter(Boolean) });
     await o.reload();
     setKick({ episodeId: ep.episodeId });
   });
@@ -44,14 +47,11 @@ export default function Project({ id }: { id: string }) {
             <a className="btn" href={`#/p/${id}/groups`}>≡ 连续故事</a>
           </div>
         </div>
-        {adding && (
-          <Modal onClose={() => setAdding(false)} width={420}>
-            <h2>新增一集</h2>
-            <p className="muted small">新集读取已确认设定；开工时再选独立成集或承接前集。</p>
-            <div className="row"><button className="btn" onClick={() => setAdding(false)}>取消</button>
-              <button className="btn primary" onClick={() => { setAdding(false); addEpisode(); }}>新增并去开工</button></div>
-          </Modal>
-        )}
+        {adding && <AddEpisode code={nextCode()} onClose={() => setAdding(false)} onAdd={(c: string, f: string, kick: boolean) => {
+          setAdding(false);
+          if (kick) addEpisode(c, f);
+          else act.run(async () => { await cmd("create_episode", { project_id: id, display_code: c, leftover_facts: f.split("\n").map((x) => x.trim()).filter(Boolean) }); o.reload(); });
+        }} />}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, margin: "18px 0" }}>
           {todos.slice(0, 2).map((t: any, i: number) => (
             <div key={i} className={`card ${t.kind === "closure" ? "cyan" : "amber"}`}>
@@ -67,7 +67,7 @@ export default function Project({ id }: { id: string }) {
           </div>
         </div>
         <div className="grid2">
-          {episodes.map((e: any) => <EpisodeCard key={e.id} e={e} projectId={id} onKick={() => setKick({ episodeId: e.id })} />)}
+          {episodes.map((e: any) => <EpisodeCard key={e.id} e={e} projectId={id} onKick={() => setKick({ episodeId: e.id })} reload={o.reload} />)}
         </div>
         <div className="row" style={{ marginTop: 20 }}>
           {[["library", "复用资产库"], ["knowledge", "知识库"], ["topics", "选题池"], ["baseline", "制作基准"], ["expert", "专家模式授权"]].map(([k, l]) => (
@@ -81,7 +81,26 @@ export default function Project({ id }: { id: string }) {
   );
 }
 
-function EpisodeCard({ e, projectId, onKick }: { e: any; projectId: string; onKick: () => void }) {
+function AddEpisode({ code, onClose, onAdd }: any) {
+  const [c, setC] = useState(code);
+  const [f, setF] = useState("");
+  return (
+    <Modal onClose={onClose} width={460}>
+      <h2>新增一集</h2>
+      <p className="muted small">新集读取已确认设定；开工时再选独立成集或承接前集。</p>
+      <div className="formrow"><span className="muted">集号</span><input value={c} onChange={(e) => setC(e.target.value)} /></div>
+      <div className="formrow"><span className="muted">本集遗留事实</span><textarea placeholder="（可选）每行一条，例：厨房门上了锁" value={f} onChange={(e) => setF(e.target.value)} /></div>
+      <div className="row" style={{ justifyContent: "flex-end" }}><button className="btn" onClick={onClose}>取消</button>
+        <button className="btn" onClick={() => onAdd(c, f, false)}>只新增</button>
+        <button className="btn primary" onClick={() => onAdd(c, f, true)}>新增并去开工</button></div>
+    </Modal>
+  );
+}
+
+function EpisodeCard({ e, projectId, onKick, reload }: { e: any; projectId: string; onKick: () => void; reload: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [facts, setFacts] = useState((e.leftover_facts ?? []).join("\n"));
+  const act = useAction();
   const [cover, setCover] = useState<string>();
   useEffect(() => { if (e.segments) q("episode_assets", { episode_id: e.id }).then((a: any[]) => setCover(blob(a.find((x) => !x.grid)?.sha256))); }, [e.id, e.segments]);
   const delivered = e.deliveries.some((d: any) => d.scope === "full");
@@ -91,7 +110,10 @@ function EpisodeCard({ e, projectId, onKick }: { e: any; projectId: string; onKi
       <div style={{ flex: 1, minWidth: 0 }}>
         <Tag tone={e.tone}>{e.label}</Tag>
         <div style={{ fontWeight: 700, margin: "6px 0 4px" }}>{e.display_code} · {e.title || "未命名"}</div>
-        <div className="muted small">{e.segments ? `${e.segments} 段 · ${fmtMs(e.totalMs)}` : e.kickoff_id ? "故事阶段" : "尚未开工"}{e.leftover_facts?.length ? ` · 遗留：${e.leftover_facts.join("；")}` : ""}</div>
+        <div className="muted small">{e.segments ? `${e.segments} 段 · ${fmtMs(e.totalMs)}` : e.kickoff_id ? "故事阶段" : "尚未开工"} · <span style={{ cursor: "pointer", textDecoration: "underline dotted" }} onClick={() => setEditing(!editing)}>遗留：{e.leftover_facts?.length ? e.leftover_facts.join("；") : "补录"}</span></div>
+        {editing && <div className="row" style={{ marginTop: 6 }}><textarea style={{ minHeight: 40, flex: 1 }} value={facts} onChange={(x) => setFacts(x.target.value)} placeholder="每行一条遗留事实" />
+          <button className="btn" onClick={() => act.run(async () => { await cmd("record_leftovers", { episode_id: e.id, facts: facts.split("\n").map((x: string) => x.trim()).filter(Boolean), expected_revision: e.revision }); setEditing(false); reload(); })}>保存遗留</button></div>}
+        <ErrorLine error={act.error} />
         <div style={{ margin: "10px 0" }}><SegBar total={11} done={e.progress} now={!delivered && !!e.kickoff_id} /></div>
         <div className="row" style={{ justifyContent: "flex-end" }}>
           {!e.kickoff_id && <button className="btn primary" onClick={onKick}>开工</button>}
@@ -117,6 +139,8 @@ export function Kickoff({ projectId, prefill, onClose }: { projectId: string; pr
   const [split, setSplit] = useState<"default" | "custom">("default");
   const [creator, setCreator] = useState("claude");
   const [reviewer, setReviewer] = useState("codex");
+  const [cm, setCm] = useState<{ model: string | null; effort: string | null }>({ model: null, effort: null });
+  const [rm, setRm] = useState<{ model: string | null; effort: string | null }>({ model: null, effort: null });
   const preview = useQuery<any>("kickoff_preview", { episode_id: prefill.episodeId, relation: relation === "continue" && pre ? "continue" : "independent", predecessor_ids: relation === "continue" && pre ? [pre] : [] });
   const topics = useQuery<any[]>("topics", { project_id: projectId });
   const catalog = useQuery<any>("model_catalog");
@@ -128,7 +152,7 @@ export function Kickoff({ projectId, prefill, onClose }: { projectId: string; pr
   const required = p.settings.filter((s: any) => s.strength === "required").length;
   const start = () => act.run(async () => {
     await cmd("start_episode", {
-      episode_id: prefill.episodeId, source_type: source, executor_plan: { create: { provider: creator }, review: { provider: reviewer } },
+      episode_id: prefill.episodeId, source_type: source, executor_plan: { create: { provider: creator, ...cm }, review: { provider: reviewer, ...rm } },
       source_import_id: source === "import" ? importId : undefined, idea_text: source === "idea" ? idea : undefined,
       topic_id: source === "topic" ? topicId : undefined, relation: relation === "continue" && pre ? "continue" : "independent",
       predecessor_ids: relation === "continue" && pre ? [pre] : [],
@@ -167,8 +191,8 @@ export function Kickoff({ projectId, prefill, onClose }: { projectId: string; pr
         <Pills value={split} onChange={setSplit} options={[["default", "默认"], ["custom", "本集调整"]]} />
         {split === "custom" ? (
           <div className="row">
-            <label className="small">故事 写 <select value={creator} onChange={(e) => setCreator(e.target.value)}>{Object.keys(catalog.data?.text ?? { codex: 1, claude: 1, antigravity: 1 }).map((k) => <option key={k}>{k}</option>)}</select></label>
-            <label className="small">审 <select value={reviewer} onChange={(e) => setReviewer(e.target.value)}>{Object.keys(catalog.data?.text ?? { codex: 1, claude: 1, antigravity: 1 }).map((k) => <option key={k}>{k}</option>)}</select></label>
+            <ModelPick label="故事 写" provider={creator} setProvider={(p: string) => { setCreator(p); setCm({ model: null, effort: null }); }} sel={cm} setSel={setCm} catalog={catalog.data} />
+            <ModelPick label="审" provider={reviewer} setProvider={(p: string) => { setReviewer(p); setRm({ model: null, effort: null }); }} sel={rm} setSel={setRm} catalog={catalog.data} />
           </div>
         ) : <span className="muted small">默认：故事 Claude Code 写 · Codex 审；提示词 Codex 写 · Claude 两遍独审</span>}
         {reviewer === creator && <span className="muted small">单模型时必需审核仍另开会话，不取消。</span>}
@@ -188,5 +212,25 @@ export function Kickoff({ projectId, prefill, onClose }: { projectId: string; pr
         <button className="btn primary" disabled={act.busy} onClick={start}>开工，进入故事稿</button>
       </div>
     </Modal>
+  );
+}
+
+function ModelPick({ label, provider, setProvider, sel, setSel, catalog }: any) {
+  const models = catalog?.text?.[provider]?.models ?? [];
+  const m = models.find((x: any) => x.id === sel.model) ?? models[0];
+  const [warn, setWarn] = useState("");
+  const pickEffort = async (effort: string | null) => {
+    try { await q("validate_selection", { provider, model: sel.model, effort }); setWarn(""); setSel({ ...sel, effort }); }
+    catch (e: any) { setWarn(e.message); setSel({ ...sel, effort: null }); }
+  };
+  return (
+    <div className="col" style={{ gap: 4 }}>
+      <div className="row small">{label}
+        <select value={provider} onChange={(e) => setProvider(e.target.value)}>{Object.keys(catalog?.text ?? { codex: 1, claude: 1, antigravity: 1 }).map((k) => <option key={k}>{k}</option>)}</select>
+        <select value={sel.model ?? ""} onChange={(e) => setSel({ model: e.target.value || null, effort: null })}>{models.map((x: any) => <option key={x.label} value={x.id ?? ""}>{x.label}{x.status !== "verified" ? "（待检测）" : ""}</option>)}</select>
+        <select value={sel.effort ?? ""} onChange={(e) => pickEffort(e.target.value || null)}>{["", "low", "medium", "high", "xhigh", "max"].map((x) => <option key={x} value={x}>{x || "默认强度"}{x && !(m?.efforts ?? []).includes(x) ? "（不兼容）" : ""}</option>)}</select>
+      </div>
+      {warn && <span className="error tiny">{warn}</span>}
+    </div>
   );
 }

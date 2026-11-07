@@ -643,3 +643,19 @@ class ProductionMixin:
                                   timeout=60)
             out[key] = dict(ms=ms, sha256=self.store.put_blob(proc.stdout) if proc.returncode == 0 and proc.stdout else None)
         return out
+
+    def episode_bookmarks(self, episode_id):
+        with connect(self.db_path) as db:
+            return [dict(r) for r in db.execute(
+                "SELECT b.*, s.code AS shot_code, p.version AS pack_version FROM shot_bookmark b JOIN ref_shot s ON s.id=b.ref_shot_id "
+                "JOIN ref_pack p ON p.id=b.pack_id WHERE b.episode_id=? ORDER BY b.created_at", (episode_id,))]
+
+    def open_stage(self, episode_id, stage):
+        """Open the next stage once its upstream is adopted (also after a plain 「只采用」)."""
+        from .stages import NEXT
+        prev = next((k for k, v in NEXT.items() if v == stage), None)
+        with transaction(self.db_path) as db:
+            ep = row(db, "SELECT * FROM episode WHERE id=?", episode_id)
+            if prev and not self._adopted_content(db, episode_id, prev):
+                raise Rejected(f"上一步（{prev}）尚未采用")
+            return dict(artifactId=self._ensure_artifact(db, ep, stage))

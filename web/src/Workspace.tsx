@@ -30,6 +30,14 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
   const assets = useQuery<any[]>("episode_assets", { episode_id: id });
   const batches = useQuery<any[]>("episode_batches", { episode_id: id });
   const [sel, setSel] = useState<Selection>(null);
+  const [cols, setColsState] = useState<[number, number]>(() => { try { return JSON.parse(localStorage.getItem("ws-cols") ?? "") ?? [200, 380]; } catch { return [200, 380]; } });
+  const setCols = (c: [number, number]) => { setColsState(c); try { localStorage.setItem("ws-cols", JSON.stringify(c)); } catch { /* ignore */ } };
+  const drag = (which: 0 | 1) => (e: React.MouseEvent) => {
+    const x0 = e.clientX, c0 = cols;
+    const move = (ev: MouseEvent) => { const d = ev.clientX - x0; setCols(which === 0 ? [Math.min(320, Math.max(160, c0[0] + d)), c0[1]] : [c0[0], Math.min(560, Math.max(300, c0[1] - d))]); };
+    const up = () => { removeEventListener("mousemove", move); removeEventListener("mouseup", up); };
+    addEventListener("mousemove", move); addEventListener("mouseup", up);
+  };
   const [batch, setBatch] = useState<any>(null);
   const batchParam = new URLSearchParams(location.hash.split("?")[1] ?? "").get("batch");
   useEffect(() => { if (batchParam) setBatch({ id: batchParam }); }, [batchParam]);
@@ -59,7 +67,7 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
         <a href={`#/p/${v.episode.project_id}`} title="项目主页">▶</a>
         <a href="#/sys/tasks" title="任务记录">▣</a>
       </nav>
-      <div className="ws" style={{ flex: 1 }}>
+      <div className="ws" style={{ flex: 1, gridTemplateColumns: `${cols[0]}px minmax(0, 1fr) ${cols[1]}px` }}>
         <div className="catalog">
           <div className="spread" style={{ padding: "0 8px 12px" }}><b>目录</b><a className="muted" href={`#/p/${v.episode.project_id}`}>⇤</a></div>
           {STAGES.map(([k, label], i) => (
@@ -67,7 +75,7 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
               <span className="n">{String(i + 1).padStart(2, "0")}</span>{label}<span className={`st ${status(k)}`} />
             </a>))}
         </div>
-        <div className="center">
+        <div className="center"><div className="colgrip left" onMouseDown={drag(0)} title="拖动调整目录宽度" /><div className="colgrip right" onMouseDown={drag(1)} title="拖动调整助手宽度" />
           <div className="topbar">
             <span className="title">{v.episode.display_code} · {v.episode.title || "未命名"}</span>
             <span className="muted small">{v.kickoff.spec.aspectRatio === "9:16" ? "竖屏短片" : "横屏"}</span>
@@ -101,8 +109,11 @@ function StageView({ stage, ctx }: { stage: string; ctx: Ctx }) {
 }
 
 // ---------------------------------------------------------------- common pieces
+const PREV: Record<string, string> = { script: "story", plan: "script", prompts: "plan", publish: "prompts" };
 function useVersion(ctx: Ctx, stage: string) {
   const art = artifactFor(ctx.view, stage);
+  const upstreamAdopted = !!PREV[stage] && !!ctx.view.artifacts.find((a: any) => a.stage === PREV[stage])?.adopted_version_id;
+  useEffect(() => { if (!art && upstreamAdopted) cmd("open_stage", { episode_id: ctx.eid, stage }).then(ctx.reload).catch(() => null); }, [art?.id, upstreamAdopted]);
   const versions = art?.versions ?? [];
   const current = versions.find((v: any) => v.id === ctx.focus) ?? versions.find((v: any) => v.id === art?.adopted_version_id) ?? versions[versions.length - 1];
   return { art, versions, current };
@@ -158,10 +169,10 @@ function StoryView({ ctx }: { ctx: Ctx }) {
   return (
     <div>
       <div className="stagehead">
-        <div><h1>故事稿</h1><div className="muted small">{rno(current.display_no)} {current.id === art.adopted_version_id ? "已采用" : "草稿"} · 累计 {chars} 字 · 来源：{k.source_type === "import" ? `导入 ${ctx.view.sourceImport?.original_name}` : k.source_type === "topic" ? "选题卡" : "一个想法"}{k.relation === "continue" ? ` · 承接遗留 ${k.carried_facts.join("；")}` : ""}</div></div>
+        <div><h1>故事稿</h1><div className="muted small">{rno(current.display_no)} {current.id === art.adopted_version_id ? "已采用" : "草稿"} · 累计 {chars} 字 · 来源：{k.source_type === "import" ? `导入 ${ctx.view.sourceImport?.original_name}` : k.source_type === "topic" ? "选题卡" : `一个想法「${k.idea_text}」`}{k.relation === "continue" ? ` · 承接遗留 ${k.carried_facts.join("；")}` : ""}{ctx.view.refPacks?.length ? ` · 改编自参考包 ${ctx.view.refPacks.map((p: any) => `${p.source} v${p.version}（节拍 ${p.beats.join("、") || "—"}）`).join("；")}` : ""}</div></div>
         <VersionTabs ctx={ctx} art={art} current={current} />
       </div>
-      <div className="spread"><div className="tabs">{[["synopsis", "故事梗概"], ["cast", "角色表"], ["handoff", "交接说明"], ["notes", "开发辅助"], ["review", "独立审查"]].map(([t, l]) => (
+      <div className="spread"><div className="tabs">{[["synopsis", "故事梗概"], ["cast", "角色表"], ["handoff", "交接说明"], ["notes", "开发辅助"], ["review", "独立审查"], ...(ctx.view.sourceImport ? [["source", "来源原文"]] : [])].map(([t, l]) => (
         <button key={t} className={`tab ${tab === t ? "on" : ""}`} onClick={() => setTab(t)}>{l}</button>))}</div>
         <div className="row">{edit ? <><button className="btn" onClick={() => setEdit(false)}>取消</button>
           <button className="btn primary" onClick={() => act.run(async () => { const r = await cmd("save_manual", { artifact_id: art.id, base_version_id: current.id, content: draft }); ctx.setFocus(r.versionId); ctx.reload(); })}>保存为手稿</button></>
@@ -171,6 +182,7 @@ function StoryView({ ctx }: { ctx: Ctx }) {
           <div key={i} className={`para ${ctx.sel?.data.paragraph === i + 1 ? "sel" : ""}`} onClick={() => ctx.setSel({ label: `故事梗概 第${i + 1}段`, data: { field: "synopsis", paragraph: i + 1, text: p.slice(0, 40) } })}>{p}</div>))}</div>))}
       {tab === "cast" && (edit ? <textarea style={{ minHeight: 160, marginTop: 12 }} value={draft.cast ?? ""} onChange={(e) => setDraft({ ...draft, cast: e.target.value })} /> : <CastTable md={current.content.cast ?? ""} />)}
       {tab === "handoff" && (edit ? <textarea style={{ marginTop: 12 }} value={draft.handoff ?? ""} onChange={(e) => setDraft({ ...draft, handoff: e.target.value })} /> : <div className="field" style={{ marginTop: 12 }}>{current.content.handoff}</div>)}
+      {tab === "source" && <div className="field" style={{ marginTop: 12 }}><div className="muted small">导入原文（只作故事来源）· {ctx.view.sourceImport.original_name} · sha256 {ctx.view.sourceImport.sha256.slice(0, 12)}</div>{ctx.view.sourceImport.parsed_text}</div>}
       {tab === "notes" && <div className="field" style={{ marginTop: 12 }}>{current.content.notes || current.content.adaptation ? JSON.stringify(current.content.adaptation ?? current.content.notes, null, 1) : "（无）"}</div>}
       {current.gate.formatErrors.length > 0 && <div className="card red" style={{ marginTop: 12 }}><b className="error">结构错误（不能放行）</b><ul className="small">{current.gate.formatErrors.map((e: string) => <li key={e}>{e}</li>)}</ul></div>}
       {(tab === "review" || review) && <StoryReview ctx={ctx} version={current} review={review} />}
@@ -225,6 +237,18 @@ function ScriptView({ ctx }: { ctx: Ctx }) {
   const [tab, setTab] = useState("full");
   const [cmp, setCmp] = useState<any>(null);
   const [picks, setPicks] = useState<Record<string, string>>({});
+  const [editScenes, setEditScenes] = useState<any[] | null>(null);
+  const [savedScroll, setSavedScroll] = useState<{ top: number; sel: Selection } | null>(null);
+  const openSide = () => { setSavedScroll({ top: document.querySelector(".center")?.scrollTop ?? 0, sel: ctx.sel }); setTab("side"); };
+  const closeSide = () => {
+    setTab("full"); const sv = savedScroll;
+    if (!sv) return;
+    ctx.setSel(sv.sel);
+    let tries = 0;
+    const restore = () => { const el = document.querySelector(".center") as HTMLElement | null; if (!el) return;
+      el.scrollTop = sv.top; if (Math.abs(el.scrollTop - sv.top) > 2 && tries++ < 60) requestAnimationFrame(restore); };
+    requestAnimationFrame(restore);
+  };
   const act = useAction();
   const adoptedId = art?.adopted_version_id;
   useEffect(() => {
@@ -232,7 +256,17 @@ function ScriptView({ ctx }: { ctx: Ctx }) {
     else setCmp(null);
   }, [tab, current?.id, adoptedId]);
   if (!art) return <div className="empty">故事未通过独审并采用前，不能写剧本。</div>;
-  if (!current) return <div><div className="stagehead"><h1>剧本</h1></div><p className="muted">在右侧导演助手输入「按采用的故事写分场剧本」开始。</p></div>;
+  const story = artifactFor(ctx.view, "story");
+  const storyText: string = story?.versions.find((v: any) => v.id === story.adopted_version_id)?.content.synopsis ?? "";
+  const programDraft = () => act.run(async () => {
+    const rp = ctx.view.refPacks?.[0];
+    const src = rp ? { storyVersion: story.adopted_version_id, beat: rp.beats.join("、"), refShot: rp.bookmarks.join("、"), pack: `${rp.source} v${rp.version}` } : undefined;
+    const scenes0 = storyText.split("\n").filter((x) => x.trim()).map((t, i) => ({ id: `场${String(i + 1).padStart(2, "0")}`, heading: "按故事分场", action: t, ...(src ? { source: src } : {}) }));
+    const r = await cmd("save_manual", { artifact_id: art.id, base_version_id: null, content: { scenes: scenes0, notes: "按采用故事分场（程序起草）" } });
+    ctx.setFocus(r.versionId); ctx.reload();
+  });
+  if (!current) return <div><div className="stagehead"><h1>剧本</h1></div><p className="muted">在右侧导演助手输入「按采用的故事写分场剧本」，或先按故事段落分场再改。</p>
+    <button className="btn primary" onClick={programDraft}>按故事分场起草</button><ErrorLine error={act.error} /></div>;
   const scenes = current.content.scenes ?? [];
   const baseV = current.id !== adoptedId ? art.versions.find((v: any) => v.id === (current.base_id ?? adoptedId)) : null;
   const baseScenes = baseV ? Object.fromEntries((baseV.content.scenes ?? []).map((x: any) => [x.id, x.action])) : null;
@@ -245,15 +279,22 @@ function ScriptView({ ctx }: { ctx: Ctx }) {
         <VersionTabs ctx={ctx} art={art} current={current} />
       </div>
       <div className="spread"><div className="tabs">{[["full", "全文"], ["outline", "阶段大纲"], ["diff", "差异"], ["side", "并排比较"]].map(([t, l]) => (
-        <button key={t} className={`tab ${tab === t ? "on" : ""}`} onClick={() => setTab(t)}>{l}</button>))}</div></div>
-      {tab === "full" && scenes.map((s: any, i: number) => { const old = baseScenes?.[s.id]; return (
+        <button key={t} className={`tab ${tab === t ? "on" : ""}`} onClick={() => t === "side" ? openSide() : setTab(t)}>{l}</button>))}</div>
+        <div className="row">{editScenes ? <><button className="btn" onClick={() => setEditScenes(null)}>取消</button>
+          <button className="btn primary" onClick={() => act.run(async () => { const r = await cmd("save_manual", { artifact_id: art.id, base_version_id: current.id, content: { ...current.content, scenes: editScenes } }); setEditScenes(null); ctx.setFocus(r.versionId); ctx.reload(); })}>保存为手稿</button></>
+          : <button className="btn" onClick={() => setEditScenes(JSON.parse(JSON.stringify(scenes)))}>✎ 编辑</button>}</div></div>
+      {editScenes && editScenes.map((sc: any, i: number) => (
+        <div key={i} style={{ marginTop: 12 }}><div className="row"><input value={sc.id} onChange={(e) => { const x = [...editScenes]; x[i] = { ...sc, id: e.target.value }; setEditScenes(x); }} style={{ width: 90 }} />
+          <input value={sc.heading ?? ""} onChange={(e) => { const x = [...editScenes]; x[i] = { ...sc, heading: e.target.value }; setEditScenes(x); }} placeholder="内外景 · 时段" /></div>
+          <textarea value={sc.action} onChange={(e) => { const x = [...editScenes]; x[i] = { ...sc, action: e.target.value }; setEditScenes(x); }} /></div>))}
+      {!editScenes && tab === "full" && scenes.map((s: any, i: number) => { const old = baseScenes?.[s.id]; return (
         <div key={s.id} style={{ marginTop: 18 }}>
           <h2>{i + 1}. {s.id} <span className="muted small">{s.heading}</span></h2>
-          {old !== undefined && old !== s.action ? <div className="para" style={{ lineHeight: 1.8 }}>{charDiff(old, s.action).map((d, k) => d.op === "same" ? <span key={k}>{d.text}</span> : d.op === "del" ? <del key={k} className="d">{d.text}</del> : <ins key={k} className="d">{d.text}</ins>)}</div> :
+          {old !== undefined && old !== s.action ? <div className={`para ${ctx.sel?.data.scene === s.id ? "sel" : ""}`} style={{ lineHeight: 1.8 }} onClick={() => ctx.setSel({ label: `${s.id}（差异处）`, data: { scene: s.id } })}>{charDiff(old, s.action).map((d, k) => d.op === "same" ? <span key={k}>{d.text}</span> : d.op === "del" ? <del key={k} className="d">{d.text}</del> : <ins key={k} className="d">{d.text}</ins>)}</div> :
           s.action.split(/(?<=。)/).filter(Boolean).map((p: string, j: number) => (
             <div key={j} className={`para ${ctx.sel?.data.scene === s.id && ctx.sel?.data.sentence === j + 1 ? "sel" : ""}`} onClick={() => ctx.setSel({ label: `${s.id} 第${j + 1}句`, data: { scene: s.id, sentence: j + 1 } })}>{p}</div>))}
           {s.dialogue && <div className="muted small">对白：{s.dialogue}</div>}
-          {s.source && <div className="muted tiny">出处：故事 {s.source.storyVersion?.slice(0, 6)} · 节拍 {s.source.beat} · 原镜 {s.source.refShot}</div>}
+          {s.source && <div className="muted tiny">出处：故事 {rno(story?.versions.find((v: any) => v.id === s.source.storyVersion)?.display_no)} · 节拍 {s.source.beat} · 原镜 {s.source.refShot}{s.source.pack ? ` · 参考包 ${s.source.pack}` : ""}</div>}
         </div>); })}
       {tab === "outline" && <table className="table" style={{ marginTop: 12 }}><tbody>{scenes.map((s: any) => <tr key={s.id}><td style={{ width: 80 }}>{s.id}</td><td className="muted">{s.heading}</td><td>{s.action.slice(0, 60)}…</td></tr>)}</tbody></table>}
       {tab === "diff" && (cmp ? <div className="field" style={{ marginTop: 12 }}>{(cmp.fields.scenes ?? []).map((d: any, i: number) => (
@@ -269,7 +310,7 @@ function ScriptView({ ctx }: { ctx: Ctx }) {
               {v.content.notes && <div className="muted small">说明：{v.content.notes}</div>}</div>))}</div>
           <div className="row" style={{ marginTop: 10 }}><button className="btn primary" disabled={Object.keys(picks).length === 0} onClick={() => act.run(async () => {
             const r = await cmd("combine", { artifact_id: art.id, picks }); ctx.setFocus(r.versionId); setTab("full"); ctx.reload(); })}>组合成新的待审稿</button>
-            <button className="btn" onClick={() => setTab("full")}>关闭比较</button></div>
+            <button className="btn" onClick={closeSide}>关闭比较</button></div>
         </div>)}
       <ErrorLine error={act.error} />
       <AdoptBar ctx={ctx} art={art} version={current} next="plan" hint="采用前先看影响 · 重复点击不会生成重复版本" />
@@ -293,7 +334,21 @@ function PlanView({ ctx }: { ctx: Ctx }) {
   };
   useEffect(() => { if (shot && art?.adopted_version_id) q("trace_shot", { episode_id: ctx.eid, shot_id: shot }).then(setTrace).catch(() => setTrace(null)); }, [shot]);
   if (!art) return <div className="empty">剧本采用后才能设计镜头。</div>;
-  if (!current) return <div><div className="stagehead"><h1>制作方案</h1></div><p className="muted">让助手「按剧本排镜头与生成段」，或从参考包选镜头。</p></div>;
+  const scriptArt = artifactFor(ctx.view, "script");
+  const scriptScenes: any[] = scriptArt?.versions.find((v: any) => v.id === scriptArt.adopted_version_id)?.content.scenes ?? [];
+  const programDraft = () => act.run(async () => {
+    const shots0: any[] = [], segs0: any[] = [];
+    let n = 0, seg = 0, segLen = 0;
+    for (const sc of scriptScenes) for (const sent of sc.action.split(/(?<=。)/).filter((x: string) => x.trim())) {
+      if (!seg || segLen + 3000 > 12000) { seg++; segLen = 0; segs0.push({ id: `G${String(seg).padStart(2, "0")}`, order: seg, strategy: "flex" }); }
+      n++; segLen += 3000;
+      shots0.push({ id: `K${String(n).padStart(2, "0")}`, segment: `G${String(seg).padStart(2, "0")}`, order: n, duration_ms: 3000, camera: "中景 固定", action: sent.trim(), origin: { scene: sc.id, line: sent.trim().slice(0, 30) } });
+    }
+    const r = await cmd("save_manual", { artifact_id: art.id, base_version_id: null, content: { shots: shots0, segments: segs0, notes: "按剧本句子起草，每镜 3 秒（程序起草）" } });
+    ctx.setFocus(r.versionId); ctx.reload();
+  });
+  if (!current) return <div><div className="stagehead"><h1>制作方案</h1></div><p className="muted">让助手「按剧本排镜头与生成段」，或先按剧本句子起草镜头表再改。</p>
+    <button className="btn primary" onClick={programDraft}>从剧本起草镜头表</button><ErrorLine error={act.error} /></div>;
   const shots = current.content.shots ?? [];
   const scenes: string[] = [...new Set<string>(shots.map((s: any) => s.origin?.scene ?? "参考镜头"))];
   const over = lay.segments.filter((s: any) => s.duration > 15000);
@@ -328,12 +383,16 @@ function PlanView({ ctx }: { ctx: Ctx }) {
           </div>
         </div>))}
       {tab === "segments" && <table className="table" style={{ marginTop: 12 }}><thead><tr><th>段</th><th>策略</th><th>全片时间</th><th>段长</th><th>镜头</th></tr></thead>
-        <tbody>{lay.segments.map((s: any) => <tr key={s.id}><td>{s.id}</td><td>{s.strategy}</td><td>{fmtMs(s.start)}–{fmtMs(s.end)}</td><td>{s.duration / 1000}s</td><td>{s.shots.join("、")}</td></tr>)}</tbody></table>}
+        <tbody>{lay.segments.map((s: any) => <tr key={s.id}><td>{s.id}</td><td><select value={s.strategy} onChange={(e) => act.run(async () => {
+          const r = await cmd("save_manual", { artifact_id: art.id, base_version_id: current.id, note: `${s.id} 改为 ${e.target.value}`,
+            content: { ...current.content, segments: current.content.segments.map((g: any) => g.id === s.id ? { ...g, strategy: e.target.value } : g) } });
+          ctx.setFocus(r.versionId); ctx.reload(); })}><option value="flex">flex</option><option value="grid">grid</option></select></td><td>{fmtMs(s.start)}–{fmtMs(s.end)}</td><td>{s.duration / 1000}s</td><td>{s.shots.join("、")}</td></tr>)}</tbody></table>}
       {tab === "table" && <table className="table" style={{ marginTop: 12 }}><thead><tr><th>镜</th><th>段</th><th>段内</th><th>机位</th><th>动作</th><th>出处</th></tr></thead>
         <tbody>{shots.map((s: any) => { const t = lay.shots[s.id]; const seg = lay.segments.find((x: any) => x.id === s.segment);
           return <tr key={s.id}><td>{s.id}</td><td>{s.segment}</td><td>{((t.start - seg.start) / 1000).toFixed(1)}–{((t.end - seg.start) / 1000).toFixed(1)}s</td><td>{s.camera}</td><td>{s.action}</td><td className="muted">{s.refs?.length ? "参考镜头" : s.origin?.scene}</td></tr>; })}</tbody></table>}
       <div className="segstrip">{lay.segments.map((s: any) => (
         <div key={s.id} className={s.shots.includes(shot) ? "on" : ""} style={{ flex: s.duration }}>{s.id} · {Math.round(s.duration / 100) / 10}s</div>))}</div>
+      {shot && <ShotEditor ctx={ctx} art={art} version={current} shotId={shot} onSaved={(vid: string) => ctx.setFocus(vid)} />}
       {trace && (
         <div className="card line" style={{ marginTop: 14 }}>
           <b>{trace.shot.id} 出处</b>
@@ -425,6 +484,8 @@ function AssetsView({ ctx }: { ctx: Ctx }) {
   const [mode, setMode] = useState("原图");
   const [detail, setDetail] = useState<any>(null);
   const [newBatch, setNewBatch] = useState<any>(null);
+  const [adoptPre, setAdoptPre] = useState<any>(null);
+  const [upKind, setUpKind] = useState("state");
   const providers = useQuery<any>("image_providers");
   const act = useAction();
   const images = ctx.assets.filter((a) => a.kind === "image").sort((a, b) => (b.grid ? 1 : 0) - (a.grid ? 1 : 0));
@@ -438,7 +499,8 @@ function AssetsView({ ctx }: { ctx: Ctx }) {
         <div className="row"><div className="tabs">{[["needs", "需求"], ["round", "本轮出图"], ["backup", "补选区"]].map(([t, l]) => (
           <button key={t} className={`tab ${tab === t ? "on" : ""}`} onClick={() => setTab(t)}>{l}</button>))}</div>
           <button className="btn primary" onClick={() => setNewBatch({ operation: "generate" })}>出图</button>
-          <label className="btn">上传<input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => e.target.files?.[0] && act.run(async () => { await upload("asset", e.target.files![0], { projectId: ctx.view.episode.project_id, episodeId: ctx.eid, category: "state" }); ctx.reload(); })} /></label></div>
+          <select value={upKind} onChange={(e) => setUpKind(e.target.value)} style={{ padding: "4px 6px" }}><option value="state">场面 / 状态图</option><option value="grid">九宫格</option><option value="identity">身份图</option><option value="scene">空景</option></select>
+          <label className="btn">上传<input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => e.target.files?.[0] && act.run(async () => { await upload("asset", e.target.files![0], { projectId: ctx.view.episode.project_id, episodeId: ctx.eid, category: upKind, grid: upKind === "grid" }); ctx.reload(); })} /></label></div>
       </div>
       {tab === "needs" ? <NeedsTable ctx={ctx} /> : (
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 150px", gap: 14 }}>
@@ -450,7 +512,7 @@ function AssetsView({ ctx }: { ctx: Ctx }) {
               <div className="row" style={{ marginTop: 6 }}>
                 {["required", "recommended", "backup"].map((m) => <button key={m} className="btn ghost" onClick={() => act.run(async () => { await cmd("mark_image", { episode_id: ctx.eid, version_id: a.id, mark: m }); ctx.reload(); })}>{m === "required" ? "标必用" : m === "recommended" ? "推荐" : "补选"}</button>)}
                 {!!a.grid && <button className="btn" onClick={() => setNewBatch({ operation: "edit", base: a })}>修一格</button>}
-                <button className="btn" onClick={() => act.run(async () => { const r = await cmd("adopt_image", { episode_id: ctx.eid, version_id: a.id }); if (confirm(`采用前影响：${r.references.map((x: any) => x.segment).join("、") || "暂无引用"}。确认采用？`)) { await cmd("adopt_image", { episode_id: ctx.eid, version_id: a.id, confirm: true }); ctx.reload(); } })}>采用</button>
+                <button className="btn" onClick={() => act.run(async () => { const r = await cmd("adopt_image", { episode_id: ctx.eid, version_id: a.id }); setAdoptPre({ id: a.id, refs: r.references }); })}>采用</button>
               </div>
             </div>))}
           <div className="col">
@@ -460,6 +522,9 @@ function AssetsView({ ctx }: { ctx: Ctx }) {
             {filter.slice(2).map((a) => <img key={a.id} src={blob(a.sha256)} style={{ width: "100%", borderRadius: 6, cursor: "pointer" }} onClick={() => setDetail(a)} />)}
           </div>
         </div>)}
+      {adoptPre && <div className="card amber" style={{ marginTop: 12 }}><b>采用新图前的影响</b>
+        <div className="small" style={{ margin: "6px 0" }}>实际引用：{adoptPre.refs.length ? adoptPre.refs.map((x: any) => `${x.segment} ${x.label}`).join("、") : "暂无提示词引用"}。采用后这些段需复审；旧图及其审核记录保留。</div>
+        <div className="row"><button className="btn primary" onClick={() => act.run(async () => { await cmd("adopt_image", { episode_id: ctx.eid, version_id: adoptPre.id, confirm: true }); setAdoptPre(null); ctx.reload(); })}>确认采用</button><button className="btn" onClick={() => setAdoptPre(null)}>取消</button></div></div>}
       {detail?.grid ? <GridDetail a={detail} /> : null}
       {ctx.batches.length > 0 && <h2 style={{ marginTop: 24 }}>图像批次</h2>}
       {ctx.batches.map((b) => (
@@ -547,7 +612,8 @@ function BatchModal({ batch, assets, close }: { batch: any; assets: any[]; close
   const b = useQuery<any>("batch_view", { batch_id: batch.id });
   const [accept, setAccept] = useState(false);
   const act = useAction();
-  usePoll(b.data?.state === "authorized", b.reload, 1000);
+  usePoll(!!b.data && !["awaiting_authorization", "cancelled"].includes(b.data.state)
+    && b.data.requests.some((r: any) => ["pending", "submitted"].includes(r.state)), b.reload, 1000);
   if (!b.data) return null;
   const d = b.data;
   return (
@@ -601,8 +667,25 @@ function PromptsView({ ctx }: { ctx: Ctx }) {
   const act = useAction();
   const entry = current?.content.segments?.[seg];
   useEffect(() => { if (!seg && lay.segments[0]) setSeg(lay.segments[0].id); }, [lay.segments.length]);
-  useEffect(() => { setTxt(entry?.txt ?? ""); setPreview(null); setSound(null); }, [current?.id, seg]);
+  const [amb, setAmb] = useState("");
+  const [dia, setDia] = useState("");
+  useEffect(() => { setTxt(entry?.txt ?? ""); setPreview(null); setSound(null); setAmb((entry?.sound?.ambience ?? []).join("、")); setDia((entry?.sound?.dialogue ?? []).join("；")); }, [current?.id, seg]);
   if (!art) return <div className="empty">制作方案采用后才能写分段提示词。</div>;
+  const planContent = plan?.versions.find((v: any) => v.id === plan.adopted_version_id)?.content;
+  const programDraft = () => act.run(async () => {
+    const plain = ctx.assets.find((a) => a.kind === "image" && !a.grid);
+    const gridImg = [...ctx.assets].reverse().find((a) => a.kind === "image" && a.grid && a.marks.includes("required")) ?? ctx.assets.find((a) => a.kind === "image" && a.grid);
+    if (!plain && !gridImg) throw new Error("本集还没有图片素材，请先在「素材与选图」上传或出图");
+    const segs: any = {};
+    for (const g of lay.segments) {
+      const end = `${String(Math.floor(g.duration / 60000)).padStart(2, "0")}:${String(Math.floor(g.duration / 1000) % 60).padStart(2, "0")}.${String(g.duration % 1000).padStart(3, "0")}`;
+      const acts = planContent.shots.filter((x: any) => x.segment === g.id).map((x: any) => x.action).join("；");
+      const img = g.strategy === "grid" ? (gridImg ?? plain) : (plain ?? gridImg);
+      segs[g.id] = { refs: [{ assetVersionId: img.id, label: "图片1", kind: "image", role: g.strategy === "grid" ? "本段九宫格" : "场面参考", grid: !!img.grid }], txt: `【开场】${g.id}。\n00:00.000-${end} 图片1 中：${acts}。`, sound: { bgm: false, ambience: [], dialogue: [] } };
+    }
+    const r = await cmd("save_manual", { artifact_id: art.id, base_version_id: current?.id ?? null, content: { segments: segs } });
+    ctx.setFocus(r.versionId); ctx.reload();
+  });
   const segInfo = lay.segments.find((s: any) => s.id === seg);
   const errors = (current?.gate.formatErrors ?? []).filter((e: string) => e.startsWith(seg + "："));
   const save = (content: any) => act.run(async () => { const r = await cmd("save_manual", { artifact_id: art.id, base_version_id: current?.id ?? null, content }); ctx.setFocus(r.versionId); ctx.reload(); });
@@ -622,7 +705,16 @@ function PromptsView({ ctx }: { ctx: Ctx }) {
             <div key={r.assetVersionId} className="card line" style={{ width: 150, padding: 8 }}>
               <img src={blob(a?.sha256)} style={{ width: "100%", borderRadius: 6 }} />
               <div className="spread"><b>{r.label}</b><span className="row">{i > 0 && <button className="btn ghost" onClick={() => move(i, -1)}>←</button>}{i < entry.refs.length - 1 && <button className="btn ghost" onClick={() => move(i, 1)}>→</button>}</span></div>
-              <div className="muted tiny">{r.role || "用途未写"}{r.grid ? " · 九宫格" : ""}</div></div>); })}
+              <div className="muted tiny">{r.role || "用途未写"}{r.grid ? " · 九宫格" : ""}</div>
+              <select style={{ width: "100%", marginTop: 4, padding: "2px 4px" }} value="" onChange={(e) => { const v = ctx.assets.find((x) => x.id === e.target.value); if (!v) return;
+                const refs = entry.refs.map((x: any, j: number) => j === i ? { ...x, assetVersionId: v.id, grid: !!v.grid } : x);
+                save({ ...current.content, segments: { ...current.content.segments, [seg]: { ...entry, refs } } }); }}>
+                <option value="">{segInfo?.strategy === "grid" ? "替换本段九宫格…" : "替换此参考…"}</option>
+                {ctx.assets.filter((x) => x.kind === "image" && x.id !== r.assetVersionId).map((x) => <option key={x.id} value={x.id}>{x.name} v{x.version_no}{x.marks.includes("required") ? "（必用）" : ""}</option>)}</select></div>); })}
+          {segInfo?.strategy !== "grid" && <select style={{ alignSelf: "center", width: 130 }} value="" onChange={(e) => { const v = ctx.assets.find((x) => x.id === e.target.value); if (!v) return;
+            const n = entry.refs.filter((x: any) => x.kind === "image").length + 1;
+            save({ ...current.content, segments: { ...current.content.segments, [seg]: { ...entry, refs: [...entry.refs, { assetVersionId: v.id, label: `图片${n}`, kind: "image", role: v.name.replace(/\.png$/, ""), grid: !!v.grid }] } } }); }}>
+            <option value="">＋ 添加参考…</option>{ctx.assets.filter((x) => x.kind === "image" && !entry.refs.some((r: any) => r.assetVersionId === x.id)).map((x) => <option key={x.id} value={x.id}>{x.name} v{x.version_no}</option>)}</select>}
           <div className="muted small" style={{ alignSelf: "center" }}>{segInfo?.strategy === "grid" ? "grid：交付输入只取本段一张九宫格（替换本段九宫格）" : "flex：可增删、替换、重排不同参考"}</div>
         </div>
         {preview && <div className="card amber" style={{ marginBottom: 10 }}><b>重排预览</b> <span className="small">{Object.entries(preview.preview.mapping).map(([a, b]) => `${a}→${b}`).join("，")}</span>
@@ -631,6 +723,9 @@ function PromptsView({ ctx }: { ctx: Ctx }) {
           <div className="row" style={{ marginTop: 6 }}><button className="btn primary" onClick={() => act.run(async () => { const r = await cmd("reorder_refs", { version_id: current.id, segment_id: seg, new_order: preview.order, confirm: true }); ctx.setFocus(r.versionId); setPreview(null); ctx.reload(); })}>确认重排</button><button className="btn" onClick={() => setPreview(null)}>取消</button></div></div>}
         <textarea style={{ minHeight: 260, fontSize: 13 }} value={txt} onChange={(e) => setTxt(e.target.value)} />
         {errors.length > 0 && <div className="error">{errors.join("；")}</div>}
+        <div className="grid2" style={{ marginTop: 8 }}>
+          <input placeholder="环境声（逗号分隔）" value={amb} onChange={(e) => setAmb(e.target.value)} />
+          <input placeholder="对白（多条用；分隔，英语）" value={dia} onChange={(e) => setDia(e.target.value)} /></div>
         <div className="spread" style={{ marginTop: 10 }}>
           <div className="row small">声音：<Tag tone={entry.sound?.bgm ? "green" : ""}>{entry.sound?.bgm ? "有背景音乐" : "无背景音乐"}</Tag>
             {(entry.sound?.ambience ?? []).map((x: string) => <Tag key={x}>{x}</Tag>)}{(entry.sound?.dialogue ?? []).map((x: string) => <Tag key={x} tone="blue">{x}</Tag>)}
@@ -638,12 +733,13 @@ function PromptsView({ ctx }: { ctx: Ctx }) {
           <div className="row">
             <button className="btn" onClick={() => act.run(async () => { const r = await cmd("set_sound", { version_id: current.id, segment_id: seg, change: { bgm: !entry.sound?.bgm } }); ctx.setFocus(r.versionId); ctx.reload(); })}>{entry.sound?.bgm ? "去掉背景音乐" : "加背景音乐"}</button>
             <button className="btn" onClick={() => act.run(async () => { const r = await cmd("set_sound", { version_id: current.id, segment_id: seg, change: { silent: true } }); if (r.needsConfirm) setSound(r); else { ctx.setFocus(r.versionId); ctx.reload(); } })}>全静音</button>
-            <button className="btn primary" onClick={() => save({ ...current.content, segments: { ...current.content.segments, [seg]: { ...entry, txt } } })}>保存本段</button>
+            <button className="btn primary" onClick={() => save({ ...current.content, segments: { ...current.content.segments, [seg]: { ...entry, txt,
+              sound: { ...(entry.sound ?? {}), ambience: amb.split(/[,，、]/).map((x) => x.trim()).filter(Boolean), dialogue: dia.split(/[；;\n]/).map((x) => x.trim()).filter(Boolean) } } } })}>保存本段</button>
           </div>
         </div>
         {sound && <div className="card amber" style={{ marginTop: 10 }}><b>全静音会与以下内容冲突</b>{sound.conflicts.map((c: any) => <div key={c.item} className="small">{c.item}：{Array.isArray(c.detail) ? c.detail.join("、") : c.detail}</div>)}
           <div className="row" style={{ marginTop: 6 }}><button className="btn danger" onClick={() => act.run(async () => { const r = await cmd("set_sound", { version_id: current.id, segment_id: seg, change: { silent: true }, confirm: true }); ctx.setFocus(r.versionId); setSound(null); ctx.reload(); })}>仍然全静音</button><button className="btn" onClick={() => setSound(null)}>保留</button></div></div>}
-      </> : <p className="muted" style={{ marginTop: 14 }}>该段还没有提示词。让助手「为 {seg} 写提示词」。</p>}
+      </> : <div style={{ marginTop: 14 }}><p className="muted">该段还没有提示词。让助手「为 {seg} 写提示词」，或按方案起草。</p><button className="btn primary" onClick={programDraft}>从方案起草提示词</button></div>}
       <ErrorLine error={act.error} />
       {current && <AdoptBar ctx={ctx} art={art} version={current} next="publish" hint="冻结实际送审 TXT 与引用文件后进入两遍独审" />}
     </div>
@@ -653,7 +749,7 @@ function PromptsView({ ctx }: { ctx: Ctx }) {
 // ---------------------------------------------------------------- 08 两遍独审 (J17, J21)
 function ReviewView({ ctx }: { ctx: Ctx }) {
   const { art, current } = useVersion(ctx, "prompts");
-  const st = useQuery<any>(current ? "prompt_review_status" : null, { version_id: current?.id });
+  const st = useQuery<any>(current ? "prompt_review_status" : null, { version_id: current?.id }, [ctx.view]);
   const [reasons, setReasons] = useState<Record<string, string>>({});
   const act = useAction();
   if (!art || !current) return <div className="empty">提示词定稿后才能两遍独审。</div>;
@@ -661,13 +757,15 @@ function ReviewView({ ctx }: { ctx: Ctx }) {
   const cnt = (f: (x: any) => boolean) => rows.filter(([, x]) => f(x)).length;
   const label = (x: any) => x.ok ? (x.waived ? "用户放行" : "通过") : [x.coldRead.state, x.comparison.state].includes("blocked") || [x.coldRead.decision, x.comparison.decision].includes("return") && !x.waived ? "退回" : [x.coldRead.state, x.comparison.state].includes("needed") ? "待审" : "待判断";
   const submit = () => act.run(async () => {
-    for (const [seg, x] of rows as any) {
+    const fresh = Object.entries(await q("prompt_review_status", { version_id: current.id }));
+    for (const [seg, x] of fresh as any) {
       if (x.coldRead.state === "needed") await cmd("start_prompt_review", { version_id: current.id, segment: seg, pass_name: "cold_read" });
     }
     st.reload(); ctx.reload();
   });
   const second = () => act.run(async () => {
-    for (const [seg, x] of rows as any) if (x.coldRead.state !== "needed" && x.comparison.state === "needed") await cmd("start_prompt_review", { version_id: current.id, segment: seg, pass_name: "comparison" });
+    const fresh = Object.entries(await q("prompt_review_status", { version_id: current.id }));
+    for (const [seg, x] of fresh as any) if (x.coldRead.state !== "needed" && x.comparison.state === "needed") await cmd("start_prompt_review", { version_id: current.id, segment: seg, pass_name: "comparison" });
     st.reload(); ctx.reload();
   });
   return (
@@ -826,6 +924,7 @@ function PackageView({ ctx }: { ctx: Ctx }) {
         })}>验包并导出 ZIP</button>
         {out && <div className="card" style={{ marginTop: 12, background: "#13261f" }}><b className="ok">已导出</b> <span className="mono small">{out.path}</span>
           <div className="small" style={{ marginTop: 6 }}>project.json schemaVersion {out.project.schemaVersion} · {out.project.scope} · {out.project.segments.length} 段 · {out.project.assets.length} 项素材</div>
+          <div className="small">角色素材：{out.project.assets.some((a: any) => a.fixedRole) ? "含固定角色 fixedRole" : "均为普通资产（未伪装成 fixedRole）"}</div>
           {out.project.segments.map((s: any) => <div key={s.id} className="muted tiny">{s.id} · {Object.entries(s.params).map(([k, v]) => `${k}=${v}`).join(" ")}</div>)}</div>}
       </>}
       <ErrorLine error={act.error} />
@@ -833,7 +932,11 @@ function PackageView({ ctx }: { ctx: Ctx }) {
   );
 }
 
-function charDiff(a: string, b: string): { op: string; text: string }[] {
+function charDiff(a0: string, b0: string): { op: string; text: string }[] {
+  // long texts: diff by sentence to keep it fast; short texts: by character
+  const units = a0.length * b0.length > 2_000_000;
+  const split = (x: string) => units ? x.split(/(?<=[。！？\n])/) : [...x];
+  const a = split(a0), b = split(b0);
   const n = a.length, m = b.length;
   const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
   for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
@@ -844,4 +947,50 @@ function charDiff(a: string, b: string): { op: string; text: string }[] {
   while (i < n) push("del", a[i++]);
   while (j < m) push("add", b[j++]);
   return out;
+}
+
+function ShotEditor({ ctx, art, version, shotId, onSaved }: any) {
+  const bms = useQuery<any[]>("episode_bookmarks", { episode_id: ctx.eid });
+  const shots = version.content.shots;
+  const orig = shots.find((x: any) => x.id === shotId);
+  const [sh, setSh] = useState<any>(orig);
+  const act = useAction();
+  useEffect(() => setSh(orig), [shotId, version.id]);
+  if (!sh) return null;
+  const save = (content: any, note: string) => act.run(async () => { const r = await cmd("save_manual", { artifact_id: art.id, base_version_id: version.id, content, note }); onSaved(r.versionId); ctx.reload(); });
+  const ref = sh.refs?.[0];
+  return (
+    <div className="card cyan" style={{ marginTop: 14 }}>
+      <div className="spread"><b>编辑镜头 {sh.id}</b><span className="muted small">保存为新草稿；采用前可看影响，取消即不采用</span></div>
+      <div className="grid3" style={{ marginTop: 8 }}>
+        <label className="col small">镜长（秒）<input type="number" step="0.5" value={sh.duration_ms / 1000} onChange={(e) => setSh({ ...sh, duration_ms: Math.round(parseFloat(e.target.value) * 1000) })} /></label>
+        <label className="col small">机位 / 景别<input value={sh.camera ?? ""} onChange={(e) => setSh({ ...sh, camera: e.target.value })} /></label>
+        <label className="col small">生成段<select value={sh.segment} onChange={(e) => setSh({ ...sh, segment: e.target.value })}>{version.content.segments.map((g: any) => <option key={g.id}>{g.id}</option>)}
+          <option value="__new">＋ 新建生成段</option></select></label>
+      </div>
+      <label className="col small" style={{ marginTop: 8 }}>动作<textarea value={sh.action} onChange={(e) => setSh({ ...sh, action: e.target.value })} /></label>
+      <div className="row" style={{ marginTop: 8 }}>
+        <span className="small muted">参考</span>
+        <select value={ref?.bookmarkId ?? ""} onChange={(e) => setSh({ ...sh, refs: e.target.value ? [{ bookmarkId: e.target.value, mode: ref?.mode ?? "B", conditions: ref?.conditions ?? "" }] : [] })}>
+          <option value="">原创（关联剧本出处）</option>{(bms.data ?? []).map((b) => <option key={b.id} value={b.id}>{b.shot_code} · v{b.pack_version} · {b.reason}</option>)}</select>
+        {ref && <select value={ref.mode} onChange={(e) => setSh({ ...sh, refs: [{ ...ref, mode: e.target.value }] })}>{[["A", "A 保留"], ["B", "B 改造"], ["C", "C 仅功能"], ["D", "D 舍弃"]].map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>}
+        {!ref && <input placeholder="剧本出处场次" value={sh.origin?.scene ?? ""} onChange={(e) => setSh({ ...sh, origin: { ...(sh.origin ?? {}), scene: e.target.value } })} style={{ width: 120 }} />}
+      </div>
+      <div className="row" style={{ marginTop: 10 }}>
+        <button className="btn primary" onClick={() => {
+          let segs = version.content.segments, next = sh;
+          if (sh.segment === "__new") {
+            const n = Math.max(...segs.map((g: any) => g.order)) + 1;
+            const id = `G${String(n).padStart(2, "0")}`;
+            segs = [...segs, { id, order: n, strategy: "flex" }]; next = { ...sh, segment: id };
+          }
+          save({ ...version.content, segments: segs, shots: shots.map((x: any) => x.id === sh.id ? next : x) }, `改 ${sh.id}`);
+        }}>保存为新草稿</button>
+        <button className="btn" onClick={() => { const n = Math.max(...shots.map((x: any) => x.order)) + 1; const id = `K${String(n).padStart(2, "0")}`;
+          save({ ...version.content, shots: [...shots, { ...sh, id, order: n, action: "新镜头", refs: [] }] }, `新增 ${id}`); }}>在本段新增镜头</button>
+        <button className="btn danger" onClick={() => save({ ...version.content, shots: shots.filter((x: any) => x.id !== sh.id) }, `删除 ${sh.id}`)}>删除镜头</button>
+      </div>
+      <ErrorLine error={act.error} />
+    </div>
+  );
 }

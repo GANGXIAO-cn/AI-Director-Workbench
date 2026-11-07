@@ -41,7 +41,8 @@ class Worker:
 def default_executors():
     if os.environ.get("ADW_FAKE") == "1":   # UI walkthrough without spending executor quota
         from .executors import FakeExecutor
-        return {"codex": FakeExecutor("codex"), "claude": FakeExecutor("claude")}
+        return {"codex": FakeExecutor("codex"), "claude": FakeExecutor("claude"),
+                "antigravity": FakeExecutor("antigravity", isolation="unverified", reads_images=False)}
     return {"codex": CodexExecutor(os.environ.get("ADW_CODEX_PATH")),
             "claude": ClaudeExecutor(os.environ.get("ADW_CLAUDE_PATH")),
             "antigravity": AntigravityExecutor(os.environ.get("ADW_AGY_PATH"))}
@@ -50,13 +51,14 @@ def default_executors():
 def default_image_providers():
     if os.environ.get("ADW_FAKE") == "1":
         from .images import FakeImageProvider
-        return {"fake-image": FakeImageProvider("fake-image")}
+        return {"fake-image": FakeImageProvider("fake-image"),
+                "fake-image-unpriced": FakeImageProvider("fake-image-unpriced", price_cents=None)}
     return {"openai-image-mcp": OpenAIImageMCPProvider()}
 
 
 COMMANDS = {
     "create_project", "create_episode", "record_leftovers", "start_episode", "create_task", "post_message", "retry_run",
-    "save_manual", "submit_review", "waive", "adopt", "answer_clarification", "abandon_task", "stop_run", "combine", "split_segment",
+    "save_manual", "submit_review", "waive", "adopt", "answer_clarification", "abandon_task", "stop_run", "open_stage", "combine", "split_segment",
     "resolve_impact", "create_pack", "edit_cuts", "add_beat", "bookmark", "save_pack", "adapt_from_pack",
     "add_space_item", "confirm_space_item", "set_cast", "reorder_refs", "set_sound", "submit_reuse", "review_library",
     "copy_to_episode", "create_batch", "authorize_batch", "cancel_batch", "reconcile_request", "resubmit_request",
@@ -67,11 +69,11 @@ COMMANDS = {
 }
 QUERIES = {
     "list_projects", "project_view", "episode_view", "kickoff_preview", "read_import", "compare", "continue_check",
-    "plan_preview", "adoption_preview", "impacts", "ref_frames", "pack_view", "trace_shot", "blocked_segments", "cast_matrix", "episode_assets",
+    "plan_preview", "adoption_preview", "impacts", "ref_frames", "episode_bookmarks", "pack_view", "trace_shot", "blocked_segments", "cast_matrix", "episode_assets",
     "asset_version", "library", "image_providers", "batch_view", "episode_batches", "compare_cells", "image_references",
     "prompt_review_status", "publish_settings", "compose_publish", "delivery_problems", "delivery_view", "verify_delivery",
     "closure_view", "similar", "topics", "group_view", "model_catalog", "validate_selection", "regress_pack",
-    "storage_status", "project_todos", "project_overview", "adoption_preview", "task_records", "run_manifest", "probe",
+    "storage_status", "project_todos", "project_overview", "adoption_preview", "expert_view", "task_records", "run_manifest", "probe",
 }
 ASYNC = {"execute_batch", "expert_run"}
 
@@ -226,8 +228,11 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
 
     def call(name, args):
         fn = getattr(wb, name)
-        if "command_id" in inspect.signature(fn).parameters and not args.get("command_id"):
+        params = inspect.signature(fn).parameters
+        if "command_id" in params and not args.get("command_id"):
             args = dict(args, command_id=secrets.token_hex(12))
+        if "command_id" not in params:
+            args = {k: v for k, v in args.items() if k != "command_id"}   # the UI always sends one
         result = fn(**args)
         if isinstance(result, dict):
             for key in ("runId",):
@@ -287,6 +292,9 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
 
         @app.get("/{path:path}")
         def spa(path: str):
+            f = (dist / path).resolve()
+            if path and dist.resolve() in f.parents and f.is_file():
+                return FileResponse(f)
             return FileResponse(dist / "index.html")
 
     return app

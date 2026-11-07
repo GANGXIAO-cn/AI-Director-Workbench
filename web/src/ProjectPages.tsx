@@ -6,7 +6,7 @@ import { ErrorLine, PROVIDER_LABEL, Pills, Tag, fmtMs, go, useAction, usePoll, u
 const CATS: Record<string, string> = { character: "角色", relationship: "关系", space: "固定空间", rule: "世界规则", signature: "招牌行为", prop: "道具" };
 
 export function ProjectPage({ id, sub, arg }: { id: string; sub: string; arg?: string }) {
-  const p = useQuery<any>("project_view", { project_id: id });
+  const p = useQuery<any>("project_view", { project_id: id }, [sub, arg]);   // re-read on every page switch
   const head = <div className="spread" style={{ marginBottom: 18 }}><div className="row"><a className="muted" href={`#/p/${id}`}>← {p.data?.name ?? "项目"}</a></div></div>;
   const body = (() => {
     switch (sub) {
@@ -32,6 +32,7 @@ function Settings({ id, p, reload }: any) {
   const [cat, setCat] = useState("all");
   const [edit, setEdit] = useState<any>(null);
   const [impact, setImpact] = useState<any>(null);
+  const [chosen, setChosen] = useState<Record<string, string>>({});
   const act = useAction();
   if (!p) return null;
   const list = p.settings.filter((s: any) => cat === "all" || s.category === cat);
@@ -46,7 +47,7 @@ function Settings({ id, p, reload }: any) {
           <div className="spread"><div className="row"><Tag tone={s.strength === "required" ? "red" : "blue"}>{s.strength === "required" ? "必须守住" : "可变着用"}</Tag><Tag>{CATS[s.category] ?? s.category}</Tag><code className="mono">{s.key}</code></div>
             <button className="btn" onClick={() => setEdit({ ...s, reason: "" })}>提议修改</button></div>
           <div style={{ margin: "8px 0" }}>{s.content}</div>
-          <div className="muted tiny">出处：{s.source_ref}</div>
+          <div className="muted tiny">出处：{s.source_ref}{s.user_reason ? ` · 写入理由：${s.user_reason}` : ""}</div>
         </div>))}
       {edit && (
         <div className="card cyan" style={{ marginTop: 12 }}>
@@ -63,8 +64,9 @@ function Settings({ id, p, reload }: any) {
           {impact.affected.length === 0 && <div className="small">没有在制集引用此设定。</div>}
           {impact.affected.map((a: any) => (
             <div key={a.episodeId} className="spread small" style={{ margin: "6px 0" }}><span>{a.code} · {a.scope}</span>
-              <div className="row"><button className="btn" onClick={() => act.run(async () => { await cmd("choose_episode_settings", { episode_id: a.episodeId, follow_new: true }); })}>按新设定复核</button>
-                <button className="btn" onClick={() => act.run(async () => { await cmd("choose_episode_settings", { episode_id: a.episodeId, follow_new: false }); })}>按开工时设定做完</button></div></div>))}
+              {chosen[a.episodeId] ? <span className="ok">已选择：{chosen[a.episodeId]}</span> :
+              <div className="row"><button className="btn" onClick={() => act.run(async () => { await cmd("choose_episode_settings", { episode_id: a.episodeId, follow_new: true }); setChosen({ ...chosen, [a.episodeId]: "按新设定复核（故事独审列为待复核）" }); })}>按新设定复核</button>
+                <button className="btn" onClick={() => act.run(async () => { await cmd("choose_episode_settings", { episode_id: a.episodeId, follow_new: false }); setChosen({ ...chosen, [a.episodeId]: "按开工时设定做完" }); })}>按开工时设定做完</button></div>}</div>))}
         </div>)}
       <ErrorLine error={act.error} />
     </div>
@@ -83,6 +85,7 @@ function Preset({ id, p, reload }: any) {
       <div className="grid2">{Object.entries(vals).map(([k, v]) => (
         <label key={k} className="col small" style={{ gap: 4 }}><span className="muted">{k}</span><input value={String(v)} onChange={(e) => setVals({ ...vals, [k]: e.target.value })} /></label>))}</div>
       <button className="btn primary" style={{ marginTop: 14 }} onClick={() => act.run(async () => { await cmd("update_preset", { project_id: id, values: vals }); reload(); })}>保存预设（不影响已开工的集）</button>
+      <PublishSettings id={id} />
       <ErrorLine error={act.error} />
     </div>
   );
@@ -151,6 +154,9 @@ function Knowledge({ id }: { id: string }) {
   const [hits, setHits] = useState<any[]>([]);
   const [imported, setImported] = useState<any[]>([]);
   const [kind, setKind] = useState("mechanism");
+  const [task, setTask] = useState("");
+  const [cited, setCited] = useState<string[]>([]);
+  const tasks = useQuery<any[]>("task_records", { project_id: id });
   const act = useAction();
   return (
     <div>
@@ -162,7 +168,11 @@ function Knowledge({ id }: { id: string }) {
       <div className="row"><input style={{ flex: 1 }} placeholder="输入前提或机制，例：三次失败后警报赶跑对手" value={text} onChange={(e) => setText(e.target.value)} />
         <button className="btn primary" onClick={() => act.run(async () => setHits(await q("similar", { project_id: id, text })))}>检索</button></div>
       {hits.map((h) => <div key={h.id} className="card line" style={{ marginTop: 8 }}><div className="spread"><b>{h.episode ? `${h.episode} · ` : ""}{h.title}</b><Tag>{h.kind === "ledger" ? "台账" : "知识库"} · 相似 {h.score}</Tag></div>
-        <div className="small" style={{ margin: "6px 0" }}>{h.body.slice(0, 120)}</div><div className="muted tiny">出处：{h.source} · 差异词：{h.difference.join(" ")}</div></div>)}
+        <div className="small" style={{ margin: "6px 0" }}>{h.body.slice(0, 120)}</div><div className="muted tiny">出处：{h.source} · 差异词：{h.difference.join(" ")}</div>
+        {h.kind === "knowledge" && <div className="row" style={{ marginTop: 6 }}><select value={task} onChange={(e) => setTask(e.target.value)}><option value="">加入哪个任务的引用</option>
+          {(tasks.data ?? []).filter((t) => !["closed", "abandoned"].includes(t.state)).map((t) => <option key={t.id} value={t.id}>{t.display_code} · {t.goal.slice(0, 16)}</option>)}</select>
+          <button className="btn" disabled={!task} onClick={() => act.run(async () => { await cmd("cite", { task_id: task, knowledge_id: h.id, reason: `引用原例：${h.title}` }); setCited([...cited, h.id]); })}>加入引用</button>
+          {cited.includes(h.id) && <span className="ok small">已加入，下一次运行的输入清单会带上</span>}</div>}</div>)}
       <ErrorLine error={act.error} />
     </div>
   );
@@ -234,13 +244,15 @@ function Closure({ id, cid }: { id: string; cid: string }) {
   const [dec, setDec] = useState<Record<string, any>>({});
   const [result, setResult] = useState<any>(null);
   const act = useAction();
-  useEffect(() => { if (c.data) setDec(Object.fromEntries(c.data.items.map((i: any) => [i.id, { decision: i.decision, strength: i.strength ?? i.suggested_strength, reason: i.reason ?? "", content: i.content }]))); }, [c.data?.id]);
+  useEffect(() => { if (c.data) setDec(Object.fromEntries(c.data.items.map((i: any) => [i.id, { decision: i.decision, strength: i.strength ?? i.suggested_strength, reason: i.reason ?? "", content: i.content, assetVersionId: i.asset_version_id }]))); }, [c.data?.id]);
   usePoll(c.data?.state === "proposing", c.reload);
+  const assets = useQuery<any[]>(c.data ? "episode_assets" : null, { episode_id: c.data?.episode_id });
   if (!c.data) return null;
   const decisions = () => Object.entries(dec).map(([itemId, d]: any) => ({ itemId, ...d }));
   const counts = { write: decisions().filter((d) => d.decision === "write_setting").length, ledger: decisions().filter((d) => d.decision === "ledger_only").length, drop: decisions().filter((d) => d.decision === "drop").length };
   if (result || c.data.state === "confirmed") {
-    const r = result ?? JSON.parse(c.data.result ?? "{}");
+    const raw = result ?? c.data.result ?? {};
+    const r = typeof raw === "string" ? JSON.parse(raw) : raw;
     return <div><h1>本集收尾已确认</h1><div className="card" style={{ marginTop: 14 }}>写进设定 {r.settings?.length ?? 0} 条 · 只留台账 {r.ledger?.length ?? 0} 条 · 复用申请 {r.reuse?.length ?? 0} 项（待审核）</div>
       <div className="row" style={{ marginTop: 12 }}><a className="btn primary" href={`#/p/${id}/settings`}>查看设定（刚写入）</a><a className="btn" href={`#/p/${id}`}>返回项目</a></div></div>;
   }
@@ -253,6 +265,9 @@ function Closure({ id, cid }: { id: string; cid: string }) {
           <div className="spread"><div className="row"><span className="muted">{it.ordinal}</span><Tag>{CATS[it.category] ?? it.category}</Tag><input style={{ width: 420 }} value={d.content ?? ""} onChange={(e) => setDec({ ...dec, [it.id]: { ...d, content: e.target.value } })} /></div>
             <Pills value={d.decision ?? ""} onChange={(v: string) => setDec({ ...dec, [it.id]: { ...d, decision: v } })} options={[["write_setting", "写进设定"], ["ledger_only", "只留台账"], ["drop", "不处理"]]} /></div>
           <div className="muted tiny" style={{ margin: "6px 0" }}>出处：{it.source_ref.anchor} · {it.source_ref.evidence} · 提议依据：{it.rationale}</div>
+          <div className="row small" style={{ marginBottom: 6 }}><span className="muted">同时申请复用资产</span>
+            <select value={d.assetVersionId ?? ""} onChange={(e) => setDec({ ...dec, [it.id]: { ...d, assetVersionId: e.target.value || null } })}>
+              <option value="">不申请</option>{(assets.data ?? []).filter((a: any) => !a.grid).map((a: any) => <option key={a.id} value={a.id}>{a.name} v{a.version_no}</option>)}</select></div>
           {d.decision === "write_setting" && <div className="row"><Pills value={d.strength} onChange={(v: string) => setDec({ ...dec, [it.id]: { ...d, strength: v } })} options={[["required", "必须守住"], ["variable", "可变着用"]]} />
             <input style={{ flex: 1 }} placeholder="本次写入理由（必填）" value={d.reason} onChange={(e) => setDec({ ...dec, [it.id]: { ...d, reason: e.target.value } })} />{missing && <span className="error small">缺理由</span>}</div>}
         </div>); })}
@@ -274,6 +289,7 @@ function RefFilm({ id, packId, p }: any) {
   const [beat, setBeat] = useState({ code: "B01", event: "", info: "" });
   const [ep, setEp] = useState("");
   const [req, setReq] = useState("");
+  const [notice, setNotice] = useState("");
   const act = useAction();
   const frames = useQuery<any>("ref_frames", { pack_id: packId }, [pack.data?.shots?.length]);
   const [cutFrames, setCutFrames] = useState<any>(null);
@@ -317,7 +333,12 @@ function RefFilm({ id, packId, p }: any) {
               <button className="btn primary" onClick={() => act.run(async () => { await cmd("edit_cuts", { pack_id: packId, op: "confirm", code: cur.code, fields: { camera: "近景", motion: "固定", narrative: "揭示" } }); pack.reload(); })}>保留并确认</button></div></div>)}
         <div className="row" style={{ marginTop: 14 }}>
           <button className="btn primary" disabled={unconfirmed > 0 || pk.state === "saved"} onClick={() => act.run(async () => { await cmd("save_pack", { pack_id: packId }); pack.reload(); })}>保存参考包并退出</button>
-          {unconfirmed > 0 && <span className="muted small">还有 {unconfirmed} 镜未确认</span>}{pk.state === "saved" && <Tag tone="green">已保存</Tag>}</div>
+          {unconfirmed > 0 && <span className="muted small">还有 {unconfirmed} 镜未确认</span>}{pk.state === "saved" && <Tag tone="green">已保存</Tag>}
+          <label className="btn">重定位原片（同名换源）<input type="file" style={{ display: "none" }} onChange={(e) => e.target.files?.[0] && act.run(async () => {
+            const src = await upload("reference", e.target.files![0], { projectId: id });
+            const np = await cmd("create_pack", { source_id: src.sourceId, episode_id: pk.episode_id, lineage: pk.lineage, request: pk.request });
+            setNotice(`${src.note ?? "已登记新来源"}：另建参考包 v${np.version}，旧版本与引用保留`); go(`#/p/${id}/ref/${np.packId}`); })} /></label></div>
+          {notice && <div className="card amber small" style={{ marginTop: 8 }}>{notice}</div>}
       </>}
       {tab === "beats" && <>
         {pk.beats.map((b: any) => <div key={b.id} className="card line" style={{ margin: "8px 0" }}><b>{b.code}</b> · {b.shot_codes.join("、")} · {b.event}<div className="muted small">观众新知道：{b.info_gain}</div></div>)}
@@ -349,6 +370,7 @@ function Expert({ id, p }: any) {
   const [cap, setCap] = useState(0);
   const [auth, setAuth] = useState<any>(null);
   const [res, setRes] = useState<any>(null);
+  const [reviewer, setReviewer] = useState("");
   const act = useAction();
   const OPTIONAL: [string, string][] = [["confirm_point", "方向选择 / 确认点"], ["model_conflict", "两个模型结论冲突"], ["settings_change", "新增或修改项目设定"]];
   return (
@@ -360,9 +382,13 @@ function Expert({ id, p }: any) {
       <div className="row">{OPTIONAL.map(([k, l]) => <button key={k} className={`pill ${stops.includes(k) ? "on" : ""}`} onClick={() => setStops(stops.includes(k) ? stops.filter((x) => x !== k) : [...stops, k])}>{l}</button>)}</div>
       <div className="label">不可关停点</div>
       <div className="row small">{["每一批付费图像", "自动修订用尽", "结构阻断", "请求结果未知", "违反必须守住的设定", "审核隔离未验证", "额度用尽"].map((x) => <Tag key={x} tone="amber">{x}</Tag>)}</div>
+      <div className="label">分工（审核执行器）</div>
+      <select value={reviewer} onChange={(e) => setReviewer(e.target.value)}><option value="">按本集开工设置</option>{["codex", "claude", "antigravity"].map((p) => <option key={p} value={p}>{PROVIDER_LABEL[p]}</option>)}</select>
       <div className="label">图像上限（张）</div><input type="number" value={cap} onChange={(e) => setCap(+e.target.value)} />
       <div className="row" style={{ marginTop: 14 }}>
-        <button className="btn primary" disabled={!eps.length} onClick={() => act.run(async () => { const a = await cmd("authorize_expert", { project_id: id, episodes: eps, stop_stage: "story", division: {}, image_cap: cap, stops }); setAuth(a); setRes(await cmd("expert_run", { auth_id: a.authId })); })}>授权并开始</button></div>
+        <button className="btn primary" disabled={!eps.length} onClick={() => act.run(async () => { const a = await cmd("authorize_expert", { project_id: id, episodes: eps, stop_stage: "story", division: reviewer ? { review: { provider: reviewer } } : {}, image_cap: cap, stops }); setAuth(a); setRes(null);
+          await cmd("expert_run", { auth_id: a.authId });
+          for (let i = 0; i < 120; i++) { const v = await q("expert_view", { auth_id: a.authId }); if (v.state !== "authorized") { setRes(v); break; } await new Promise((r) => setTimeout(r, 1000)); } })}>授权并开始</button></div>
       {auth && (
         <div className="card cyan" style={{ marginTop: 16 }}>
           <b>专家模式运行</b>
@@ -455,6 +481,29 @@ function Storage() {
       <div className="row"><input style={{ flex: 1 }} placeholder="恢复目录（绝对路径，须不存在）" value={target} onChange={(e) => setTarget(e.target.value)} />
         <button className="btn" disabled={!out?.backupId && !s.data?.lastBackup} onClick={() => act.run(async () => setOut({ ...out, restored: await cmd("restore", { backup_id: out?.backupId ?? s.data.lastBackup.id, target_dir: target }) }))}>验证并恢复</button></div>
       {out?.restored && <div className="ok small" style={{ marginTop: 8 }}>已恢复到 {out.restored.restoredTo}（{out.restored.files} 个文件校验通过）；恢复前快照 {out.restored.preRestoreBackup.slice(0, 8)}。结果未知的付费请求不会被重发。</div>}
+      <ErrorLine error={act.error} />
+    </div>
+  );
+}
+
+function PublishSettings({ id }: { id: string }) {
+  const cur = useQuery<any>("publish_settings", { project_id: id });
+  const [f, setF] = useState<any>(null);
+  const act = useAction();
+  useEffect(() => { if (cur.data !== undefined) setF(cur.data ?? { title_prefix: "", body_fixed_lines: [], fixed_tags: [], max_extra_tags: 2, forbidden_chars: ["<", ">"], title_max_chars: 100 }); }, [cur.data]);
+  if (!f) return null;
+  return (
+    <div style={{ marginTop: 28 }}>
+      <h2>发布设置（本项目专属）</h2>
+      <div className="muted small" style={{ marginBottom: 8 }}>发布包从这里读取标题前缀、固定正文行和话题标签；没有设置时发布包会报“本项目缺项”。</div>
+      <div className="grid2">
+        <label className="col small">标题前缀<input value={f.title_prefix} onChange={(e) => setF({ ...f, title_prefix: e.target.value })} /></label>
+        <label className="col small">固定话题标签（逗号分隔）<input value={f.fixed_tags.join(",")} onChange={(e) => setF({ ...f, fixed_tags: e.target.value.split(/[,，]/).map((x: string) => x.trim()).filter(Boolean) })} /></label>
+        <label className="col small">固定正文行（每行一条）<textarea value={f.body_fixed_lines.join("\n")} onChange={(e) => setF({ ...f, body_fixed_lines: e.target.value.split("\n").filter((x: string) => x.trim()) })} /></label>
+        <label className="col small">本集最多加几个标签<input type="number" value={f.max_extra_tags} onChange={(e) => setF({ ...f, max_extra_tags: +e.target.value })} /></label>
+      </div>
+      <button className="btn" style={{ marginTop: 8 }} onClick={() => act.run(async () => { await cmd("set_publish_settings", { project_id: id, settings: f }); cur.reload(); })}>保存发布设置</button>
+      {cur.data && <span className="ok small" style={{ marginLeft: 8 }}>已设置</span>}
       <ErrorLine error={act.error} />
     </div>
   );

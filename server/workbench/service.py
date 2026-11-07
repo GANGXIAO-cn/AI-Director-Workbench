@@ -78,7 +78,7 @@ class Core:
     def _settings(self, db, project_id, revision=None):
         if revision is None:
             revision = db.execute("SELECT settings_revision FROM project WHERE id=?", (project_id,)).fetchone()[0]
-        rows = db.execute("SELECT key,category,strength,content,source_ref FROM setting_entry WHERE project_id=? "
+        rows = db.execute("SELECT key,category,strength,content,source_ref,user_reason FROM setting_entry WHERE project_id=? "
                           "AND setting_revision<=? AND (retired_revision IS NULL OR retired_revision>?) "
                           "ORDER BY setting_revision, rowid", (project_id, revision, revision)).fetchall()
         return revision, [dict(r) for r in rows]
@@ -114,7 +114,7 @@ class Core:
                 db.execute("INSERT INTO episode(id,project_id,display_code,title,leftover_facts,created_at) "
                            "VALUES(?,?,?,?,?,?)", (eid, project_id, display_code, title,
                                                    dumps(list(leftover_facts)), self.clock()))
-                return dict(episodeId=eid)
+                return dict(episodeId=eid, displayCode=display_code)
             return self._command(db, command_id, "create_episode", payload, run)
 
     def record_leftovers(self, episode_id, facts, expected_revision):
@@ -253,8 +253,8 @@ class Core:
         return kickoff["idea_text"]
 
     # ------------------------------------------------------------------ tasks, threads, runs
-    def create_task(self, episode_id, stage, goal, auto_revise=False, executor=None, command_id=None):
-        payload = dict(episode_id=episode_id, stage=stage, goal=goal, auto=auto_revise, ex=executor)
+    def create_task(self, episode_id, stage, goal, auto_revise=False, executor=None, command_id=None, selection=None):
+        payload = dict(episode_id=episode_id, stage=stage, goal=goal, auto=auto_revise, ex=executor, sel=selection)
         with transaction(self.db_path) as db:
             def run():
                 ep = self._episode_in(db, episode_id)
@@ -280,9 +280,10 @@ class Core:
                             dumps(plan), self.clock()))
                 thread = new_id()
                 db.execute("INSERT INTO thread VALUES(?,?,?)", (thread, tid, f"{stage}:{aid}"))
-                self._message(db, thread, "user", goal, None, None)
-                base = self._latest_version(db, aid)
-                run_id = self._queue_run(db, tid, "revise" if base else "create", base, goal)
+                self._message(db, thread, "user", goal, selection, None)
+                base = db.execute("SELECT adopted_version_id FROM artifact WHERE id=?", (aid,)).fetchone()[0] \
+                    or self._latest_version(db, aid)
+                run_id = self._queue_run(db, tid, "revise" if base else "create", base, goal, selection)
                 return dict(taskId=tid, threadId=thread, runId=run_id, artifactId=aid)
             return self._command(db, command_id, "create_task", payload, run)
 
@@ -811,6 +812,16 @@ class Core:
                 view["sourceImport"] = dict(db.execute(
                     "SELECT id,original_name,sha256,purpose,parsed_text FROM import_record WHERE id=?",
                     (kick["source_import_id"],)).fetchone())
+            view["refPacks"] = []
+            for pk in db.execute("SELECT DISTINCT p.* FROM ref_pack p WHERE p.episode_id=? OR p.id IN (SELECT pack_id FROM task_pack tp "
+                                 "JOIN task t ON t.id=tp.task_id WHERE t.episode_id=?) OR p.id IN (SELECT pack_id FROM shot_bookmark "
+                                 "WHERE episode_id=?)", (episode_id, episode_id, episode_id)):
+                src = db.execute("SELECT name, sha256 FROM ref_source WHERE id=?", (pk["source_id"],)).fetchone()
+                view["refPacks"].append(dict(packId=pk["id"], version=pk["version"], source=src["name"], sha256=src["sha256"],
+                                             beats=[r[0] for r in db.execute("SELECT code FROM beat WHERE pack_id=?", (pk["id"],))],
+                                             bookmarks=[r[0] for r in db.execute(
+                                                 "SELECT s.code FROM shot_bookmark b JOIN ref_shot s ON s.id=b.ref_shot_id "
+                                                 "WHERE b.pack_id=? AND b.episode_id=?", (pk["id"], episode_id))]))
             for art in db.execute("SELECT * FROM artifact WHERE episode_id=? ORDER BY stage DESC", (episode_id,)):
                 art = dict(art)
                 art["versions"] = []

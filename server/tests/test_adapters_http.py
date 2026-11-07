@@ -61,6 +61,9 @@ def test_http_generic_commands_and_queries(tmp_path):
                       headers=h).json()["projectId"]
     assert client.post("/api/cmd/delete_everything", json={}, headers=h).status_code == 404     # not whitelisted
     eid = client.post("/api/cmd/create_episode", json={"project_id": pid, "display_code": "E01"}, headers=h).json()["episodeId"]
+    ok = client.post("/api/cmd/record_leftovers", json={"episode_id": eid, "facts": ["鹦鹉"], "expected_revision": 1,
+                                                        "command_id": "ui-always-sends-one"}, headers=h)
+    assert ok.status_code == 200      # regression: UI-added command_id used to crash commands that don't take one
     r = client.post("/api/cmd/start_episode", json={"episode_id": eid, "source_type": "idea", "idea_text": "柴犬值夜班",
                                                      "executor_plan": {"create": {"provider": "codex"}, "review": {"provider": "claude"}},
                                                      "relation": "continue", "predecessor_ids": []}, headers=h)

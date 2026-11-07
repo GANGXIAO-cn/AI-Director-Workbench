@@ -36,3 +36,4 @@ build/
 .idea/
 .vscode/
 *.tsbuildinfo
+web/public/e2e-film*.mp4

@@ -166,3 +166,6 @@ del.d { color: var(--red); text-decoration: line-through; } ins.d { color: var(-
 
 .composer .row { flex-wrap: nowrap; } .composer select { max-width: 130px; }
 .actionbar .error { position: absolute; bottom: 52px; left: 0; background: #1c1d21; padding: 6px 10px; border-radius: 8px; }
+.colgrip { position: absolute; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 7; }
+.colgrip.left { left: 0; } .colgrip.right { right: 0; } .colgrip:hover { background: #2b5fb855; }
+.center { position: relative; }

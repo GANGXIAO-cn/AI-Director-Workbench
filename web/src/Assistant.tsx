@@ -38,7 +38,7 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
     if (open) {
       await cmd("post_message", { task_id: task.id, text, selection: sel?.data ?? null, base_version_id: focusV?.id ?? art.adopted_version_id ?? undefined });
     } else {
-      await cmd("create_task", { episode_id: view.episode.id, stage: art.stage, goal: text, executor: { create: { provider } } });
+      await cmd("create_task", { episode_id: view.episode.id, stage: art.stage, goal: text, executor: provider !== view.kickoff?.executor_plan?.create?.provider ? { create: { provider } } : null, selection: sel?.data ?? null });
     }
     setText(""); setSel(null); reload();
   });
@@ -46,7 +46,7 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
   const live = runs.filter((r: any) => ["queued", "running"].includes(r.status));
   return (
     <aside className="assistant">
-      <div className="head">导演助手 <Avatars /><span className="muted tiny" style={{ marginLeft: "auto" }}>{task ? `任务：${task.goal.slice(0, 14)}` : "尚无任务"}</span></div>
+      <div className="head">导演助手 <Avatars /><span className="muted tiny" style={{ marginLeft: "auto", textAlign: "right" }}>{task ? `任务：${task.goal.slice(0, 14)}` : "尚无任务"}{task ? <><br />自动修订 {task.used_rounds}/{task.max_rounds} 轮</> : null}</span></div>
       <div className="msgs">
         {(task?.messages ?? []).map((m: any) => <Message key={m.id} m={m} task={task} reload={reload} art={art} />)}
         {live.map((r: any) => (

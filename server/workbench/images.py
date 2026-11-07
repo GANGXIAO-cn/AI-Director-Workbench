@@ -62,10 +62,14 @@ class FakeImageProvider:
         self.capabilities = dict(operations=["generate", "edit"], sizes=["64x64", "96x64", "1024x1024", "864x1536"],
                                  quality=["low", "medium", "high"])
         self.completed = {}
+        self.timed_out = set()
 
     def submit(self, req):
         self.sent += 1
-        step = self.script.pop(0) if self.script else "ok"
+        marker = "【测试：超时】" in req.get("prompt", "") and req["prompt"] not in self.timed_out
+        step = self.script.pop(0) if self.script else ("timeout" if marker else "ok")
+        if marker:
+            self.timed_out.add(req["prompt"])
         w, h = map(int, req["size"].split("x"))
         if step in ("ok", "duplicate"):
             data = png_bytes(w, h, (40 + self.sent * 20 % 200, 120, 200))
@@ -419,7 +423,8 @@ class ImagesMixin:
         if finding == "completed":
             if not data:
                 raise Rejected("登记已完成须提供实际图片")
-            item = json.loads(b["spec"])["items"][req["ordinal"] - 1]
+            ordinal = self._ordinal_of(req["replaces_id"]) if req["replaces_id"] else req["ordinal"]
+            item = json.loads(b["spec"])["items"][ordinal - 1]   # a resubmitted request keeps the original item
             self._land(b["id"], request_id, ImageOutcome("succeeded", data, req["provider_request_id"]), b, item)
         elif finding == "not_executed":
             with transaction(self.db_path) as db:

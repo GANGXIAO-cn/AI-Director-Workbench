@@ -45,6 +45,15 @@ export function SideNav({ active }: { active: string }) {
   );
 }
 
+let CONFIGS: any[] = [];
+fetch("/api/configs").then((r) => r.json()).then((c) => { CONFIGS = c; });
+
+async function ensureProject(pid: string, name: string) {
+  if (pid && !pid.startsWith("__new")) return pid;
+  const config = pid.startsWith("__new:") ? pid.slice(6) : "_template";
+  return (await cmd("create_project", { config_id: config, name: config === "_template" ? name : undefined })).projectId;
+}
+
 export default function Home({ tab }: { tab?: string }) {
   const [mode, setMode] = useState(TABS.some(([k]) => k === tab) ? tab! : "idea");
   const [text, setText] = useState("");
@@ -72,30 +81,31 @@ export default function Home({ tab }: { tab?: string }) {
   };
   const send = () => act.run(async () => {
     if (mode === "idea" || mode === "episode") {
-      let pid = projectId;
-      if (!pid || pid === "__new") {
-        pid = (await cmd("create_project", { config_id: "_template", name: text.slice(0, 12) || "新项目" })).projectId;
-      }
-      const ep = await cmd("create_episode", { project_id: pid, display_code: code || nextCode() });
+      const pid = await ensureProject(projectId, text.slice(0, 12) || "新项目");
+      const ep = await cmd("create_episode", { project_id: pid, display_code: code || (pid === projectId ? nextCode() : "E01") });
       sessionStorage.setItem("kickoff-prefill", JSON.stringify({ episodeId: ep.episodeId, idea: text }));
       go(`#/p/${pid}`);
     } else if (mode === "import") {
       if (!file) throw new Error("请先选择故事稿或剧本文件");
-      const pid = projectId;
-      const ep = await cmd("create_episode", { project_id: pid, display_code: code || nextCode() });
+      const pid = await ensureProject(projectId, file.name.replace(/\.[^.]+$/, "").slice(0, 12));
+      const fresh = pid !== projectId;
+      setProjectId(pid);
+      const ep = await cmd("create_episode", { project_id: pid, display_code: code || (fresh ? "E01" : nextCode()) });
       const fd = new FormData();
       fd.append("file", file); fd.append("purpose", purpose); fd.append("episodeId", ep.episodeId);
       const token = (await (await fetch("/api/session")).json()).token;
       const res = await fetch(`/api/projects/${pid}/imports`, { method: "POST", headers: { "x-adw-token": token }, body: fd });
       const r = await res.json();
       if (!res.ok) throw new Error(r.error);
-      setRecognized([{ name: file.name, purpose, episode: code || nextCode(), episodeId: ep.episodeId, ...r }]);
+      setRecognized([{ name: file.name, purpose, episode: ep.displayCode ?? (code || "E01"), episodeId: ep.episodeId, projectId: pid, ...r }]);
     } else if (mode === "reference") {
       if (!file) throw new Error("请选择本地参考片");
-      const src = await upload("reference", file, { projectId });
+      const pid = await ensureProject(projectId, text.slice(0, 12) || "参考片项目");
+      setProjectId(pid);
+      const src = await upload("reference", file, { projectId: pid });
       if (src.state !== "readable") throw new Error("原片不可读：" + JSON.stringify(src.probe));
       const pack = await cmd("create_pack", { source_id: src.sourceId, request: text });
-      go(`#/p/${projectId}/ref/${pack.packId}`);
+      go(`#/p/${pid}/ref/${pack.packId}`);
     } else if (mode === "delivery") {
       go(`#/p/${projectId}`);
     }
@@ -136,7 +146,7 @@ export default function Home({ tab }: { tab?: string }) {
               </div>
             )}
             <div className="row" style={{ padding: "10px 14px", borderTop: "1px solid var(--line)" }}>
-              <button className="btn ghost" onClick={() => setPop(pop === "project" ? "" : "project")}>☺ {list.find((p) => p.id === projectId)?.name ?? "新项目"} ▾</button>
+              <button className="btn ghost" onClick={() => setPop(pop === "project" ? "" : "project")}>☺ {list.find((p) => p.id === projectId)?.name ?? (projectId.startsWith("__new:") ? `新项目（${CONFIGS.find((c) => "__new:" + c.configId === projectId)?.name}）` : "新项目")} ▾</button>
               <button className="btn ghost" onClick={() => setPop(pop === "style" ? "" : "style")}>◐ 风格</button>
               <button className="btn ghost" onClick={() => setPop(pop === "topic" ? "" : "topic")}>✦ 选题</button>
               <span className="chip">▯ {project.data?.project?.spec_preset?.aspectRatio ?? "9:16"}</span>
@@ -154,7 +164,7 @@ export default function Home({ tab }: { tab?: string }) {
               {recognized.map((r) => (
                 <div key={r.importId} className="spread">
                   <span>{r.name} → {r.episode} · {r.purpose === "script_source" ? "剧本（故事来源）" : "故事稿（故事来源）"} · {r.parseStatus === "parsed" ? <span className="ok">已解析</span> : <span className="error">{r.diagnostic}</span>}</span>
-                  <button className="btn primary" onClick={() => { sessionStorage.setItem("kickoff-prefill", JSON.stringify({ episodeId: r.episodeId, importId: r.importId })); go(`#/p/${projectId}`); }}>去开工 {r.episode}</button>
+                  <button className="btn primary" onClick={() => { sessionStorage.setItem("kickoff-prefill", JSON.stringify({ episodeId: r.episodeId, importId: r.importId })); go(`#/p/${r.projectId}`); }}>去开工 {r.episode}</button>
                 </div>))}
             </div>
           )}
@@ -196,12 +206,14 @@ function ProjectCard({ p }: { p: any }) {
 }
 
 function Popover({ kind, close, projects, projectId, setProjectId, project, topics, pickTopic }: any) {
+  const configs = CONFIGS;
   const style = { left: 14, bottom: 60, width: 520 } as const;
   if (kind === "project") return (
     <div className="pop" style={style}>
       <h3>选择项目</h3>
       {projects.map((p: any) => <div key={p.id} className={`pill ${p.id === projectId ? "on" : ""}`} style={{ margin: 4, display: "inline-block" }} onClick={() => { setProjectId(p.id); close(); }}>{p.name}</div>)}
       <div className={`pill ${projectId === "__new" ? "on" : ""}`} style={{ margin: 4, display: "inline-block" }} onClick={() => { setProjectId("__new"); close(); }}>＋ 新项目（设定为空）</div>
+      {configs.filter((c: any) => c.configId !== "_template").map((c: any) => <div key={c.configId} className={`pill ${projectId === "__new:" + c.configId ? "on" : ""}`} style={{ margin: 4, display: "inline-block" }} onClick={() => { setProjectId("__new:" + c.configId); close(); }}>＋ 新项目（{c.name} 配置）</div>)}
     </div>);
   if (kind === "style") return (
     <div className="pop" style={style}>

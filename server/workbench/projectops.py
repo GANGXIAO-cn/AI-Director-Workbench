@@ -163,7 +163,7 @@ class ProjectOpsMixin:
                     db.execute("INSERT INTO setting_entry(id,project_id,setting_revision,key,category,strength,content,"
                                "source_ref,user_reason) VALUES(?,?,?,?,?,?,?,?,?)",
                                (new_id(), project["id"], rev, key, it["category"], it["strength"], it["content"],
-                                f"{ep['display_code']} 交付 {c['delivery_id'][:8]} · {it['source_ref']}", it["reason"]))
+                                f"{ep['display_code']} 交付 {c['delivery_id'][:8]} · " + (lambda r: f"{r.get('anchor', '')}：{r.get('evidence', '')}")(json.loads(it["source_ref"])), it["reason"]))
                     out["settings"].append(key)
                 if writes:
                     db.execute("UPDATE project SET settings_revision=?, revision=revision+1 WHERE id=?", (rev, project["id"]))
@@ -672,3 +672,11 @@ class ProjectOpsMixin:
 
     def _space_ok(self, episode_id):
         return not self.blocked_segments(episode_id)
+
+    def expert_view(self, auth_id):
+        with connect(self.db_path) as db:
+            a = loads(row(db, "SELECT * FROM expert_auth WHERE id=?", auth_id), "episodes", "division", "stops", "log", "stop_reason")
+        out = dict(state=a["state"], log=a["log"], stops=a["stops"])
+        if a["state"] == "stopped" and a["stop_reason"]:
+            out.update(a["stop_reason"])
+        return out
