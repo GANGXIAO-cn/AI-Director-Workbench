@@ -619,3 +619,56 @@ class ProjectOpsMixin:
                                                                         (r["id"],))]
                 out.append(t)
         return out
+
+    # ============================================================ overview for the project home (J16)
+    def project_overview(self, project_id):
+        from . import timeline
+        p = self.project_view(project_id)
+        out = []
+        with connect(self.db_path) as db:
+            for ep in p["episodes"]:
+                adopted = {r["stage"]: r["adopted_version_id"] for r in db.execute(
+                    "SELECT stage, adopted_version_id FROM artifact WHERE episode_id=?", (ep["id"],))}
+                drafts = {r["stage"]: r["n"] for r in db.execute(
+                    "SELECT a.stage, count(v.id) AS n FROM artifact a JOIN version v ON v.artifact_id=a.id WHERE a.episode_id=? "
+                    "GROUP BY a.stage", (ep["id"],))}
+                reviewed = db.execute("SELECT count(*) FROM review r JOIN version v ON v.id=r.version_id JOIN artifact a ON "
+                                      "a.id=v.artifact_id WHERE a.episode_id=? AND a.stage='story'", (ep["id"],)).fetchone()[0]
+                deliveries = [dict(r) for r in db.execute("SELECT id, scope, created_at FROM delivery WHERE episode_id=? "
+                                                          "ORDER BY created_at", (ep["id"],))]
+                closure = db.execute("SELECT id, state FROM closure WHERE episode_id=?", (ep["id"],)).fetchone()
+                plan = self._adopted_content(db, ep["id"], "plan")
+                lay = timeline.layout(plan) if plan else None
+                done = sum(1 for s in ("story", "script", "plan") if adopted.get(s))
+                if plan:
+                    done += 3 if self._space_ok(ep["id"]) else 2
+                if adopted.get("prompts"):
+                    done += 2
+                if adopted.get("publish"):
+                    done += 1
+                full = [d for d in deliveries if d["scope"] == "full"]
+                if full:
+                    done = 11
+                if full:
+                    label = "图文已交付" + (" · 待收尾" if closure and closure["state"] in ("open", "staged") else "")
+                    tone = "blue" if closure and closure["state"] in ("open", "staged") else "green"
+                elif adopted.get("story"):
+                    label, tone = ("制作中" if adopted.get("script") else "故事已成稿"), "green"
+                elif reviewed:
+                    label, tone = "故事稿待审", "amber"
+                elif drafts.get("story"):
+                    label, tone = "开发中", "blue"
+                elif ep.get("kickoff_id"):
+                    label, tone = "已开工", "blue"
+                else:
+                    label, tone = "待开工", ""
+                out.append(dict(ep, adopted=adopted, progress=done, label=label, tone=tone, deliveries=deliveries,
+                                closure=dict(closure) if closure else None,
+                                segments=len(lay["segments"]) if lay else 0, totalMs=lay["total_ms"] if lay else 0))
+        required = sum(1 for s in p["settings"] if s["strength"] == "required")
+        return dict(project=p, episodes=out, settings=dict(total=len(p["settings"]), required=required,
+                                                            variable=len(p["settings"]) - required),
+                    todos=self.project_todos(project_id))
+
+    def _space_ok(self, episode_id):
+        return not self.blocked_segments(episode_id)

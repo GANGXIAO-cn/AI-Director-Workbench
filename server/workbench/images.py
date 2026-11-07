@@ -113,9 +113,13 @@ class OpenAIImageMCPProvider:
         finally:
             proc.stdin.close()
             proc.terminate()
-        content = reply.get("result", {}).get("structuredContent") or {}
-        if not content:
-            texts = [c.get("text", "") for c in reply.get("result", {}).get("content", []) if c.get("type") == "text"]
+        result = reply.get("result", {})
+        content = result.get("structuredContent") or {}
+        items = content.get("result") if isinstance(content.get("result"), list) else None
+        if items is None and not content:
+            items = result.get("content", [])
+        if items is not None:   # FastMCP wraps a JSON string in a text item (verified 2026-11-07 against the local server)
+            texts = [c.get("text", "") for c in items if c.get("type") == "text"]
             content = json.loads(texts[0]) if texts else {}
         return content
 
@@ -138,16 +142,16 @@ class OpenAIImageMCPProvider:
             if got and got.state != "unknown":
                 return got
             time.sleep(self.poll)
-        return ImageOutcome("unknown", provider_request_id=first.get("provider_request_id"), error="timeout")
+        return ImageOutcome("unknown", provider_request_id=first.get("api_request_id"), error="timeout")
 
     def inspect(self, local_request_id):
         info = self._call("image_job_status", dict(request_id=local_request_id))
         state = info.get("status")
-        if state == "completed" and info.get("path"):
-            return ImageOutcome("succeeded", Path(info["path"]).read_bytes(), info.get("provider_request_id"))
-        if state in ("failed",):
-            return ImageOutcome("failed", error=str(info.get("error")))
-        return ImageOutcome("unknown", provider_request_id=info.get("provider_request_id"), error=str(state))
+        if state == "completed" and info.get("image_path"):
+            return ImageOutcome("succeeded", Path(info["image_path"]).read_bytes(), info.get("api_request_id"))
+        if state == "failed":
+            return ImageOutcome("failed", provider_request_id=info.get("api_request_id"), error=str(info.get("error")))
+        return ImageOutcome("unknown", provider_request_id=info.get("api_request_id"), error=str(state))
 
 
 class ImagesMixin:

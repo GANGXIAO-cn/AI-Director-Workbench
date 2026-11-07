@@ -28,7 +28,7 @@ def ffprobe(path: Path) -> dict:
                 width=video.get("width"), height=video.get("height"))
 
 
-def ffmpeg_cuts(path: Path, start_ms: int, end_ms: int, threshold=0.3) -> list[int]:
+def ffmpeg_cuts(path: Path, start_ms: int, end_ms: int, threshold=0.12) -> list[int]:
     out = subprocess.run(["ffmpeg", "-hide_banner", "-ss", f"{start_ms / 1000}", "-to", f"{end_ms / 1000}", "-i", str(path),
                           "-filter:v", f"select='gt(scene,{threshold})',showinfo", "-f", "null", "-"],
                          capture_output=True, text=True, timeout=600)
@@ -73,6 +73,17 @@ class ProductionMixin:
                 mid = self._message(db, thread, "user", answer, selection, None, run_id, kind="answer")
                 return dict(messageId=mid, runId=run_id)
             return self._command(db, command_id, "answer", payload, run)
+
+    def stop_run(self, run_id, command_id=None):
+        """显式停止: mark stopped, then terminate the matching process group. Saved drafts are kept."""
+        with transaction(self.db_path) as db:
+            run_ = row(db, "SELECT * FROM run WHERE id=?", run_id)
+            if run_["status"] not in ("queued", "running"):
+                raise Rejected("该运行已结束")
+            db.execute("UPDATE run SET status='stopped', reason='用户停止', ended_at=? WHERE id=?", (self.clock(), run_id))
+            db.execute("UPDATE task SET state='awaiting_decision' WHERE id=?", (run_["task_id"],))
+        killed = self.executors[run_["provider"]].cancel(run_id) if run_["status"] == "running" else False
+        return dict(runId=run_id, state="stopped", processStopped=killed)
 
     def abandon_task(self, task_id, command_id):
         with transaction(self.db_path) as db:
@@ -569,3 +580,66 @@ class ProductionMixin:
         ep = db.execute("SELECT episode_id FROM artifact WHERE id=?", (artifact_id,)).fetchone()[0]
         spec = json.loads(db.execute("SELECT spec FROM kickoff WHERE episode_id=?", (ep,)).fetchone()[0])
         return spec.get("audio", True)
+
+    # ============================================================ adoption preview (采用前影响)
+    def adoption_preview(self, version_id):
+        with connect(self.db_path) as db:
+            v = loads(row(db, "SELECT * FROM version WHERE id=?", version_id), "content")
+            art = row(db, "SELECT * FROM artifact WHERE id=?", v["artifact_id"])
+            old = self._adopted_content(db, art["episode_id"], art["stage"])
+            plan = self._adopted_content(db, art["episode_id"], "plan") or {}
+            prompts_ = self._adopted_content(db, art["episode_id"], "prompts") or {}
+            downstream_adopted = {s: bool(self._adopted_content(db, art["episode_id"], s))
+                                  for s in ("script", "plan", "prompts", "publish")}
+        items, kept = [], []
+        if art["stage"] == "plan":
+            pre = timeline.preview(old, v["content"])
+            items += [dict(target=f"生成段 {s}", reason="镜头或时长变化，TXT 需复核", kind="recheck") for s in pre["changedSegments"]]
+            items += [dict(target=f"{a} → {b} 接点", reason="相邻接点复核", kind="recheck") for a, b in pre["joints"]]
+            items += [dict(target=f"{x['segment']} 起点", reason=f"{x['startBefore'] / 1000:g} → {x['startAfter'] / 1000:g} 秒",
+                           kind="auto") for x in pre["shifted"]]
+            if pre["totalBefore"] is not None and pre["totalBefore"] != pre["totalAfter"]:
+                items.append(dict(target="全片时长", reason=f"{pre['totalBefore'] / 1000:g} → {pre['totalAfter'] / 1000:g} 秒",
+                                  kind="auto"))
+            items += [dict(target=d["target"], reason=d["reason"], kind="recheck") for d in pre["downstream"]
+                      if not d["target"].startswith(("提示词", "关键帧"))]
+            kept = [s["id"] for s in timeline.layout(v["content"])["segments"] if s["id"] not in pre["changedSegments"]]
+        elif art["stage"] == "script" and old:
+            olds = {s["id"]: s for s in old.get("scenes", [])}
+            changed = {s["id"] for s in v["content"].get("scenes", []) if olds.get(s["id"]) != s}
+            for sh in plan.get("shots", []):
+                if sh.get("origin", {}).get("scene") in changed:
+                    items.append(dict(target=f"制作方案 {sh['id']}", reason=f"引用场次 {sh['origin']['scene']}", kind="recheck"))
+                    if sh["segment"] in (prompts_.get("segments") or {}):
+                        items.append(dict(target=f"提示词 {sh['segment']}", reason=f"含镜头 {sh['id']}", kind="recheck"))
+            kept = sorted(set(olds) - changed)
+        elif art["stage"] == "prompts" and old:
+            for seg, e in (v["content"].get("segments") or {}).items():
+                if (old.get("segments") or {}).get(seg) != e:
+                    items.append(dict(target=f"两遍独审 {seg}", reason="TXT 或参考变化，需重审该段及接点", kind="recheck"))
+        elif art["stage"] == "story" and downstream_adopted["script"]:
+            items.append(dict(target="分场剧本", reason="故事变化，按实际依赖复核", kind="recheck"))
+        dedup = []
+        for it in items:
+            if it not in dedup:
+                dedup.append(it)
+        return dict(stage=art["stage"], items=dedup, unaffected=kept)
+
+    # ============================================================ frames for 拉片 cards and cut review (real ffmpeg)
+    def ref_frames(self, pack_id, around_ms=None):
+        """Midpoint frame per shot, or frames 500 ms before/after a candidate cut. Cached as blobs."""
+        with connect(self.db_path) as db:
+            pack = row(db, "SELECT * FROM ref_pack WHERE id=?", pack_id)
+            src = row(db, "SELECT * FROM ref_source WHERE id=?", pack["source_id"])
+            shots = [dict(r) for r in db.execute("SELECT code,start_ms,end_ms FROM ref_shot WHERE pack_id=? ORDER BY start_ms",
+                                                 (pack_id,))]
+        path = self.store.root / src["relpath"]
+        points = ({"before": max(0, around_ms - 500), "after": around_ms + 500} if around_ms is not None
+                  else {s["code"]: (s["start_ms"] + s["end_ms"]) // 2 for s in shots})
+        out = {}
+        for key, ms in points.items():
+            proc = subprocess.run(["ffmpeg", "-loglevel", "error", "-ss", f"{ms / 1000}", "-i", str(path), "-frames:v", "1",
+                                   "-vf", "scale=240:-2", "-f", "image2pipe", "-vcodec", "png", "-"], capture_output=True,
+                                  timeout=60)
+            out[key] = dict(ms=ms, sha256=self.store.put_blob(proc.stdout) if proc.returncode == 0 and proc.stdout else None)
+        return out

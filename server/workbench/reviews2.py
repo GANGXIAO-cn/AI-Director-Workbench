@@ -113,8 +113,9 @@ class PromptReviewMixin:
         open_ = [i["id"] for i in issues if not i["blocking"] and not i["waiver_reason"]]
         state = ("passed" if r["original_decision"] == "pass" else "blocked" if blocking
                  else "pending_decision" if open_ else "waived")
+        obs = json.loads(r["observations"])
         return dict(state=state, reviewId=r["id"], decision=r["original_decision"], issues=issues, reviewer=r["reviewer"],
-                    versionId=r["version_id"])
+                    versionId=r["version_id"], observation=obs[0]["evidence"] if obs else None)
 
     def prompt_review_status(self, version_id):
         with connect(self.db_path) as db:

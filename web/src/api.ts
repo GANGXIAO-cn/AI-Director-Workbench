@@ -1,7 +1,8 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 let token: string | null = null;
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string, public current?: unknown) {
+  constructor(public status: number, message: string, public detail?: any, public current?: any) {
     super(message);
   }
 }
@@ -11,66 +12,29 @@ async function ensureToken() {
   return token!;
 }
 
-async function call<T>(method: string, path: string, body?: unknown, form?: FormData): Promise<T> {
+async function send<T = any>(method: string, path: string, body?: unknown, form?: FormData): Promise<T> {
   const headers: Record<string, string> = {};
   if (method !== "GET") headers["x-adw-token"] = await ensureToken();
   if (body !== undefined) headers["content-type"] = "application/json";
-  const res = await fetch("/api" + path, {
-    method,
-    headers,
-    body: form ?? (body !== undefined ? JSON.stringify(body) : undefined),
-  });
+  const res = await fetch("/api" + path, { method, headers, body: form ?? (body !== undefined ? JSON.stringify(body) : undefined) });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(res.status, data.error ?? res.statusText, data.current);
+  if (!res.ok) throw new ApiError(res.status, data.error ?? res.statusText, data.detail, data.current);
   return data as T;
 }
 
 export const commandId = () => crypto.randomUUID();
-export const get = <T,>(path: string) => call<T>("GET", path);
-export const post = <T,>(path: string, body: unknown) => call<T>("POST", path, body);
-export const put = <T,>(path: string, body: unknown) => call<T>("PUT", path, body);
-export const upload = <T,>(path: string, form: FormData) => call<T>("POST", path, undefined, form);
-
-export type Setting = { key: string; category: string; strength: "required" | "variable"; content: string };
-export type Episode = {
-  id: string; display_code: string; title: string; state: string; leftover_facts: string[];
-  kickoff_id: string | null; revision: number;
+/** Workbench command (writes). commandId is added automatically unless given. */
+export const cmd = <T = any,>(name: string, args: Record<string, any> = {}) =>
+  send<T>("POST", `/cmd/${name}`, "command_id" in args || NO_ID.has(name) ? args : { ...args, command_id: commandId() });
+const NO_ID = new Set(["execute_batch", "expert_run", "backup", "restore", "set_publish_settings", "set_task_executor"]);
+/** Workbench read model. */
+export const q = <T = any,>(name: string, args: Record<string, any> = {}) =>
+  send<T>("GET", `/q/${name}?args=${encodeURIComponent(JSON.stringify(args))}`);
+export const upload = <T = any,>(kind: string, file: File, meta: Record<string, any>) => {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("meta", JSON.stringify(meta));
+  return send<T>("POST", `/upload/${kind}`, undefined, form);
 };
-export type Project = {
-  id: string; name: string; summary: string; config_id: string; settings: Setting[];
-  spec_preset: Record<string, unknown>; episodes: Episode[];
-  imports: { id: string; episode_id: string | null; original_name: string; purpose: string; parse_status: string; diagnostic: string | null; sha256: string }[];
-};
-export type Issue = {
-  id: string; ordinal: number; loc: { anchor: string; evidence: string }; category: string;
-  setting_id: string | null; setting_content: string | null; reason: string; blocking: number; waiver_reason: string | null;
-};
-export type Review = {
-  id: string; pass_no: number; original_decision: string; isolation_level: string; reviewer: string;
-  manifest_hash: string; session_id: string | null; observations: { objectId: string; anchor: string; evidence: string }[];
-  issues: Issue[];
-};
-export type Version = {
-  id: string; display_no: number; base_id: string | null; origin: string; source_run_id: string | null;
-  content: Record<string, string>; reviews: Review[];
-  gate: { formatErrors: string[]; blocking: string[]; unresolved: string[]; adoptable: boolean; review: unknown; reviewRequired: boolean };
-};
-export type Run = {
-  id: string; purpose: string; counted_round: number; provider: string; requested_model: string | null;
-  status: string; reason: string | null; diagnostic: string | null; session_id: string | null; session_mode: string;
-  isolation_level: string | null; quota_resets_at: string | null; input_hash: string; format_attempts: number;
-};
-export type Task = {
-  id: string; goal: string; stage: string; used_rounds: number; max_rounds: number; state: string; auto_revise: number;
-  messages: { id: string; seq: number; role: string; text: string }[]; runs: Run[];
-};
-export type Artifact = { id: string; stage: string; adopted_version_id: string | null; versions: Version[]; tasks: Task[] };
-export type EpisodeView = {
-  episode: Episode & { project_id: string };
-  kickoff: null | {
-    source_type: string; goal: string; relation: string; carried_facts: string[]; settings_revision: number;
-    settings_snapshot: Setting[]; spec: Record<string, unknown>; executor_plan: Record<string, { provider: string }>; idea_text: string | null;
-  };
-  sourceImport?: { original_name: string; sha256: string; parsed_text: string };
-  artifacts: Artifact[];
-};
+export const blob = (sha?: string | null) => (sha ? `/api/blob/${sha}` : undefined);
+export const deliveryFile = (id: string, path: string) => `/api/delivery-file/${id}/${path}`;

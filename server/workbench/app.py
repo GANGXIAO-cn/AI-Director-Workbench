@@ -8,7 +8,11 @@ from fastapi import Body, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .executors import ClaudeExecutor, CodexExecutor
+import inspect
+import json
+
+from .executors import AntigravityExecutor, ClaudeExecutor, CodexExecutor
+from .images import OpenAIImageMCPProvider
 from .methodpack import REPO, list_configs
 from .service import Conflict, NotFound, Rejected, Workbench
 
@@ -39,11 +43,42 @@ def default_executors():
         from .executors import FakeExecutor
         return {"codex": FakeExecutor("codex"), "claude": FakeExecutor("claude")}
     return {"codex": CodexExecutor(os.environ.get("ADW_CODEX_PATH")),
-            "claude": ClaudeExecutor(os.environ.get("ADW_CLAUDE_PATH"))}
+            "claude": ClaudeExecutor(os.environ.get("ADW_CLAUDE_PATH")),
+            "antigravity": AntigravityExecutor(os.environ.get("ADW_AGY_PATH"))}
+
+
+def default_image_providers():
+    if os.environ.get("ADW_FAKE") == "1":
+        from .images import FakeImageProvider
+        return {"fake-image": FakeImageProvider("fake-image")}
+    return {"openai-image-mcp": OpenAIImageMCPProvider()}
+
+
+COMMANDS = {
+    "create_project", "create_episode", "record_leftovers", "start_episode", "create_task", "post_message", "retry_run",
+    "save_manual", "submit_review", "waive", "adopt", "answer_clarification", "abandon_task", "stop_run", "combine", "split_segment",
+    "resolve_impact", "create_pack", "edit_cuts", "add_beat", "bookmark", "save_pack", "adapt_from_pack",
+    "add_space_item", "confirm_space_item", "set_cast", "reorder_refs", "set_sound", "submit_reuse", "review_library",
+    "copy_to_episode", "create_batch", "authorize_batch", "cancel_batch", "reconcile_request", "resubmit_request",
+    "mark_image", "redraw_cells", "adopt_image", "start_prompt_review", "waive_segment_issue", "set_publish_settings",
+    "deliver", "package", "start_closure", "decide_items", "confirm_closure", "propose_setting_change",
+    "choose_episode_settings", "update_preset", "episode_spec_change", "cite", "add_topic", "drop_topic",
+    "create_group", "continue_in_group", "authorize_expert", "set_task_executor", "adopt_pack", "backup", "restore",
+}
+QUERIES = {
+    "list_projects", "project_view", "episode_view", "kickoff_preview", "read_import", "compare", "continue_check",
+    "plan_preview", "adoption_preview", "impacts", "ref_frames", "pack_view", "trace_shot", "blocked_segments", "cast_matrix", "episode_assets",
+    "asset_version", "library", "image_providers", "batch_view", "episode_batches", "compare_cells", "image_references",
+    "prompt_review_status", "publish_settings", "compose_publish", "delivery_problems", "delivery_view", "verify_delivery",
+    "closure_view", "similar", "topics", "group_view", "model_catalog", "validate_selection", "regress_pack",
+    "storage_status", "project_todos", "project_overview", "adoption_preview", "task_records", "run_manifest", "probe",
+}
+ASYNC = {"execute_batch", "expert_run"}
 
 
 def create_app(wb: Workbench | None = None, inline_worker=False, token: str | None = None) -> FastAPI:
-    wb = wb or Workbench(Path(os.environ.get("ADW_DATA_DIR", REPO / "data")), default_executors())
+    wb = wb or Workbench(Path(os.environ.get("ADW_DATA_DIR", REPO / "data")), default_executors(),
+                         image_providers=default_image_providers())
     if isinstance(wb.executors.get("claude"), ClaudeExecutor) and (path := wb.get_setting("claude_path")):
         wb.executors["claude"].configured = path
     worker = Worker(wb, inline=inline_worker)
@@ -73,6 +108,8 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
         body = {"error": str(exc)}
         if isinstance(exc, Conflict):
             body["current"] = exc.current
+        if getattr(exc, "detail", None) is not None:
+            body["detail"] = exc.detail
         return JSONResponse(body, exc.status)
 
     def queued(result):
@@ -186,6 +223,63 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
     def adopt(aid: str, body: dict = Body(...)):
         return wb.adopt(aid, body["versionId"], body.get("expectedAdoptedVersionId"), body["commandId"],
                         body.get("andContinue", False))
+
+    def call(name, args):
+        fn = getattr(wb, name)
+        if "command_id" in inspect.signature(fn).parameters and not args.get("command_id"):
+            args = dict(args, command_id=secrets.token_hex(12))
+        result = fn(**args)
+        if isinstance(result, dict):
+            for key in ("runId",):
+                if result.get(key):
+                    worker.submit(result[key])
+        return result
+
+    @app.post("/api/cmd/{name}")
+    def command(name: str, body: dict = Body(default={})):
+        if name in ASYNC:
+            if worker.inline:
+                return getattr(wb, name)(**body)
+            worker.pool.submit(getattr(wb, name), **body)
+            return {"accepted": True}
+        if name not in COMMANDS:
+            raise NotFound("未知命令")
+        return call(name, body)
+
+    @app.get("/api/q/{name}")
+    def query(name: str, args: str = "{}"):
+        if name not in QUERIES:
+            raise NotFound("未知查询")
+        return getattr(wb, name)(**json.loads(args))
+
+    @app.post("/api/upload/{kind}")
+    async def upload_any(kind: str, file: UploadFile = File(...), meta: str = Form("{}")):
+        data, m = await file.read(), json.loads(meta)
+        if kind == "reference":
+            return wb.import_reference(m["projectId"], file.filename, data, m.get("commandId"))
+        if kind == "asset":
+            return wb.register_asset(m["projectId"], m.get("name") or file.filename, data, m.get("category", "scene"),
+                                     episode_id=m.get("episodeId"), roles=m.get("roles", []), grid=m.get("grid", False))
+        if kind == "knowledge":
+            return wb.import_knowledge(m["projectId"], [dict(name=file.filename, data=data, kind=m.get("kind"))],
+                                       m.get("commandId"))
+        if kind == "reconcile":
+            return wb.reconcile_request(m["requestId"], "completed", data)
+        raise NotFound("未知上传")
+
+    @app.get("/api/blob/{digest}")
+    def blob(digest: str):
+        from fastapi.responses import Response
+        return Response(wb.store.read_blob(digest), media_type="image/png")
+
+    @app.get("/api/delivery-file/{delivery_id}/{path:path}")
+    def delivery_file(delivery_id: str, path: str):
+        d = wb.delivery_view(delivery_id)
+        root = (wb.store.root / d["relpath"]).resolve()
+        target = (root / path).resolve()
+        if root not in target.parents or path not in d["files"]:
+            raise NotFound("文件不在交付清单内")
+        return FileResponse(target)
 
     dist = REPO / "web" / "dist"
     if dist.is_dir():

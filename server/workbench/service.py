@@ -486,7 +486,8 @@ class Core:
                 fields.update(session_id=outcome.session_id, reported_model=outcome.reported_model,
                               reported_effort=outcome.reported_effort, quota_resets_at=outcome.quota_resets_at,
                               executable=outcome.executable, executor_version=outcome.version)
-            db.execute("UPDATE run SET " + ",".join(f"{k}=?" for k in fields) + " WHERE id=?", (*fields.values(), run_id))
+            db.execute("UPDATE run SET " + ",".join(f"{k}=?" for k in fields) + " WHERE id=? AND status<>'stopped'",
+                       (*fields.values(), run_id))
             task_id = db.execute("SELECT task_id FROM run WHERE id=?", (run_id,)).fetchone()[0]
             state = {"waiting_quota": "waiting_quota", "failed": "failed"}.get(status, "awaiting_decision")
             db.execute("UPDATE task SET state=? WHERE id=? AND state IN ('running','queued')", (state, task_id))
