@@ -209,7 +209,7 @@ class CodexExecutor(CliExecutor):
         isolation = ["--ephemeral"] if req.session_mode == "ephemeral" else []
         args = [str(binary), "exec", *opts, "--json", "--sandbox", "read-only", *isolation,
                 "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check",
-                "--disable", "shell_tool", "--disable", "apps", "--disable", "plugins",
+                *([] if req.story_skill else ["--disable", "shell_tool"]), "--disable", "apps", "--disable", "plugins",
                 "--disable", "multi_agent", "--disable", "skill_search", "-c", 'web_search="disabled"',
                 *[a for p in req.images for a in ("--image", str(p))],
                 "--output-schema", str(schema_path), "-"]
@@ -229,8 +229,8 @@ class CodexExecutor(CliExecutor):
             if event.get("type") == "item.completed" and item.get("type") == "agent_message":
                 messages.append(item.get("text", ""))
         base = dict(session_id=session, events=events, executable=str(binary),
-                    isolation=dict(session=req.session_mode, sandbox="read-only", tools="disabled",
-                                   user_config="ignored", rules="ignored", cwd="empty run dir"))
+                    isolation=dict(session=req.session_mode, sandbox="read-only", tools="read-only shell" if req.story_skill else "disabled",
+                                   user_config="ignored", rules="ignored", cwd="frozen story inputs" if req.story_skill else "empty run dir"))
         if rc or failed or not events or events[-1] != "turn.completed" or not messages:
             text = "\n".join(failed) + "\n" + err
             return ExecOutcome(ok=False, error_class=classify(text), diagnostic=redact(text),
@@ -269,13 +269,14 @@ class ClaudeExecutor(CliExecutor):
         if req.effort:
             opts += ["--effort", req.effort]
         isolation = ["--no-session-persistence"] if req.session_mode == "ephemeral" else []
-        args = [str(binary), *opts, "-p", "--restricted", "--strict-mcp-config", "--tools", "",
+        args = [str(binary), *opts, "-p", "--restricted", "--strict-mcp-config", "--tools", "Read" if req.story_skill else "",
+                *(["--allowedTools", "Read(./**)"] if req.story_skill else []),
                 "--disable-slash-commands", *isolation, "--output-format", "json",
                 "--json-schema", json.dumps(req.schema, ensure_ascii=False)]
         rc, out, err = invoke(args, req.workdir, req.prompt, req.timeout, req.run_id)
         base = dict(executable=str(binary),
-                    isolation=dict(session=req.session_mode, tools="none", mcp="strict-empty",
-                                   settings="restricted", slash_commands="disabled", cwd="empty run dir"))
+                    isolation=dict(session=req.session_mode, tools="Read" if req.story_skill else "none", mcp="strict-empty",
+                                   settings="restricted", slash_commands="disabled", cwd="frozen story inputs" if req.story_skill else "empty run dir"))
         try:
             receipt = json.loads(out)
         except ValueError:

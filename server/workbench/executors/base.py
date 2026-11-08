@@ -12,11 +12,12 @@ class ExecRequest:
     prompt: str             # full text, passed via stdin; built only from the input manifest
     schema: dict            # vendor-shaped single branch
     session_mode: str       # "new" (creation, may be resumed later) | "ephemeral" (review)
-    workdir: Path           # empty per-run directory
+    workdir: Path           # per-run directory; story skill inputs are staged here
     model: Optional[str] = None
     effort: Optional[str] = None
     timeout: int = 300
     images: list = field(default_factory=list)   # local files the reviewer must look at, in order
+    story_skill: bool = False
 
 
 @dataclass

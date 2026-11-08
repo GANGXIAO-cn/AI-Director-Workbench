@@ -118,6 +118,9 @@ def copy_materials(source, dest, db):
             continue  # Project folders saved before editable standards.
         for (digest,) in db.execute(f'SELECT DISTINCT "{col}" FROM "{table}"'):
             blob(digest)
+    if "episode_story_skill" in tables:
+        for (digest,) in db.execute("SELECT snapshot FROM episode_story_skill"):
+            blob(digest)
     if "version_baseline_source" in tables:
         for (sources,) in db.execute("SELECT sources FROM version_baseline_source"):
             for digest in json.loads(sources).values():

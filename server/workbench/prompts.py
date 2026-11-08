@@ -69,9 +69,10 @@ STAGE_CONTRACT = {
 
 
 def creation_inputs(pack: dict, settings_text: str, kickoff_text: str, stage: str,
-                    base_content: dict | None, request: str, adopted_story: str | None = None, profile=None) -> list[dict]:
-    items = method_entries(pack, stage, profile)
-    settings_text = stage_settings(pack, stage, profile, settings_text)
+                    base_content: dict | None, request: str, adopted_story: str | None = None, profile=None, *, use_pack=True) -> list[dict]:
+    items = method_entries(pack, stage, profile) if use_pack else []
+    if use_pack:
+        settings_text = stage_settings(pack, stage, profile, settings_text)
     if stage != "story":
         items.append(dict(role="stage_contract", name=f"{stage}.txt", text=STAGE_CONTRACT[stage]))
     items += [dict(role="project_settings", name="settings.txt", text=settings_text),

@@ -56,6 +56,8 @@ CREATE TABLE IF NOT EXISTS kickoff(
 CREATE TABLE IF NOT EXISTS kickoff_preset(
   episode_id TEXT PRIMARY KEY REFERENCES episode(id), name TEXT NOT NULL, rev INTEGER NOT NULL, base_values TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS kickoff_method(episode_id TEXT PRIMARY KEY REFERENCES episode(id), method_pack TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS episode_story_skill(
+  episode_id TEXT PRIMARY KEY REFERENCES episode(id), skill_commit TEXT NOT NULL, snapshot TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS episode_source(episode_id TEXT NOT NULL REFERENCES episode(id), kind TEXT NOT NULL, relpath TEXT NOT NULL, sha256 TEXT NOT NULL, PRIMARY KEY(episode_id,kind));
 CREATE TABLE IF NOT EXISTS baseline_revision(
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES project(id), kind TEXT NOT NULL,

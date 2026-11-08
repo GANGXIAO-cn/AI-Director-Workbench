@@ -172,6 +172,7 @@ export function Kickoff({ projectId, prefill, onClose }: { projectId: string; pr
   const start = () => act.run(async () => {
     const started=await cmd("start_episode", {
       episode_id: prefill.episodeId ?? null, project_id:projectId, display_code:prefill.displayCode, leftover_facts:prefill.leftoverFacts, source_type: source, executor_plan: { create: { provider: creator, ...cm }, review: { provider: reviewer, ...rm } },
+      use_story_skill: p.storySkillAvailable && source === "topic",
       preset_name:chosen.name,preset_revision:chosen.rev,
       spec_overrides: { ...(prefill.style ? { style: prefill.style } : {}), ...(ratioOverride ? {aspectRatio:ratioOverride} : {}) },
       goal: source === "idea" ? "" : goal,
@@ -226,6 +227,7 @@ export function Kickoff({ projectId, prefill, onClose }: { projectId: string; pr
       <div className="card" style={{ margin: "14px 0" }}>
         <div className="small" style={{ marginBottom: 6 }}>本集会读取（只读）</div>
         <ul className="small" style={{ margin: 0, paddingLeft: 18, lineHeight: 1.8 }}>
+          {source === "topic" && p.storySkillAvailable && <li>本机 milo-leo-story 技能和系列参考将在开工时固定。{["codex", "claude"].includes(creator) ? `故事作者使用 ${cm.model || (creator === "codex" ? "gpt-6.1-sol" : "sonnet")} · ${cm.effort || "medium"}。` : "请在模型分工中选择 Codex 或 Claude 起草故事。"}</li>}
           <li>设定 {p.settings.length} 条：{p.settings.length ? `必须守住 ${required} 条会进入故事独审的检查项` : "设定为空，首集可独立成集"}</li>
           {relation === "continue" && pre && <li>前集遗留：{p.carriedFacts.join("；") || "无"}</li>}
           <li>规格：{Object.entries(effectiveSpec).map(([k,v])=>(specLabels[k] ?? k)+" "+(specChoices[k]?.[String(v)] ?? String(v))).join(" · ")}</li>

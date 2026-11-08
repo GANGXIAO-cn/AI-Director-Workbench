@@ -262,7 +262,7 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
                                 body.get("ideaText"), body.get("topicId"), body.get("goal", ""),
                                 body.get("relation", "independent"), body.get("predecessorIds", []),
                                 body.get("specOverrides"), body.get("commandId"), preset_name=body.get("presetName","default"),
-                                preset_revision=body.get("presetRevision"))
+                                preset_revision=body.get("presetRevision"), use_story_skill=body.get("useStorySkill", False))
 
     @app.get("/api/episodes/{eid}")
     def episode(eid: str):
@@ -400,6 +400,10 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
             raise NotFound("本集没有该音视频参考")
         return FileResponse(wb.store.blob_path(asset["sha256"]), media_type=MEDIA_MIME[ext],
                             headers={"X-Content-Type-Options":"nosniff"})
+
+    @app.get("/api/story/{version_id}/markdown")
+    def story_markdown(version_id: str):
+        return Response(wb.story_markdown(version_id), media_type="text/markdown")
 
     @app.get("/api/blob/{digest}")
     def blob(digest: str):
