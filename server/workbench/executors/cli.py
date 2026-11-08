@@ -11,6 +11,7 @@ import re
 import shutil
 import signal
 import subprocess
+import tempfile
 from urllib.parse import urlsplit
 from urllib.request import getproxies
 
@@ -67,9 +68,10 @@ def redact(text: str, limit=2000) -> str:
 RUNNING: dict = {}
 
 
-def invoke(args, cwd: Path, stdin: str, timeout: int, run_id: str | None = None):
+def invoke(args, cwd: Path, stdin: str, timeout: int, run_id: str | None = None, *, extra_env=None):
     env = {k: os.environ[k] for k in ENV_KEEP if k in os.environ}
     env.update(local_proxy_env())
+    env.update(extra_env or {})
     with subprocess.Popen(args, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, text=True, start_new_session=True) as proc:
         if run_id:
@@ -199,21 +201,34 @@ class CodexExecutor(CliExecutor):
         binary = self.binary()
         if not binary:
             return ExecOutcome(ok=False, error_class="unavailable", diagnostic="codex not found")
-        schema_path = req.workdir.parent / "output-schema.json"
+        schema_path = req.workdir.parent.resolve() / "output-schema.json"
         schema_path.write_text(json.dumps(req.schema, ensure_ascii=False))
         opts = []
         if req.model:
             opts += ["--model", req.model]
         if req.effort:
             opts += ["-c", "model_reasoning_effort=" + json.dumps(req.effort)]
-        isolation = ["--ephemeral"] if req.session_mode == "ephemeral" else []
+        isolation = ["--ephemeral", "--disable", "memories", "--enable", "skip_host_skill_discovery", "-c", "project_doc_max_bytes=0"]
         args = [str(binary), "exec", *opts, "--json", "--sandbox", "read-only", *isolation,
                 "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check",
-                *([] if req.story_skill else ["--disable", "shell_tool"]), "--disable", "apps", "--disable", "plugins",
+                "--disable", "shell_tool", "--disable", "apps", "--disable", "plugins",
                 "--disable", "multi_agent", "--disable", "skill_search", "-c", 'web_search="disabled"',
-                *[a for p in req.images for a in ("--image", str(p))],
+                *[a for p in req.images for a in ("--image", str(Path(p).resolve()))],
                 "--output-schema", str(schema_path), "-"]
-        rc, out, err = invoke(args, req.workdir, req.prompt, req.timeout, req.run_id)
+        # Keep discovery outside both the operator's profile and the project checkout.
+        # Only the login file is shared. Never copy its contents into a project or run receipt.
+        profile = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+        with tempfile.TemporaryDirectory(prefix="adw-codex-profile-") as temp:
+            home = Path(temp)
+            state = home / ".codex"
+            state.mkdir(mode=0o700)
+            login = profile / "auth.json"
+            if login.is_file():
+                (state / "auth.json").symlink_to(login.resolve())
+            cwd = home / "work"
+            cwd.mkdir()
+            rc, out, err = invoke(args, cwd, req.prompt, req.timeout, req.run_id,
+                                  extra_env={"HOME":str(home), "CODEX_HOME":str(state)})
         events, session, messages, failed = [], None, [], []
         for line in out.splitlines():
             try:
@@ -229,8 +244,8 @@ class CodexExecutor(CliExecutor):
             if event.get("type") == "item.completed" and item.get("type") == "agent_message":
                 messages.append(item.get("text", ""))
         base = dict(session_id=session, events=events, executable=str(binary),
-                    isolation=dict(session=req.session_mode, sandbox="read-only", tools="read-only shell" if req.story_skill else "disabled",
-                                   user_config="ignored", rules="ignored", cwd="frozen story inputs" if req.story_skill else "empty run dir"))
+                    isolation=dict(session=req.session_mode, sandbox="read-only", tools="disabled", ephemeral=True, profile="isolated",
+                                   user_config="ignored", rules="ignored", cwd="empty run dir"))
         if rc or failed or not events or events[-1] != "turn.completed" or not messages:
             text = "\n".join(failed) + "\n" + err
             return ExecOutcome(ok=False, error_class=classify(text), diagnostic=redact(text),
@@ -268,15 +283,15 @@ class ClaudeExecutor(CliExecutor):
             opts += ["--model", req.model]
         if req.effort:
             opts += ["--effort", req.effort]
-        isolation = ["--no-session-persistence"] if req.session_mode == "ephemeral" else []
-        args = [str(binary), *opts, "-p", "--restricted", "--strict-mcp-config", "--tools", "Read" if req.story_skill else "",
-                *(["--allowedTools", "Read(./**)"] if req.story_skill else []),
+        isolation = ["--no-session-persistence", "--setting-sources", ""]
+        args = [str(binary), *opts, "-p", "--restricted", "--strict-mcp-config", "--tools", "",
                 "--disable-slash-commands", *isolation, "--output-format", "json",
                 "--json-schema", json.dumps(req.schema, ensure_ascii=False)]
-        rc, out, err = invoke(args, req.workdir, req.prompt, req.timeout, req.run_id)
+        rc, out, err = invoke(args, req.workdir, req.prompt, req.timeout, req.run_id,
+                              extra_env={"CLAUDE_CODE_DISABLE_CLAUDE_MDS":"1", "CLAUDE_CODE_DISABLE_AUTO_MEMORY":"1"})
         base = dict(executable=str(binary),
-                    isolation=dict(session=req.session_mode, tools="Read" if req.story_skill else "none", mcp="strict-empty",
-                                   settings="restricted", slash_commands="disabled", cwd="frozen story inputs" if req.story_skill else "empty run dir"))
+                    isolation=dict(session=req.session_mode, tools="none", mcp="strict-empty",
+                                   settings="restricted", slash_commands="disabled", persistence=False, cwd="empty run dir"))
         try:
             receipt = json.loads(out)
         except ValueError:

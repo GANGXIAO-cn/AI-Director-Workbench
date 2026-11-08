@@ -1,42 +1,40 @@
-import subprocess
+import pytest
 
 from helpers import Env
-from workbench import story_skill
 
 
-def test_old_episode_reads_original_commit_after_skill_upgrade(tmp_path, monkeypatch):
-    repo = tmp_path / "story-skill"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    for name in ("references/story-standard.md", "templates/story-draft.md", "config.json"):
-        path = repo / name
-        path.parent.mkdir(exist_ok=True)
-        path.write_text("{}" if name.endswith("json") else "测试正文")
-    monkeypatch.setattr(story_skill, "SKILL_DIR", repo)
+@pytest.mark.parametrize("source", ["idea", "topic", "import"])
+def test_projects_share_story_method_and_only_receive_their_own_materials(tmp_path, source):
     env = Env(tmp_path)
     wb = env.wb
-    pid = wb.create_project("puggy", "技能版本验收")["projectId"]
-    ids = []
-    commits = []
-    for code in ("A", "B"):
-        (repo / "SKILL.md").write_text("版本 " + code)
-        subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
-        subprocess.run(["git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=test@example.invalid",
-                        "commit", "-qm", code], check=True)
-        commits.append(subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip())
-        topic = wb.add_topic(pid, code, "测试故事")
-        kickoff = wb.start_episode(None, "topic", {"create":{"provider":"claude"}, "review":{"provider":"codex"}},
-                                   project_id=pid, display_code=code, topic_id=topic["topicId"], use_story_skill=True)
-        ids.append(kickoff["episodeId"])
-    for eid, code, commit in zip(ids, ("A", "B"), commits):
-        run = wb.create_task(eid, "story", "写本集故事稿")["runId"]
-        env.drain(run)
-        req = env.claude.calls[-1]
-        assert req.story_skill and req.effort == "medium" and req.model == "sonnet"
-        assert (req.workdir / "skill/SKILL.md").read_text() == "版本 " + code
-        assert req.workdir.is_relative_to(wb.store.root / "projects" / pid / "episodes" / eid)
-        method = next(s for s in wb.stage_methods(eid, "story")["sections"] if s["name"] == "skill/SKILL.md")
-        assert method["text"] == "版本 " + code
-        assert wb.run_methods(run)["sections"][0]["source"]["commit"] == commit
-        assert wb.run_manifest(run)["manifest"]["storySkillCommit"] == commit
-        assert env.art(eid, "story")["versions"][0]["source_run_id"] == run
+    versions = []
+    for config, name, cue in (("_template", "雨城悬疑", "夜班修表师收到一只倒走的钟"),
+                              ("puggy", "PUGGY ROOM", "MILO发现最后一辆车要开走了")):
+        pid = wb.create_project(config, name)["projectId"]
+        eid = wb.create_episode(pid, "E01")["episodeId"]
+        if source == "import":
+            imp = wb.import_file(pid, "来稿.md", cue.encode(), "story_source", episode_id=eid)
+            args = {"source_import_id":imp["importId"]}
+        elif source == "topic":
+            args = {"topic_id":wb.add_topic(pid, "T01", cue)["topicId"]}
+        else:
+            args = {"idea_text":cue}
+        wb.start_episode(eid, source, {"create":{"provider":"codex"}, "review":{"provider":"claude"}}, **args)
+        task = wb.create_task(eid, "story", "写本集故事")
+        env.drain(task["runId"])
+        req = env.codex.calls[-1]
+        assert cue in req.prompt
+        manifest = wb.run_manifest(task["runId"])["manifest"]
+        files = wb.store.manifest_texts(manifest)
+        assert manifest["methodPack"]["id"] == "short-film@v7"
+        assert "storySkillCommit" not in manifest
+        assert list(req.workdir.iterdir()) == []
+        versions.append([(f["name"], f["sha256"]) for f in files if f["role"] == "method"])
+        if config == "_template":
+            assert all(term not in req.prompt for term in ("MILO","LEO","PUGGY","女主人","Fourthwall","Suno"))
+            assert not any(f["role"] == "project_method" for f in files)
+        else:
+            assert "MILO" in req.prompt and "LEO" in req.prompt
+            assert any(f["role"] == "project_method" for f in files)
+        assert env.art(eid, "story")["versions"][0]["source_run_id"] == task["runId"]
+    assert versions[0] == versions[1]

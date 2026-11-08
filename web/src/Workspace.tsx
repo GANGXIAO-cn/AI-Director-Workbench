@@ -292,7 +292,6 @@ function StoryView({ ctx }: { ctx: Ctx }) {
     <a href={`#/e/${ctx.eid}/story`}>查看本集故事稿</a></div>;
   if (!current) return (
     <div><div className="stagehead"><div><h1>故事稿</h1><div className="muted small">尚无稿件 · 来源：{k.source_type === "import" ? ctx.view.sourceImport?.original_name : k.idea_text ?? "选题卡"}</div></div></div>
-      {ctx.view.storySkillCommit && <p>本集故事技能 · milo-leo-story @ {ctx.view.storySkillCommit.slice(0, 8)}</p>}
       {ctx.view.sourceImport && <div className="field small">{ctx.view.sourceImport.parsed_text}</div>}
       <p className="muted">在右侧导演助手输入要求开始起草；导入的故事稿或剧本只作故事来源，起草后先过故事独审。</p></div>);
   const review = current.reviews[current.reviews.length - 1];
@@ -303,7 +302,7 @@ function StoryView({ ctx }: { ctx: Ctx }) {
     <div>
       <div className="stagehead">
         <div><h1>故事稿</h1><div className="muted small">{rno(current.display_no)} {current.id === art.adopted_version_id ? "已采用" : "草稿"} · 梗概 {chars} 字 · 来源：{k.source_type === "import" ? `导入 ${ctx.view.sourceImport?.original_name}` : k.source_type === "topic" ? "选题卡" : `一个想法「${k.idea_text}」`}{k.relation === "continue" ? ` · 承接遗留 ${k.carried_facts.join("；")}` : ""}{packs.length ? ` · 改编自参考包 ${packs.map((p:any)=>`${p.source} v${p.version}`).join("；")}` : ""}</div></div>
-        {ctx.view.storySkillCommit && <div className="small">故事技能 {ctx.view.storySkillCommit.slice(0, 8)} · <a href={`/api/story/${current.id}/markdown`} download="故事稿.md">下载本版故事稿</a></div>}
+        <div className="small"><a href={`/api/story/${current.id}/markdown`} download="故事稿.md">下载本版故事稿</a></div>
         <VersionTabs ctx={ctx} art={art} current={current} />
       </div>
       <div className="spread"><div className="tabs">{[["synopsis", "故事梗概"], ["cast", "角色表"], ["handoff", "交接说明"], ["notes", "开发辅助"], ["review", "独立审查"], ["compare","并排出稿"], ...(ctx.view.sourceImport ? [["source", "来源原文"]] : [])].map(([t, l]) => (

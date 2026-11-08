@@ -24,17 +24,15 @@ async function run() {
     await page.waitForURL(/\/story$/);
     const eid = page.url().split("/").at(-2);
     const view = () => query("episode_view", { episode_id: eid });
-    assert.match((await view()).storySkillCommit, /^[a-f0-9]{40}$/);
     const composer = page.getByPlaceholder("输入你的想法，继续完善这一集");
     await composer.fill("按所选原卡写故事稿。");
     await composer.press("Control+Enter");
     await button("✎ 编辑").click();
     const original = (await view()).artifacts[0].versions[0];
     const run = (await query("run_manifest", { run_id: original.source_run_id })).manifest;
-    assert.equal(run.storySkillCommit, (await view()).storySkillCommit);
-    assert.ok(run.inputs.some(i => i.name === "skill/references/story-standard.md"));
-    assert.ok(run.inputs.some(i => i.name.startsWith("series/episodes/")));
-    assert.ok(!run.inputs.some(i => ["method","project_method"].includes(i.role)));
+    assert.equal(run.methodPack.id, "short-film@v7");
+    assert.ok(run.inputs.some(i => i.name === "story-standard.md"));
+    assert.ok(run.inputs.some(i => i.role === "project_settings"));
     const edited = original.content.synopsis + "\nMILO 把最后一张票还给了 LEO。";
     await page.locator(".center textarea").first().fill(edited);
     await button("保存为手稿").click();
@@ -49,7 +47,7 @@ async function run() {
     const link = page.getByRole("link", { name: "下载本版故事稿" });
     const markdown = await page.request.get(base + await link.getAttribute("href"));
     assert.ok((await markdown.text()).includes(edited));
-    console.log("PUGGY card → pinned story skill → edited R2 → independent review → adopted → reopened Markdown verified (simulated executors).");
+    console.log("PUGGY card → v7 project methods → edited R2 → independent review → adopted → reopened Markdown verified (simulated executors).");
   } catch (error) {
     console.error(page.url(), (await page.locator("body").innerText()).slice(-2500));
     throw error;

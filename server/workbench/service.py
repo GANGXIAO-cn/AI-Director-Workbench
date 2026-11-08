@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import time
 
-from . import contracts, prompts, acting, shotrefs, story_skill
+from . import contracts, prompts, acting, shotrefs
 from .db import dumps, initialize, new_id, transaction, connect
 from .executors.base import ExecRequest
 from .executors.cli import redact
@@ -16,6 +16,7 @@ from .methodpack import load_config, load_pack, method_entries
 from .storage import Store, canonical, sha256_bytes
 from .stages import NEXT, WRITABLE, check_content, normalize, render as render_stage
 from .specs import validate_spec, grid_dimensions, check_generation_aspect
+from .story_skill import historical_method
 from .storycheck import adaptation_errors, render_story
 
 ROUND_LIMIT = 2
@@ -273,7 +274,7 @@ class Core:
                 "(episode_id=? OR episode_id IS NULL) AND purpose IN ('story_source','script_source')",
                 (ep["project_id"], episode_id))]
         return dict(episode=_loads(ep, "leftover_facts"), settingsRevision=revision, settings=settings,
-                    storySkillAvailable=project["config_id"] == "puggy", spec=project["spec_preset"], presets=presets, predecessorsAvailable=[_loads(o, "leftover_facts") for o in others],
+                    spec=project["spec_preset"], presets=presets, predecessorsAvailable=[_loads(o, "leftover_facts") for o in others],
                     canContinue=bool(others), carriedFacts=carried, imports=imports)
 
     def _carried(self, db, ep, relation, predecessor_ids):
@@ -297,10 +298,8 @@ class Core:
         payload = dict(project_id=project_id, display_code=display_code, facts=list(leftover_facts), episode_id=episode_id, source_type=source_type, plan=executor_plan, imp=source_import_id,
                        idea=idea_text, topic=topic_id, goal=goal, relation=relation, pre=list(predecessor_ids),
                        spec=spec_overrides)
-        if type(use_story_skill) is not bool:
-            raise Rejected("本机故事技能选项须为开或关")
         if use_story_skill:
-            payload["useStorySkill"] = True
+            payload["useStorySkill"] = True  # compatibility with saved kickoff command receipts
         if preset_name!="default" or preset_revision is not None:
             payload.update(presetName=preset_name, presetRevision=preset_revision)
         for role in ("create", "review"):
@@ -345,14 +344,6 @@ class Core:
                 spec = validate_spec(dict(preset["values"], **(spec_overrides or {})))
                 revision, settings = self._settings(db, ep["project_id"])
                 self._freeze_sources(db, episode_id, ep["project_id"])
-                if use_story_skill:
-                    from .sourcefiles import production
-                    cfg = _row(db, "SELECT config_id FROM project WHERE id=?", ep["project_id"])
-                    if cfg["config_id"] != "puggy" or source_type != "topic":
-                        raise Rejected("本机故事技能适用于 PUGGY 选题卡开工")
-                    if executor_plan["create"]["provider"] not in ("codex", "claude"):
-                        raise Rejected("本机故事技能的创作执行器请选择 Codex 或 Claude")
-                    story_skill.freeze(db, self.store, episode_id, production(db, ep["project_id"])["assetRoot"])
                 kid = new_id()
                 db.execute("INSERT INTO kickoff VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                            (kid, episode_id, source_type, source_import_id, topic_id, idea_text, goal, relation,
@@ -546,14 +537,6 @@ class Core:
 
     def stage_methods(self, episode_id, stage):
         with connect(self.db_path) as db:
-            if stage == "story":
-                pin = db.execute("SELECT * FROM episode_story_skill WHERE episode_id=?", (episode_id,)).fetchone()
-                if pin:
-                    files = json.loads(self.store.read_blob(pin["snapshot"]))
-                    sections = [dict(role="story_skill_file", name=name, text=text,
-                                     methodSource=dict(path=name, sha256=sha256_bytes(text.encode("utf-8"))))
-                                for name, text in files.items() if name.startswith("skill/")]
-                    return dict(ref="milo-leo-story@" + pin["skill_commit"], sections=sections, disabled=[])
             pack, profile = self._episode_method(db, episode_id)
             sections = ([*method_entries(pack, "cold_read"), *method_entries(pack, "comparison", profile)]
                         if stage == "review" else method_entries(pack, stage, profile))
@@ -586,9 +569,6 @@ class Core:
         pack, profile = self._episode_method(db, task["episode_id"])
         settings_text = prompts.render_settings(kickoff["settings_snapshot"])
         kickoff_text = prompts.render_kickoff(kickoff, self._source_text(db, kickoff))
-        pin = None
-        if task["stage"] == "story" and purpose in ("create", "revise"):
-            pin = db.execute("SELECT * FROM episode_story_skill WHERE episode_id=?", (task["episode_id"],)).fetchone()
         if entries is not None:
             entries = method_entries(pack, purpose, None if purpose == "cold_read" else profile) + entries
         elif purpose == "review":
@@ -602,7 +582,7 @@ class Core:
             adopted_story = self._upstream_text(db, task)
             req_text = request if not selection else f"{request}\n（选区：{json.dumps(selection, ensure_ascii=False)}）"
             entries = prompts.creation_inputs(pack, settings_text, kickoff_text, task["stage"], base_content,
-                                              req_text, adopted_story, profile, use_pack=not pin)
+                                              req_text, adopted_story, profile)
             disabled = self.get_setting(f"method-options:{task['episode_id']}:{task['stage']}", [])
             entries = [e for e in entries if e["role"]!="method" or e["name"] not in disabled]
             entries += self._custom_method_entries(db, task)
@@ -622,22 +602,10 @@ class Core:
                       reviewedVersionId=target_version_id,
                       sessionMode="ephemeral" if purpose in REVIEW_PASSES else "new", allowClarify=bool(selection),
                       isolationLevel="session" if purpose in REVIEW_PASSES else None, **(extra_header or {}))
-        if pin:
-            header["storySkillCommit"] = pin["skill_commit"]
-            entries = [e for e in entries if e["role"] not in ("method", "project_method")]
-            header["methodPack"] = dict(id="milo-leo-story@" + pin["skill_commit"], files={})
-            files = json.loads(self.store.read_blob(pin["snapshot"]))
-            entries.extend(dict(role="story_skill_file", name=name, text=value) for name, value in files.items())
         return self._enqueue_snapshot(db, header, entries, counted)
 
     def _enqueue_snapshot(self, db, header, entries, counted):
         provider = header["provider"]
-        if header.get("storySkillCommit"):
-            if provider not in ("codex", "claude"):
-                raise Rejected("本机故事技能请选择 Codex 或 Claude")
-            header["requestedModel"] = header["requestedModel"] or ("gpt-6.1-sol" if provider == "codex" else "sonnet")
-            header["requestedEffort"] = header["requestedEffort"] or "medium"
-            self.validate_selection(provider, header["requestedModel"], header["requestedEffort"])
         if provider not in self.executors:
             raise Rejected(f"未配置的执行器：{provider}")
         if any("data" in e for e in entries) and not getattr(self.executors[provider], "reads_images", False):
@@ -746,16 +714,9 @@ class Core:
             if clarify:
                 trailer += ("\n回包放在 result 字段里。若要求含义不明、无法确定修改范围，先返回 kind=clarification："
                             "question 写一个问题，options 给可点选的答案，relatedIds 写相关对象编号；否则返回 draft。")
+        prompt = prompts.prompt_from(entries, trailer, run["purpose"])
         workdir = self.store.run_dir(run_id) / "work"
-        skill_run = bool(manifest.get("storySkillCommit"))
-        if skill_run:
-            workdir = self.store._inside(self.store.root / "projects" / task["project_id"] / "episodes" /
-                                         task["episode_id"] / "runs" / run_id / "work")
         workdir.mkdir(parents=True, exist_ok=True)
-        if skill_run:
-            prompt = story_skill.prepare(workdir, entries, trailer)
-        else:
-            prompt = prompts.prompt_from(entries, trailer, run["purpose"])
         images = []
         for n, e in enumerate(x for x in entries if x.get("binary")):
             path = workdir / f"{n + 1:02d}_{e['name']}"
@@ -766,7 +727,7 @@ class Core:
                               schema=contracts.wrapped_schema() if clarify else contracts.branch_schema(kind),
                               session_mode=run["session_mode"],
                               workdir=workdir, model=run["requested_model"], effort=run["requested_effort"],
-                              timeout=int(self.get_setting("executor_timeout", 600)), images=images, story_skill=skill_run)
+                              timeout=int(self.get_setting("executor_timeout", 600)), images=images)
         try:
             outcome = executor.start(request)
         except Exception as exc:  # adapter crash is a failed run, never a success
@@ -1381,8 +1342,6 @@ class Core:
             kick = db.execute("SELECT * FROM kickoff WHERE episode_id=?", (episode_id,)).fetchone()
             view = dict(episode=ep, kickoff=_loads(dict(kick), "predecessor_ids", "carried_facts", "settings_snapshot",
                                                    "spec", "executor_plan") if kick else None, artifacts=[])
-            pin = db.execute("SELECT skill_commit FROM episode_story_skill WHERE episode_id=?", (episode_id,)).fetchone()
-            view["storySkillCommit"] = pin[0] if pin else None
             view["sourceFiles"] = [dict(r) for r in db.execute("SELECT kind,relpath,sha256 FROM episode_source WHERE episode_id=? ORDER BY kind", (episode_id,))]
             if kick and kick["source_import_id"]:
                 view["sourceImport"] = dict(db.execute(
@@ -1474,11 +1433,10 @@ class Core:
         sources = pack.get("files", {})
         result = []
         for entry in manifest["inputs"]:
-            if entry["role"] not in ("method", "project_method") and not (entry["role"] == "story_skill_file" and entry["name"].startswith("skill/")):
+            legacy = historical_method(entry, manifest)
+            if not legacy and entry["role"] not in ("method", "project_method"):
                 continue
-            record = sources.get(entry["name"], {})
-            if entry["role"] == "story_skill_file":
-                record = dict(path=entry["name"], source=dict(path=entry["name"], commit=manifest["storySkillCommit"]))
+            record = legacy or sources.get(entry["name"], {})
             if record.get("sha256",entry["sha256"]) != entry["sha256"]:
                 raise Rejected("方法来源与实际输入指纹不一致：" + entry["name"])
             try:
