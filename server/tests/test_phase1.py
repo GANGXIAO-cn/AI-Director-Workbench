@@ -89,8 +89,12 @@ def test_same_pack_puggy_and_shiba_inputs_do_not_leak(env):
     assert len(shiba_runs) == 2
     for run_id in shiba_runs:
         m, text = manifest_text(wb, run_id)
-        assert m["methodPack"]["id"] == pm["methodPack"]["id"] == "short-film@v1"
-        assert m["methodPack"]["files"] == pm["methodPack"]["files"]
+        assert m["methodPack"]["id"] == pm["methodPack"]["id"] == "short-film@v7"
+        shared = {e["name"] for e in m["inputs"] if e["role"] == "method"}
+        assert set(m["methodPack"]["files"]) == shared
+        if m["purpose"] == "create":
+            assert shared == {e["name"] for e in pm["inputs"] if e["role"] == "method"}
+            assert any(e["role"] == "project_method" for e in pm["inputs"])
         assert not PUGGY_TERMS.search(text), run_id
         assert "本项目尚无设定条目" in text
     # the first shiba draft is traceable to the director's sentence
@@ -239,8 +243,14 @@ def test_review_runs_in_new_isolated_session_with_manifest_only(env):
     assert req.purpose == "review" and req.session_mode == "ephemeral"
     m, text = manifest_text(wb, rv["runId"])
     assert m["isolationLevel"] == "session" and m["sessionMode"] == "ephemeral"
-    assert [e["role"] for e in m["inputs"]] == ["method", "method", "reviewed_version", "project_settings",
-                                                "requirements"]
+    assert [e["role"] for e in m["inputs"]] == ["method"] * 8 + ["project_method"] * 3 + [
+        "reviewed_version", "project_settings", "requirements"]
+    assert [e["name"] for e in m["inputs"] if e["role"] in ("method", "project_method")] == [
+        "story-review.md", "story-standard.md", "六问复核.md", "选题三问初筛.md",
+        "故事阶段、因果推演与复读.md", "可读性、因果、时间与节奏的审读清单.md",
+        "审读依据与角色交接.md", "故事标准的参考出处.md", "系列风格.md",
+        "系列人物、风格与近期差异审读.md", "系列空间关系与结局兑现.md",
+    ]
     assert "别让审稿人知道" not in req.prompt and "别让审稿人知道" not in text
     with db(wb) as conn:
         row = conn.execute("SELECT r.isolation_level, r.input_hash, run.input_hash FROM review r JOIN run "

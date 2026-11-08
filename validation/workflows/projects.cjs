@@ -1,0 +1,102 @@
+// Multi-project navigation and recent-list actions on the isolated workflow service.
+const assert = require("node:assert/strict");
+const {chromium} = require("playwright");
+const base = "http://127.0.0.1:" + process.env.ADW_TEST_PORT;
+async function main() {
+  const browser = await chromium.launch({executablePath:process.env.CHROME_PATH,headless:true});
+  try {
+    const page = await browser.newPage({viewport:{width:1400,height:900}});
+    page.setDefaultTimeout(7000);
+    const faults = [];
+    page.on("pageerror", e => faults.push(e.message));
+    const query = async (name,args={}) => {
+      const res = await page.request.get(base+"/api/q/"+name,{params:{args:JSON.stringify(args)}});
+      assert.equal(res.status(),200); return res.json();
+    };
+    assert.match((await query("storage_status")).dataDir,/\/adw-workflows-[^/]+\/data$/);
+    const token = (await (await page.request.get(base+"/api/session")).json()).token;
+    const send = (name,data) => page.request.post(base+"/api/cmd/"+name,{data,headers:{"x-adw-token":token}});
+    const [first] = await query("list_projects");
+    const created = await send("create_project",{config_id:"_template",name:"第二个空白项目"});
+    assert.equal(created.status(),200);
+    const {projectId:second} = await created.json();
+    const episode = first.recent[0].id;
+    const delivery = first.deliveries[0].id;
+    const before = await query("episode_view",{episode_id:episode});
+    const stage = "#/e/"+episode+"/script?v="+before.artifacts.find(a=>a.stage==="script").adopted_version_id;
+    const tabs = page.getByRole("navigation",{name:"已打开的项目"});
+    const card = id => page.locator('.projcard[href="#/p/'+id+'"]:visible');
+    const action = name => page.getByRole("button",{name,exact:true});
+    const input = page.getByPlaceholder("输入你的想法，继续完善这一集");
+    await page.goto(base+"/"+stage);
+    await input.fill("未发送的剧本修改");
+    await tabs.getByText("＋ 打开项目").click();
+    await card(second).click();
+    await tabs.getByRole("link",{name:first.name,exact:true}).click();
+    assert.equal(await input.inputValue(),"未发送的剧本修改");
+    assert.equal(new URL(page.url()).hash,stage);
+    await page.screenshot({path:require("node:path").join(__dirname,"../../修复验证_20261108/12_多项目标签与剧本草稿.png")});
+    await page.goBack();
+    await tabs.locator('[aria-current=page]').filter({hasText:"第二个空白项目"}).waitFor();
+    await page.goForward();
+    assert.equal(await input.inputValue(),"未发送的剧本修改");
+    await page.reload();
+    await input.waitFor();
+    await tabs.getByRole("link",{name:"第二个空白项目",exact:true}).waitFor();
+    await action("关闭项目标签 第二个空白项目").click();
+    assert.equal(new URL(page.url()).hash,stage);
+    await tabs.getByText("＋ 打开项目").click();
+    await card(first.id).click({button:"right"});
+    await action("重命名").click();
+    const renamed = "改名后的工作项目";
+    await page.getByLabel("项目名称",{exact:true}).fill(renamed);
+    await action("保存名称").click();
+    await tabs.getByRole("link",{name:renamed,exact:true}).waitFor();
+    const stale = await send("rename_project",{project_id:first.id,name:"过期改名",expected_name:first.name});
+    assert.equal(stale.status(),409);
+    await action("管理项目 "+renamed).click();
+    await action("从最近项目移除").click();
+    await page.waitForFunction(async id=>{
+      const rows=await (await fetch("/api/q/list_projects")).json();
+      return rows.some(p=>p.id===id && p.recentVisible===0);
+    },first.id);
+    await page.goto(base+"/#/");
+    await page.getByRole("heading",{name:"最近项目"}).waitFor();
+    await card(second).waitFor();
+    assert.equal(await card(first.id).count(),0);
+    await tabs.getByText("＋ 打开项目").click();
+    await action("管理项目 "+renamed).click();
+    await action("恢复到最近项目").click();
+    await tabs.getByRole("link",{name:renamed,exact:true}).click();
+    await action("关闭项目标签 "+renamed).click();
+    await page.waitForURL("**/#/projects");
+    await card(first.id).waitFor();
+    await page.goto(base+"/#/");
+    await card(first.id).waitFor();
+    assert.deepEqual(await query("episode_view",{episode_id:episode}),before);
+    assert.equal((await query("verify_delivery",{delivery_id:delivery})).ok,true);
+    // Delay a real closure response and let it finish while the second project owns the screen.
+    await card(second).click();
+    await tabs.getByText("＋ 打开项目").click();
+    await card(first.id).click();
+    let release;
+    const gate = new Promise(done=>{ release=done; });
+    let received;
+    const pending = new Promise(done=>{ received=done; });
+    await page.route("**/api/cmd/start_closure",async r=>{
+      const response=await r.fetch();
+      received(); await gate; await r.fulfill({response});
+    });
+    await page.goto(base+"/#/p/"+first.id+"/closure-start/"+delivery);
+    await pending;
+    await tabs.getByRole("link",{name:"第二个空白项目",exact:true}).click();
+    release();
+    await tabs.locator('a[href*="/closure/"]').waitFor();
+    assert.equal(new URL(page.url()).hash,"#/p/"+second);
+    await tabs.getByRole("link",{name:renamed,exact:true}).click();
+    assert.match(new URL(page.url()).hash,/\/closure\//);
+    assert.deepEqual(faults,[]);
+    console.log("PASS project tabs, unsent draft, browser history and reload, rename conflict, hide/restore, episode and delivery integrity");
+  } finally { await browser.close(); }
+}
+main().catch(e=>{console.error(e);process.exitCode=1;});

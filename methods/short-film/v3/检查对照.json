@@ -1,0 +1,2174 @@
+{
+  "source": "milo-leo-short-video",
+  "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+  "summary": {
+    "历史集导入已核对样本": 53,
+    "范围外（外部成片实测）": 11,
+    "已实现并核对样本": 82,
+    "原格式角色页已核对样本": 5,
+    "已核对渲染器故障样本": 1
+  },
+  "entries": [
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 24,
+      "function": "number",
+      "kind": "error",
+      "guards": [
+        "isinstance(value, bool) or not isinstance(value, (int, float)) or (not math.isfinite(value))"
+      ],
+      "statement": "raise ValueError(f'非法时间数值：{value}')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:102",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "time_type"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 31,
+      "function": "inside",
+      "kind": "error",
+      "guards": [
+        "not path.is_relative_to(root) or not path.is_file()"
+      ],
+      "statement": "raise ValueError(f'文件缺失或超出本集目录：{relative}')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivefiles.py:151",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "outside"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 37,
+      "function": "parse_aspect_ratio",
+      "kind": "error",
+      "guards": [
+        "not isinstance(value, str) or len(value) > 80 or (not re.fullmatch('[0-9]+(?:\\\\.[0-9]+)?:[0-9]+(?:\\\\.[0-9]+)?', value))"
+      ],
+      "statement": "raise ValueError('aspect_ratio须为正数宽:高，如9:16、16:9、1:1、2.39:1')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/specs.py:28",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "ratio_syntax"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 40,
+      "function": "parse_aspect_ratio",
+      "kind": "error",
+      "guards": [
+        "w <= 0 or h <= 0"
+      ],
+      "statement": "raise ValueError('画幅宽高必须大于0')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/specs.py:31",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "ratio_zero"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 52,
+      "function": "measured_aspect",
+      "kind": "error",
+      "guards": [
+        "stream is None"
+      ],
+      "statement": "raise ValueError('无法测量画幅：没有有效视频流')",
+      "status": "范围外（外部成片实测）",
+      "target": "AI导演工作台_R7_功能核对与决策记录_20261107.md:12",
+      "evidence": "图文范围与H3出包核对.json",
+      "action": "原技能仅在传入成片时调用 measure_video。图文交付保存计划时长，视频实测状态为 not_tested。"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 55,
+      "function": "measured_aspect",
+      "kind": "error",
+      "guards": [
+        "type(w) is not int or type(h) is not int or w <= 0 or (h <= 0)"
+      ],
+      "statement": "raise ValueError('无法测量画幅：缺有效视频宽高')",
+      "status": "范围外（外部成片实测）",
+      "target": "AI导演工作台_R7_功能核对与决策记录_20261107.md:12",
+      "evidence": "图文范围与H3出包核对.json",
+      "action": "原技能仅在传入成片时调用 measure_video。图文交付保存计划时长，视频实测状态为 not_tested。"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 67,
+      "function": "measured_aspect",
+      "kind": "error",
+      "guards": [
+        "except InvalidOperation"
+      ],
+      "statement": "raise ValueError('无法核对无效旋转元数据') from error",
+      "status": "范围外（外部成片实测）",
+      "target": "AI导演工作台_R7_功能核对与决策记录_20261107.md:12",
+      "evidence": "图文范围与H3出包核对.json",
+      "action": "原技能仅在传入成片时调用 measure_video。图文交付保存计划时长，视频实测状态为 not_tested。"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 69,
+      "function": "measured_aspect",
+      "kind": "error",
+      "guards": [
+        "not rotation.is_finite() or rotation % 90"
+      ],
+      "statement": "raise ValueError('无法核对非直角旋转画幅')",
+      "status": "范围外（外部成片实测）",
+      "target": "AI导演工作台_R7_功能核对与决策记录_20261107.md:12",
+      "evidence": "图文范围与H3出包核对.json",
+      "action": "原技能仅在传入成片时调用 measure_video。图文交付保存计划时长，视频实测状态为 not_tested。"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 80,
+      "function": "measure_video",
+      "kind": "error",
+      "guards": [
+        "not path.is_file()"
+      ],
+      "statement": "raise ValueError(f'无法完成实测：视频不存在或不是文件：{path}')",
+      "status": "范围外（外部成片实测）",
+      "target": "AI导演工作台_R7_功能核对与决策记录_20261107.md:12",
+      "evidence": "图文范围与H3出包核对.json",
+      "action": "原技能仅在传入成片时调用 measure_video。图文交付保存计划时长，视频实测状态为 not_tested。"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 92,
+      "function": "measure_video",
+      "kind": "error",
+      "guards": [
+        "except FileNotFoundError"
+      ],
+      "statement": "raise ValueError('无法完成实测：缺少ffprobe') from error",
+      "status": "范围外（外部成片实测）",
+      "target": "AI导演工作台_R7_功能核对与决策记录_20261107.md:12",
+      "evidence": "图文范围与H3出包核对.json",
+      "action": "原技能仅在传入成片时调用 measure_video。图文交付保存计划时长，视频实测状态为 not_tested。"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 94,
+      "function": "measure_video",
+      "kind": "error",
+      "guards": [
+        "proc.returncode"
+      ],
+      "statement": "raise ValueError(f'无法完成实测：ffprobe读取失败：{path}：{proc.stderr.strip()[:300]}')",
+      "status": "范围外（外部成片实测）",
+      "target": "AI导演工作台_R7_功能核对与决策记录_20261107.md:12",
+      "evidence": "图文范围与H3出包核对.json",
+      "action": "原技能仅在传入成片时调用 measure_video。图文交付保存计划时长，视频实测状态为 not_tested。"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 97,
+      "function": "measure_video",
+      "kind": "error",
+      "guards": [
+        "not any((x.get('codec_type') == 'video' for x in meta.get('streams', [])))"
+      ],
+      "statement": "raise ValueError('无法完成实测：文件没有视频流')",
+      "status": "范围外（外部成片实测）",
+      "target": "AI导演工作台_R7_功能核对与决策记录_20261107.md:12",
+      "evidence": "图文范围与H3出包核对.json",
+      "action": "原技能仅在传入成片时调用 measure_video。图文交付保存计划时长，视频实测状态为 not_tested。"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 101,
+      "function": "measure_video",
+      "kind": "error",
+      "guards": [
+        "not duration.is_finite() or duration <= 0"
+      ],
+      "statement": "raise ValueError('无法完成实测：无有效正片长')",
+      "status": "范围外（外部成片实测）",
+      "target": "AI导演工作台_R7_功能核对与决策记录_20261107.md:12",
+      "evidence": "图文范围与H3出包核对.json",
+      "action": "原技能仅在传入成片时调用 measure_video。图文交付保存计划时长，视频实测状态为 not_tested。"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 105,
+      "function": "measure_video",
+      "kind": "error",
+      "guards": [
+        "(before.st_size, before.st_mtime_ns, before.st_ctime_ns, before.st_ino) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns, after.st_ino)"
+      ],
+      "statement": "raise ValueError('无法完成实测：测量期间视频文件发生变化')",
+      "status": "范围外（外部成片实测）",
+      "target": "AI导演工作台_R7_功能核对与决策记录_20261107.md:12",
+      "evidence": "图文范围与H3出包核对.json",
+      "action": "原技能仅在传入成片时调用 measure_video。图文交付保存计划时长，视频实测状态为 not_tested。"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 107,
+      "function": "measure_video",
+      "kind": "error",
+      "guards": [
+        "except (OSError, subprocess.TimeoutExpired, InvalidOperation, json.JSONDecodeError)"
+      ],
+      "statement": "raise ValueError(f'无法完成实测：{path}：{error}') from error",
+      "status": "范围外（外部成片实测）",
+      "target": "AI导演工作台_R7_功能核对与决策记录_20261107.md:12",
+      "evidence": "图文范围与H3出包核对.json",
+      "action": "原技能仅在传入成片时调用 measure_video。图文交付保存计划时长，视频实测状态为 not_tested。"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 123,
+      "function": "required_text",
+      "kind": "error",
+      "guards": [
+        "not isinstance(value, str) or not value.strip()"
+      ],
+      "statement": "raise ValueError(f'缺少文本字段：{key}')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:109",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "missing_purpose"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 134,
+      "function": "image_size",
+      "kind": "error",
+      "guards": [],
+      "statement": "raise ValueError(f'无法识别图片文件头：{path.name}')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:119",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "header"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 140,
+      "function": "v2_assets",
+      "kind": "error",
+      "guards": [
+        "not isinstance(records, list) or not records"
+      ],
+      "statement": "raise ValueError('缺少资产表')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:125",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "missing_asset_table"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 146,
+      "function": "v2_assets",
+      "kind": "error",
+      "guards": [
+        "aid in result"
+      ],
+      "statement": "raise ValueError('重复资产ID')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:130",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "duplicate_asset"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 149,
+      "function": "v2_assets",
+      "kind": "error",
+      "guards": [
+        "kind not in ('image', 'video', 'audio')"
+      ],
+      "statement": "raise ValueError('非法资产媒体类型')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:133",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "invalid_type"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 151,
+      "function": "v2_assets",
+      "kind": "error",
+      "guards": [
+        "asset.get('category') not in ('character', 'scene', 'prop', 'state', 'grid', 'motion', 'sound')"
+      ],
+      "statement": "raise ValueError('非法资产类别')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:135",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "invalid_category"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 155,
+      "function": "v2_assets",
+      "kind": "error",
+      "guards": [
+        "asset.get('origin') not in ('reuse', 'new') or asset.get('review_status') != 'passed'"
+      ],
+      "statement": "raise ValueError('资产来源方式非法或未审核')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:139",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "origin"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 161,
+      "function": "v2_assets",
+      "kind": "error",
+      "guards": [
+        "asset.get('fixed_role')",
+        "not role or path != Path(role['path']).resolve() or asset.get('sha256') != role['sha256']"
+      ],
+      "statement": "raise ValueError('固定角色不匹配现行角色基准')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivefiles.py:166",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "fixed_path"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 163,
+      "function": "v2_assets",
+      "kind": "error",
+      "guards": [
+        "asset.get('fixed_role')",
+        "kind != 'image' or asset['category'] != 'character' or (not path.is_file())"
+      ],
+      "statement": "raise ValueError('固定角色文件不可用')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivefiles.py:168",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "fixed_category"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 166,
+      "function": "v2_assets",
+      "kind": "error",
+      "guards": [
+        "not (asset.get('fixed_role'))",
+        "Path(relative).is_absolute()"
+      ],
+      "statement": "raise ValueError('非固定角色资产必须使用本集相对路径')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivefiles.py:172",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "local_absolute"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 169,
+      "function": "v2_assets",
+      "kind": "error",
+      "guards": [
+        "path in files"
+      ],
+      "statement": "raise ValueError('同一文件不能重复注册为多个资产')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:143",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "repeated_path"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 173,
+      "function": "v2_assets",
+      "kind": "error",
+      "guards": [
+        "digest != asset.get('sha256')"
+      ],
+      "statement": "raise ValueError(f'资产指纹不符：{aid}')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:147",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "wrong_hash"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 177,
+      "function": "v2_assets",
+      "kind": "error",
+      "guards": [
+        "kind == 'image'",
+        "size is not None and (size[0] <= 0 or size[1] <= 0)"
+      ],
+      "statement": "raise ValueError('图片尺寸非法')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:151",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "empty_size"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 186,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "not isinstance(segments, list) or not segments"
+      ],
+      "statement": "raise ValueError('缺少生成段')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:159",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "no_segments"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 193,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "ident in ids"
+      ],
+      "statement": "raise ValueError('重复段号')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:166",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "duplicate_segment"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 197,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "not 0 < duration <= 15 or not math.isclose(start, elapsed, rel_tol=0, abs_tol=1e-06)"
+      ],
+      "statement": "raise ValueError('时间不连续或本段时长不在(0,15]内')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:170",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "start_gap"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 200,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "strategy not in ('grid', 'flex')"
+      ],
+      "statement": "raise ValueError('非法reference_strategy')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:173",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "strategy"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 205,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "style not in prefixes"
+      ],
+      "statement": "raise ValueError('未知label_style；使用前需明确入口标签约定')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:178",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "labels"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 208,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "not isinstance(refs, list) or not refs"
+      ],
+      "statement": "raise ValueError('缺少实际输入')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:181",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "no_input"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 214,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "type(ref.get('upload_order')) is not int or ref['upload_order'] != order"
+      ],
+      "statement": "raise ValueError('输入上传顺序不连续或与列表不一致')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:186",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "upload_order"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 216,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "ref.get('asset_id') not in assets"
+      ],
+      "statement": "raise ValueError('引用未声明资产')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:188",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "unknown_asset"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 221,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "label in labels"
+      ],
+      "statement": "raise ValueError('重复标签')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:193",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "repeat_label"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 223,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "label != prefixes[style][kind] + str(counts[kind])"
+      ],
+      "statement": "raise ValueError('输入顺序与标签不一致')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:195",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "wrong_label"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 225,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "file in used_paths or asset['sha256'] in used_hashes"
+      ],
+      "statement": "raise ValueError('同段重复输入同一文件或相同内容')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:197",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "repeat_file"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 230,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "not isinstance(shots, list) or not shots or any((not isinstance(x, str) or not x.strip() for x in shots))"
+      ],
+      "statement": "raise ValueError('缺少作用镜头')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:202",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "shot_scope"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 233,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "not 1 <= counts['image'] <= 9"
+      ],
+      "statement": "raise ValueError('每段图片必须为1至9张，9是硬上限')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:204",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "image_count"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 240,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "counts['video'] or counts['audio']",
+        "type(limit) is not int or limit < counts[kind]"
+      ],
+      "statement": "raise ValueError('实际入口媒体数量限制未核对或已超限')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:211",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "media_limits"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 242,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "counts['video'] or counts['audio']",
+        "type(limits.get('total')) is not int or limits['total'] < len(refs)"
+      ],
+      "statement": "raise ValueError('实际入口混合总限制未核对或已超限')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:213",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "mixed_limits"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 245,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "txt in prompts"
+      ],
+      "statement": "raise ValueError('每段须独立提示词文件')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:216",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "shared_txt"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 251,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "any((text.count(h) != 1 for h in headings))"
+      ],
+      "statement": "raise ValueError('缺少或重复约定中文段落')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:224",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "heading_missing"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 254,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "positions != sorted(positions)"
+      ],
+      "statement": "raise ValueError('提示词章节顺序错误')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:227",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "heading_order"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 258,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "re.search('<Subject\\\\s|@Subject\\\\d', text)"
+      ],
+      "statement": "raise ValueError('未声明的主体标签；按本段输入标签引用')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:231",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "subject_token"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 261,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "tokens != labels"
+      ],
+      "statement": "raise ValueError('提示词引用未声明标签或缺少输入引用')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:234",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "extra_ref"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 266,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "strategy == 'flex'",
+        "len(matches) != 1 or not matches[0].strip(' ；;。')"
+      ],
+      "statement": "raise ValueError('参考标签必须有且只有一个非空定义')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:240",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "empty_definition"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 268,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "not re.search(re.escape(label) + '(?!\\\\d)', definitions)"
+      ],
+      "statement": "raise ValueError('参考定义缺少输入标签')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:242",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "grid_definition"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 271,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "strategy == 'grid'",
+        "len(refs) != 1 or resolved[0][1]['category'] != 'grid'"
+      ],
+      "statement": "raise ValueError('grid必须仅输入一张九宫格')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:245",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "grid_extra"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 274,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "strategy == 'grid'",
+        "len(frames) != 9 or frames[0] != 0 or frames[-1] > duration or any((y <= x for x, y in zip(frames, frames[1:])))"
+      ],
+      "statement": "raise ValueError('grid须有9个合法关键状态')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:248",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "grid_frame"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 277,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "strategy == 'grid'",
+        "size is None or not aspect_matches(*size, data['aspect_ratio'])"
+      ],
+      "statement": "raise ValueError(f\"九宫格须为与本集{data['aspect_ratio']}画幅一致的PNG\")",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:252",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "grid_ratio"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 281,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "not seconds or min(seconds) != 0 or (not math.isclose(max(seconds), duration, rel_tol=0, abs_tol=0.0005))"
+      ],
+      "statement": "raise ValueError('时间码未覆盖本段或超出段长')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:256",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "outside_time"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 285,
+      "function": "validate_v2_segments",
+      "kind": "error",
+      "guards": [
+        "seg.get('review_status') != 'passed'"
+      ],
+      "statement": "raise ValueError('本段未审核')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:269",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "unreviewed"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 299,
+      "function": "check_appearance",
+      "kind": "error",
+      "guards": [
+        "not isinstance(present, list) or len(set(present)) != len(present) or any((r not in roles and r not in data.get('cast', {}) for r in present))"
+      ],
+      "statement": "raise ValueError(f'{seg[\"id\"]}：on_screen_roles缺失或含未知/重复角色')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:65",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "unknown_appearance_role"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 307,
+      "function": "validate",
+      "kind": "error",
+      "guards": [
+        "scope not in ('full', 'trial')"
+      ],
+      "statement": "raise ValueError('scope须为full或trial')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/delivery.py:128",
+      "evidence": "图文范围与H3出包核对.json",
+      "sample": "scope"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 312,
+      "function": "validate",
+      "kind": "error",
+      "guards": [
+        "type(data.get('schema_version')) is not int or data['schema_version'] != 2"
+      ],
+      "statement": "raise ValueError('须声明 schema_version=2')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/history.py:30",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "schema_type"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 314,
+      "function": "validate",
+      "kind": "error",
+      "guards": [
+        "any((k in data for k in ('asset_snapshot', 'video_prompt_standard', 'video_prompt_rules')))"
+      ],
+      "statement": "raise ValueError('清单不使用每集标准快照字段')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/history.py:32",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "legacy_field"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 316,
+      "function": "validate",
+      "kind": "error",
+      "guards": [
+        "data.get('h3_rules') != 'v1'"
+      ],
+      "statement": "raise ValueError('须声明 h3_rules=v1')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/history.py:34",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "h3_version"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 329,
+      "function": "validate",
+      "kind": "error",
+      "guards": [
+        "isinstance(settings, dict) and 'aspect_ratio' in settings and (parse_aspect_ratio(settings['aspect_ratio']) != target_ratio)"
+      ],
+      "statement": "raise ValueError('生成设置画幅与本集aspect_ratio不一致')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/specs.py:38",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "segment_generation_ratio"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 332,
+      "function": "validate",
+      "kind": "error",
+      "guards": [
+        "not isinstance(title, str) or not re.search('[A-Za-z]', title) or re.search('[㐀-鿿]', title)"
+      ],
+      "statement": "raise ValueError('缺少本集英文视频标题，或混入中文标题')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/history.py:44",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "chinese_title"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 336,
+      "function": "validate",
+      "kind": "error",
+      "guards": [
+        "policy not in ('over_60', 'story_driven') or total <= 0"
+      ],
+      "statement": "raise ValueError('非法片长或duration_policy')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/history.py:51",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "unknown_policy"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 338,
+      "function": "validate",
+      "kind": "error",
+      "guards": [
+        "policy == 'over_60' and total <= 60"
+      ],
+      "statement": "raise ValueError('over_60总时长必须严格大于60秒')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/history.py:53",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "sixty_seconds"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 343,
+      "function": "validate",
+      "kind": "error",
+      "guards": [
+        "not math.isclose(elapsed, total, rel_tol=0, abs_tol=1e-06)"
+      ],
+      "statement": "raise ValueError('段落时长之和不等于总时长')",
+      "status": "历史集导入已核对样本",
+      "target": "server/workbench/archivechecks.py:440",
+      "evidence": "历史材料规则故障对照.json",
+      "sample": "sum_differs"
+    },
+    {
+      "path": "scripts/validate_episode.py",
+      "line": 358,
+      "function": "validate",
+      "kind": "error",
+      "guards": [
+        "scope == 'full'",
+        "not handoff.is_file() or not handoff.read_text().strip()"
+      ],
+      "statement": "raise ValueError('完整交付缺少03_精剪交接.md')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage.py:227",
+      "evidence": "图文范围与H3出包核对.json",
+      "sample": "empty_handoff"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 137,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "content.count('data-delivery-scope=\"' + scope + '\"') != 1"
+      ],
+      "statement": "raise ValueError('页面交付范围与检查范围不符')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:128",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "scope"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 142,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "content.count(fragment) != 1"
+      ],
+      "statement": "raise ValueError('正式页面缺少当前完整同页补选区，或内容已失效')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:132",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "gallery"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 145,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "content.count(nav) != 1 or content.index(nav) > content.index(fragment)"
+      ],
+      "statement": "raise ValueError('正式页面缺少顶部未采用图片／补选同页入口')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:135",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "gallery_navigation"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 155,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "data.get('character_contract_version') == 1",
+        "content.count(fragment) != 1"
+      ],
+      "statement": "raise ValueError('页面角色设定内容、图片或适用段落缺失/失效')",
+      "status": "原格式角色页已核对样本",
+      "target": "server/workbench/deliverypage_check.py:155",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "cast_body",
+      "action": "以原技能格式渲染后核对。新版工作台另有整集角色基准及分段绑定，见本集身份基准与分段送审核对.json。"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 159,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "data.get('character_contract_version') == 1",
+        "parsed.cast_versions != ['1'] or parsed.cast_roles != list(data['cast'])"
+      ],
+      "statement": "raise ValueError('页面缺少完整本集角色设定区')",
+      "status": "原格式角色页已核对样本",
+      "target": "server/workbench/deliverypage_check.py:159",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "cast_roles",
+      "action": "以原技能格式渲染后核对。新版工作台另有整集角色基准及分段绑定，见本集身份基准与分段送审核对.json。"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 163,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "data.get('character_contract_version') == 1",
+        "[a for a, _ in parsed.cast_assets] != expected"
+      ],
+      "statement": "raise ValueError('页面角色基准缺项或错序')",
+      "status": "原格式角色页已核对样本",
+      "target": "server/workbench/deliverypage_check.py:163",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "cast_asset_order",
+      "action": "以原技能格式渲染后核对。新版工作台另有整集角色基准及分段绑定，见本集身份基准与分段送审核对.json。"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 166,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "data.get('character_contract_version') == 1",
+        "not href or (page.parent / unquote(href)).resolve() != (root / assets[aid]['path']).resolve()"
+      ],
+      "statement": "raise ValueError('页面角色基准链接错配')",
+      "status": "原格式角色页已核对样本",
+      "target": "server/workbench/deliverypage_check.py:166",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "cast_link",
+      "action": "以原技能格式渲染后核对。新版工作台另有整集角色基准及分段绑定，见本集身份基准与分段送审核对.json。"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 169,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "gallery and set(parsed.ids) & set(gallery.ids)"
+      ],
+      "statement": "raise ValueError('补选区与正文ID冲突')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:169",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "id_collision"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 171,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "gallery and len(set(gallery.ids)) != len(gallery.ids)"
+      ],
+      "statement": "raise ValueError('补选区ID重复')",
+      "status": "已核对渲染器故障样本",
+      "target": "server/workbench/deliverypage_check.py:171",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "gallery_duplicate_id",
+      "action": "补选区渲染函数返回重复 ID 片段"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 173,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "parsed.heading != data['english_title']"
+      ],
+      "statement": "raise ValueError('页面英文标题不符')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:173",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "heading"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 175,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "len(parsed.sections) != len(data['segments'])"
+      ],
+      "statement": "raise ValueError('页面段数不符')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:175",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "section_count"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 177,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "len(set(parsed.ids)) != len(parsed.ids)"
+      ],
+      "statement": "raise ValueError('页面锚点ID重复')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:177",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "duplicate_id"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 180,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "parsed.template != TEMPLATE or parsed.styles != [stylesheet.read_text()] or parsed.main_count != 1"
+      ],
+      "statement": "raise ValueError('交付模板或样式不符，须使用当前共享模板重建')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:180",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "template"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 183,
+      "function": "target",
+      "kind": "error",
+      "guards": [
+        "not isinstance(url, str)"
+      ],
+      "statement": "raise ValueError('页面链接缺失')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:183",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "missing_url"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 186,
+      "function": "target",
+      "kind": "error",
+      "guards": [
+        "parts.scheme or parts.netloc or parts.query or parts.fragment"
+      ],
+      "statement": "raise ValueError(f'链接不是纯本地文件：{url}')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:186",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "not_local"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 188,
+      "function": "target",
+      "kind": "error",
+      "guards": [
+        "not path.is_file()"
+      ],
+      "statement": "raise ValueError(f'链接不存在：{url}')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:190",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "missing_file"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 194,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "publish_pack",
+        "parsed.publish_count != 1 or parsed.publish_dom_id != 'publish-pack' or parsed.publish_navigation != ['#publish-pack']"
+      ],
+      "statement": "raise ValueError('网页缺少发布包正文或导航锚点')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:195",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "publish_nav"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 198,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "publish_pack",
+        "parsed.publish_fields != expected_fields"
+      ],
+      "statement": "raise ValueError('发布包复制字段缺失、顺序错误或与MD原文不一致')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:199",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "publish_fields"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 200,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "publish_pack",
+        "parsed.publish_notes != publish_pack['notes'] or parsed.publish_rows != publish_pack['table']"
+      ],
+      "statement": "raise ValueError('发布包音乐使用状态或剪辑对位表与MD不一致')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:201",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "publish_note"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 202,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "publish_pack",
+        "len(parsed.publish_sources) != 1 or target(parsed.publish_sources[0]) != publish_pack['path'].resolve()"
+      ],
+      "statement": "raise ValueError('发布包源文件链接缺失或映射错误')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:203",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "publish_source"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 204,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "not (publish_pack)",
+        "parsed.publish_count or parsed.publish_navigation or parsed.publish_sources"
+      ],
+      "statement": "raise ValueError('网页含有无源文件的发布包')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:205",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "orphan_publish"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 207,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "[key for key, _ in parsed.documents] != [key for key, _, _ in expected_docs]"
+      ],
+      "statement": "raise ValueError('本集文档入口缺失或顺序不符')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:207",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "no_doc"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 210,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "target(url) != expected.resolve()"
+      ],
+      "statement": "raise ValueError('本集文档入口映射错误')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:210",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "wrong_doc"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 212,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "[key for key, _ in parsed.navigation] != [s['id'] for s in data['segments']]"
+      ],
+      "statement": "raise ValueError('分段导航缺失或顺序不符')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:212",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "no_segment_nav"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 218,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "parts.scheme or parts.netloc or parts.path or parts.query or (unquote(parts.fragment) != expected_id) or (section['dom_id'] != expected_id)"
+      ],
+      "statement": "raise ValueError('分段导航锚点映射错误')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:218",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "wrong_anchor"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 222,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "actual['pre_count'] != 1"
+      ],
+      "statement": "raise ValueError(f'每段须有唯一完整pre，避免复制半段：{segment[\"id\"]}')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:222",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "pre_count"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 224,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "actual['card_grids'] != 1 or not all((x['is_card'] for x in actual['assets']))"
+      ],
+      "statement": "raise ValueError('素材卡片布局缺失')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:224",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "no_grid"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 227,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "actual['id'] != segment['id'] or actual['text'] != prompt_path.read_bytes().decode('utf-8')"
+      ],
+      "statement": "raise ValueError(f'TXT与页面原文不符：{segment[\"id\"]}')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:227",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "txt_mismatch"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 230,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "[a['id'] for a in actual['assets']] != [r['asset_id'] for r in refs]"
+      ],
+      "statement": "raise ValueError(f'页面实际上传顺序不符：{segment[\"id\"]}')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:230",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "ref_order"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 233,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "has_shot_references(data) and entry.get('shot_labels') != ['作用镜头：' + '、'.join(ref['shots'])]"
+      ],
+      "statement": "raise ValueError(f'页面作用镜头与实际清单不符：{segment[\"id\"]}/{ref[\"asset_id\"]}')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:233",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "shot_label"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 239,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "len(entry['links']) != 1 or target(entry['links'][0]) != expected or entry['label'] != ref['label'] + ' · ' + asset['id']"
+      ],
+      "statement": "raise ValueError(f'素材链接或标签映射错误：{asset[\"id\"]}')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:239",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "asset_label"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 242,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "len(entry['media']) != 1 or entry['media'][0][0] != expected_tag or target(entry['media'][0][1]) != expected"
+      ],
+      "statement": "raise ValueError(f'素材预览映射错误：{asset[\"id\"]}')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:242",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "media"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 244,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "len(actual['prompt_links']) != 1 or target(actual['prompt_links'][0]) != prompt_path"
+      ],
+      "statement": "raise ValueError(f'TXT下载链接映射错误：{segment[\"id\"]}')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:244",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "txt_link"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 249,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "cast_nav and parsed.links.count('#episode-cast') != 1"
+      ],
+      "statement": "raise ValueError('缺本集角色设定导航')",
+      "status": "原格式角色页已核对样本",
+      "target": "server/workbench/deliverypage_check.py:249",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "cast_navigation",
+      "action": "以原技能格式渲染后核对。新版工作台另有整集角色基准及分段绑定，见本集身份基准与分段送审核对.json。"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 251,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "len(parsed.media) != input_count + cast_count or len(parsed.links) != (input_count + cast_count) * 2 + cast_nav + len(data['segments']) + len(parsed.documents) + len(parsed.navigation) + (2 if publish_pack else 0)"
+      ],
+      "statement": "raise ValueError('页面存在额外或缺少的预览/链接')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:251",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "extra_link"
+    },
+    {
+      "path": "scripts/check_delivery.py",
+      "line": 260,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "parsed.scripts != expected_scripts"
+      ],
+      "statement": "raise ValueError('复制脚本不符或存在其他脚本')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/deliverypage_check.py:260",
+      "evidence": "图文交付页模板与故障对照.json",
+      "sample": "extra_script"
+    },
+    {
+      "path": "scripts/check_publish_pack.py",
+      "line": 25,
+      "function": "blocks",
+      "kind": "error",
+      "guards": [
+        "not (line.startswith('#'))",
+        "line.strip() == '```text' and heading is not None",
+        "j == len(lines)"
+      ],
+      "statement": "raise ValueError(f'代码块未闭合：{heading}')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/publishing.py:88",
+      "evidence": "历史发布包与故障对照.json",
+      "sample": "unclosed"
+    },
+    {
+      "path": "scripts/check_publish_pack.py",
+      "line": 27,
+      "function": "blocks",
+      "kind": "error",
+      "guards": [
+        "not (line.startswith('#'))",
+        "line.strip() == '```text' and heading is not None",
+        "heading in found"
+      ],
+      "statement": "raise ValueError(f'同一标题下有多个代码块：{heading}')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/publishing.py:78",
+      "evidence": "历史发布包与故障对照.json",
+      "sample": "duplicate"
+    },
+    {
+      "path": "scripts/check_publish_pack.py",
+      "line": 45,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "not b.get(key, '').strip()"
+      ],
+      "statement": "raise ValueError(f'缺少或为空：{key}')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/publishing.py:96",
+      "evidence": "历史发布包与故障对照.json",
+      "sample": "required"
+    },
+    {
+      "path": "scripts/check_publish_pack.py",
+      "line": 50,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "bad"
+      ],
+      "statement": "raise ValueError(f'{name}含禁用字符：{\"\".join(bad)}')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/publishing.py:100",
+      "evidence": "历史发布包与故障对照.json",
+      "sample": "character"
+    },
+    {
+      "path": "scripts/check_publish_pack.py",
+      "line": 52,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "'\\n' in title or not title.startswith(s['title_prefix']) or len(title) > s['title_max_chars']"
+      ],
+      "statement": "raise ValueError(f'标题须单行、以“{s[\"title_prefix\"].strip()}”开头且不超过{s[\"title_max_chars\"]}字符')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/publishing.py:102",
+      "evidence": "历史发布包与故障对照.json",
+      "sample": "prefix"
+    },
+    {
+      "path": "scripts/check_publish_pack.py",
+      "line": 55,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "len(lines) != 1 + len(s['body_fixed_lines'])"
+      ],
+      "statement": "raise ValueError(f'正文须为{1 + len(s[\"body_fixed_lines\"])}行')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/publishing.py:105",
+      "evidence": "历史发布包与故障对照.json",
+      "sample": "line_count"
+    },
+    {
+      "path": "scripts/check_publish_pack.py",
+      "line": 58,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "not hook.endswith(' ' + s['hook_emoji']) or len(hook.strip()) <= len(s['hook_emoji']) + 1"
+      ],
+      "statement": "raise ValueError(f'正文第一行须是一句剧情并以空格加{s[\"hook_emoji\"]}结尾')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/publishing.py:108",
+      "evidence": "历史发布包与故障对照.json",
+      "sample": "hook"
+    },
+    {
+      "path": "scripts/check_publish_pack.py",
+      "line": 60,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "lines[1:] != s['body_fixed_lines']"
+      ],
+      "statement": "raise ValueError('正文第二、三行须逐字使用发布设置的固定行')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/publishing.py:105",
+      "evidence": "历史发布包与故障对照.json",
+      "sample": "fixed_lines"
+    },
+    {
+      "path": "scripts/check_publish_pack.py",
+      "line": 62,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "title.lower() in body.lower()"
+      ],
+      "statement": "raise ValueError('正文重复了标题')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/publishing.py:110",
+      "evidence": "历史发布包与故障对照.json",
+      "sample": "repeat_title"
+    },
+    {
+      "path": "scripts/check_publish_pack.py",
+      "line": 64,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "'link in bio' in body.lower()"
+      ],
+      "statement": "raise ValueError('正文不能写link in bio')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/publishing.py:112",
+      "evidence": "历史发布包与故障对照.json",
+      "sample": "link"
+    },
+    {
+      "path": "scripts/check_publish_pack.py",
+      "line": 66,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "'#' in tags"
+      ],
+      "statement": "raise ValueError('话题标签不加#')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/publishing.py:116",
+      "evidence": "历史发布包与故障对照.json",
+      "sample": "hashtags"
+    },
+    {
+      "path": "scripts/check_publish_pack.py",
+      "line": 71,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "items[:len(fixed)] != fixed"
+      ],
+      "statement": "raise ValueError(f'话题标签须先按顺序写固定标签：{\", \".join(fixed)}')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/publishing.py:116",
+      "evidence": "历史发布包与故障对照.json",
+      "sample": "fixed_tags"
+    },
+    {
+      "path": "scripts/check_publish_pack.py",
+      "line": 73,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "len(extra) > s['max_extra_tags'] or len(set(items)) != len(items) or (not all((TAG.fullmatch(t) for t in extra)))"
+      ],
+      "statement": "raise ValueError(f'本集标签最多{s[\"max_extra_tags\"]}个、小写英文或数字、不重复，逗号加空格分隔')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/publishing.py:119",
+      "evidence": "历史发布包与故障对照.json",
+      "sample": "extra_tags"
+    },
+    {
+      "path": "scripts/check_publish_pack.py",
+      "line": 75,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "'vocals' not in b['Exclude Styles'].lower()"
+      ],
+      "statement": "raise ValueError('Suno Exclude Styles须排除vocals')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/publishing.py:121",
+      "evidence": "历史发布包与故障对照.json",
+      "sample": "vocals"
+    },
+    {
+      "path": "scripts/check_publish_pack.py",
+      "line": 77,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "not re.search('\\\\b\\\\d{2,3}\\\\s*BPM\\\\b', b['Style of Music'], re.I)"
+      ],
+      "statement": "raise ValueError('Suno Style of Music须写BPM')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/publishing.py:123",
+      "evidence": "历史发布包与故障对照.json",
+      "sample": "bpm"
+    },
+    {
+      "path": "scripts/check_publish_pack.py",
+      "line": 79,
+      "function": "check",
+      "kind": "error",
+      "guards": [
+        "'Instrumental' not in text"
+      ],
+      "statement": "raise ValueError('须注明Suno Instrumental开')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/publishing.py:125",
+      "evidence": "历史发布包与故障对照.json",
+      "sample": "instrumental"
+    },
+    {
+      "path": "scripts/shot_rhythm.py",
+      "line": 69,
+      "function": "table",
+      "kind": "error",
+      "guards": [
+        "set(columns).issubset(cells)",
+        "seen or len(set(cells)) != len(cells)"
+      ],
+      "statement": "raise ValueError(\"重复的表头或列：\" + columns[0])",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/rhythm.py:37",
+      "evidence": "镜头充分性与节奏故障对照.json",
+      "sample": "dup_header"
+    },
+    {
+      "path": "scripts/shot_rhythm.py",
+      "line": 73,
+      "function": "table",
+      "kind": "error",
+      "guards": [
+        "not (set(columns).issubset(cells))",
+        "header and (not all((re.fullmatch(':?-{3,}:?', c) for c in cells)))",
+        "len(cells) != len(header)"
+      ],
+      "statement": "raise ValueError(\"列数与表头不同：\" + line)",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/rhythm.py:41",
+      "evidence": "镜头充分性与节奏故障对照.json",
+      "sample": "wrong_width"
+    },
+    {
+      "path": "scripts/shot_rhythm.py",
+      "line": 76,
+      "function": "table",
+      "kind": "error",
+      "guards": [
+        "required and (not rows)"
+      ],
+      "statement": "raise ValueError(\"缺少镜头充分性联合表或数据行\")",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/rhythm.py:44",
+      "evidence": "镜头充分性与节奏故障对照.json",
+      "sample": "missing_table"
+    },
+    {
+      "path": "scripts/shot_rhythm.py",
+      "line": 91,
+      "function": "validate_passage",
+      "kind": "error",
+      "guards": [
+        "not re.fullmatch('[A-Za-z][A-Za-z0-9_-]*', ident)"
+      ],
+      "statement": "raise ValueError(f\"{tag} 镜号不合法\")",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/rhythm.py:59",
+      "evidence": "镜头充分性与节奏故障对照.json",
+      "sample": "bad_id"
+    },
+    {
+      "path": "scripts/shot_rhythm.py",
+      "line": 93,
+      "function": "validate_passage",
+      "kind": "error",
+      "guards": [
+        "row['接续方式'] != section.marker"
+      ],
+      "statement": "raise ValueError(f\"{tag} 表文接续标记不一致\")",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/rhythm.py:61",
+      "evidence": "镜头充分性与节奏故障对照.json",
+      "sample": "marker"
+    },
+    {
+      "path": "scripts/shot_rhythm.py",
+      "line": 96,
+      "function": "validate_passage",
+      "kind": "error",
+      "guards": [
+        "section.marker == '同镜延续'",
+        "ident != previous_id"
+      ],
+      "statement": "raise ValueError(f\"{tag} 同镜延续须沿用上一镜号\")",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/rhythm.py:64",
+      "evidence": "镜头充分性与节奏故障对照.json",
+      "sample": "same_id"
+    },
+    {
+      "path": "scripts/shot_rhythm.py",
+      "line": 98,
+      "function": "validate_passage",
+      "kind": "error",
+      "guards": [
+        "not (section.marker == '同镜延续')",
+        "ident in used_ids"
+      ],
+      "statement": "raise ValueError(f\"{tag} 起镜或切镜须使用新镜号\")",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/rhythm.py:66",
+      "evidence": "镜头充分性与节奏故障对照.json",
+      "sample": "new_id"
+    },
+    {
+      "path": "scripts/shot_rhythm.py",
+      "line": 101,
+      "function": "validate_passage",
+      "kind": "error",
+      "guards": [
+        "not span or [Decimal(v) * 1000 for v in span.groups()] != [section.start, section.end]"
+      ],
+      "statement": "raise ValueError(f\"{tag} 联合表与正文时间不同\")",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/rhythm.py:69",
+      "evidence": "镜头充分性与节奏故障对照.json",
+      "sample": "time"
+    },
+    {
+      "path": "scripts/shot_rhythm.py",
+      "line": 104,
+      "function": "validate_passage",
+      "kind": "error",
+      "guards": [
+        "not anchor or anchor not in section.action or sum((anchor in w.action for w in all_sections)) != 1"
+      ],
+      "statement": "raise ValueError(f\"{tag} 定位短句未在本段正文唯一命中\")",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/rhythm.py:72",
+      "evidence": "镜头充分性与节奏故障对照.json",
+      "sample": "shared_anchor"
+    },
+    {
+      "path": "scripts/shot_rhythm.py",
+      "line": 107,
+      "function": "validate_passage",
+      "kind": "error",
+      "guards": [
+        "row[field] in {'', '-', '—'}"
+      ],
+      "statement": "raise ValueError(f\"{tag} 缺少{field}\")",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/rhythm.py:75",
+      "evidence": "镜头充分性与节奏故障对照.json",
+      "sample": "no_camera"
+    },
+    {
+      "path": "scripts/shot_rhythm.py",
+      "line": 121,
+      "function": "analyse_flat",
+      "kind": "error",
+      "guards": [
+        "len(group) != len(sections) or any((row['段ID'] != sid for row in group))"
+      ],
+      "statement": "raise ValueError(f\"{sid} 联合表与TXT时间段缺行、多行或错序\")",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/rhythm.py:96",
+      "evidence": "镜头充分性与节奏故障对照.json",
+      "sample": "wrong_segment"
+    },
+    {
+      "path": "scripts/shot_rhythm.py",
+      "line": 132,
+      "function": "analyse_flat",
+      "kind": "error",
+      "guards": [
+        "any((task in {'', '-', '—'} for task in tasks)) or len(set(tasks)) != len(tasks)"
+      ],
+      "statement": "raise ValueError(f\"{tag} 观看任务为空或重复\")",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/rhythm.py:107",
+      "evidence": "镜头充分性与节奏故障对照.json",
+      "sample": "duplicate_task"
+    },
+    {
+      "path": "scripts/shot_rhythm.py",
+      "line": 134,
+      "function": "analyse_flat",
+      "kind": "warning",
+      "guards": [
+        "len(tasks) > 1"
+      ],
+      "statement": "warning(\"多任务\", tag, scope,\n                    f'{len(tasks)}项观看任务在同一时间段：{row[\"观看任务\"]}。复核是否要重分时间段')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/rhythm.py:109",
+      "evidence": "镜头充分性与节奏故障对照.json",
+      "sample": "multi_task"
+    },
+    {
+      "path": "scripts/shot_rhythm.py",
+      "line": 140,
+      "function": "analyse_flat",
+      "kind": "warning",
+      "guards": [
+        "section.marker == '同镜延续'"
+      ],
+      "statement": "warning(\"切镜疑点\", tag, scope, section.body)",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/rhythm.py:115",
+      "evidence": "镜头充分性与节奏故障对照.json",
+      "sample": "cut_cue"
+    },
+    {
+      "path": "scripts/shot_rhythm.py",
+      "line": 151,
+      "function": "analyse_flat",
+      "kind": "warning",
+      "guards": [
+        "duration * 1000 > LONG_MS and (not any((row['保留理由'] not in {'', '-', '—'} for row, _ in items)))"
+      ],
+      "statement": "warning(\"长镜\", f\"{sid}/{ident}\", [[r, vars(w)] for r, w in items],\n                                        \"缺持续观看理由；复核各时间段的相机承接\")",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/rhythm.py:126",
+      "evidence": "镜头充分性与节奏故障对照.json",
+      "sample": "long"
+    },
+    {
+      "path": "scripts/shot_rhythm.py",
+      "line": 158,
+      "function": "analyse_flat",
+      "kind": "warning",
+      "guards": [
+        "counts[sid] <= 2"
+      ],
+      "statement": "warning(\"少镜段\", sid, scopes[sid], \"核对各段相机承接与观看目的\")",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/rhythm.py:133",
+      "evidence": "镜头充分性与节奏故障对照.json",
+      "sample": "few"
+    },
+    {
+      "path": "scripts/shot_rhythm.py",
+      "line": 160,
+      "function": "analyse_flat",
+      "kind": "error",
+      "guards": [
+        "offset != len(rows)"
+      ],
+      "statement": "raise ValueError(f'联合表包含TXT未覆盖的时间段：{rows[offset][\"段ID\"]}/{rows[offset][\"段内区间\"]}')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/rhythm.py:135",
+      "evidence": "镜头充分性与节奏故障对照.json",
+      "sample": "extra_row"
+    },
+    {
+      "path": "scripts/shot_rhythm.py",
+      "line": 162,
+      "function": "analyse_flat",
+      "kind": "warning",
+      "guards": [
+        "len(counts) > 1 and len(set(counts.values())) == 1"
+      ],
+      "statement": "warning(\"全片同镜数\", \"全片\", scopes, \"复核各段实际观看需要\")",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/rhythm.py:137",
+      "evidence": "镜头充分性与节奏故障对照.json",
+      "sample": "even"
+    },
+    {
+      "path": "scripts/shot_rhythm.py",
+      "line": 171,
+      "function": "analyse",
+      "kind": "error",
+      "guards": [
+        "not isinstance(config, dict) or type(config.get('version')) is not int or config['version'] != 2"
+      ],
+      "statement": "raise ValueError('须声明 shot_rhythm.version=2')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/rhythm.py:218",
+      "evidence": "镜头充分性与节奏故障对照.json",
+      "sample": "bool_version"
+    },
+    {
+      "path": "scripts/prompt_review.py",
+      "line": 14,
+      "function": "inputs",
+      "kind": "error",
+      "guards": [
+        "data.get('schema_version') != 2"
+      ],
+      "statement": "raise ValueError('须使用schema_version=2')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/promptreceipt.py:11",
+      "evidence": "提示词独审与实际送审文件对照.json",
+      "sample": "schema"
+    },
+    {
+      "path": "scripts/prompt_review.py",
+      "line": 17,
+      "function": "inputs",
+      "kind": "error",
+      "guards": [
+        "not isinstance(sources, dict)"
+      ],
+      "statement": "raise ValueError('prompt_review须列出requirements、story、plan来源路径')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/promptreceipt.py:14",
+      "evidence": "提示词独审与实际送审文件对照.json",
+      "sample": "sources"
+    },
+    {
+      "path": "scripts/prompt_review.py",
+      "line": 25,
+      "function": "inputs",
+      "kind": "error",
+      "guards": [
+        "ident in result"
+      ],
+      "statement": "raise ValueError('重复段号：' + ident)",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/promptreceipt.py:31",
+      "evidence": "提示词独审与实际送审文件对照.json",
+      "sample": "duplicate_segment"
+    },
+    {
+      "path": "scripts/prompt_review.py",
+      "line": 29,
+      "function": "inputs",
+      "kind": "error",
+      "guards": [
+        "[r['upload_order'] for r in refs] != list(range(1, len(refs) + 1))"
+      ],
+      "statement": "raise ValueError(ident + '：图片上传顺序与清单不一致')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/promptreceipt.py:33",
+      "evidence": "提示词独审与实际送审文件对照.json",
+      "sample": "upload_order"
+    },
+    {
+      "path": "scripts/prompt_review.py",
+      "line": 61,
+      "function": "verify",
+      "kind": "error",
+      "guards": [
+        "ident not in expected"
+      ],
+      "statement": "raise ValueError('审核记录包含未知段：' + ident)",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/promptreceipt.py:49",
+      "evidence": "提示词独审与实际送审文件对照.json",
+      "sample": "unknown_record"
+    },
+    {
+      "path": "scripts/prompt_review.py",
+      "line": 63,
+      "function": "verify",
+      "kind": "error",
+      "guards": [
+        "ident in reviews"
+      ],
+      "statement": "raise ValueError('审核记录段号重复或结论冲突：' + ident)",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/promptreceipt.py:51",
+      "evidence": "提示词独审与实际送审文件对照.json",
+      "sample": "duplicate_record"
+    },
+    {
+      "path": "scripts/prompt_review.py",
+      "line": 68,
+      "function": "verify",
+      "kind": "error",
+      "guards": [
+        "actual != expected[ident]"
+      ],
+      "statement": "raise ValueError('交付TXT或实际输入图片与送审文件不一致，须重审该段')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/promptreceipt.py:71",
+      "evidence": "提示词独审与实际送审文件对照.json",
+      "sample": "change_txt"
+    },
+    {
+      "path": "scripts/prompt_review.py",
+      "line": 70,
+      "function": "verify",
+      "kind": "error",
+      "guards": [
+        "except (ValueError, TypeError)"
+      ],
+      "statement": "raise ValueError(ident + '：' + str(error)) from error",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/promptreceipt.py:73",
+      "evidence": "提示词独审与实际送审文件对照.json",
+      "sample": "bad_images_json"
+    },
+    {
+      "path": "scripts/prompt_review.py",
+      "line": 74,
+      "function": "verify",
+      "kind": "error",
+      "guards": [
+        "missing"
+      ],
+      "statement": "raise ValueError('缺少提示词独审段：' + ','.join(sorted(missing)))",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/promptreceipt.py:77",
+      "evidence": "提示词独审与实际送审文件对照.json",
+      "sample": "missing_record"
+    },
+    {
+      "path": "scripts/check_assets.py",
+      "line": 13,
+      "function": "verify",
+      "kind": "error",
+      "guards": [
+        "not (root / '系列设定.md').is_file()"
+      ],
+      "statement": "raise ValueError('缺少系列设定.md')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/roleassets.py:25",
+      "evidence": "固定身份原图与故障对照.json",
+      "sample": "missing_series"
+    },
+    {
+      "path": "scripts/check_assets.py",
+      "line": 16,
+      "function": "verify",
+      "kind": "error",
+      "guards": [
+        "len(assets) != 3 or {a.get('id') for a in assets} != {'milo', 'leo', 'woman'}"
+      ],
+      "statement": "raise ValueError('有效角色清单必须恰好包含milo、leo、woman')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/roleassets.py:29",
+      "evidence": "固定身份原图与故障对照.json",
+      "sample": "wrong_roles"
+    },
+    {
+      "path": "scripts/check_assets.py",
+      "line": 19,
+      "function": "verify",
+      "kind": "error",
+      "guards": [
+        "not voice.is_file()"
+      ],
+      "statement": "raise ValueError('缺少固定声音设定.md')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/roleassets.py:30",
+      "evidence": "固定身份原图与故障对照.json",
+      "sample": "missing_voice"
+    },
+    {
+      "path": "scripts/check_assets.py",
+      "line": 24,
+      "function": "verify",
+      "kind": "error",
+      "guards": [
+        "not file.is_relative_to(root) or not file.is_file()"
+      ],
+      "statement": "raise ValueError(f'资产缺失或越出资产根目录：{item[\"path\"]}')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/roleassets.py:34",
+      "evidence": "固定身份原图与故障对照.json",
+      "sample": "escaped_path"
+    },
+    {
+      "path": "scripts/check_assets.py",
+      "line": 27,
+      "function": "verify",
+      "kind": "error",
+      "guards": [
+        "digest != item.get('sha256')"
+      ],
+      "statement": "raise ValueError(f'资产指纹不匹配，未自动替换：{item[\"path\"]}')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/roleassets.py:36",
+      "evidence": "固定身份原图与故障对照.json",
+      "sample": "wrong_hash"
+    },
+    {
+      "path": "scripts/check_assets.py",
+      "line": 29,
+      "function": "verify",
+      "kind": "error",
+      "guards": [
+        "not item.get('version')"
+      ],
+      "statement": "raise ValueError(f'缺少版本：{item[\"id\"]}')",
+      "status": "已实现并核对样本",
+      "target": "server/workbench/roleassets.py:38",
+      "evidence": "固定身份原图与故障对照.json",
+      "sample": "missing_version"
+    }
+  ]
+}

@@ -3,7 +3,7 @@
   "configId": "puggy",
   "name": "PUGGY ROOM",
   "summary": "胖橘猫 MILO 与 LEO、女主人的家庭荒诞喜剧短片系列。",
-  "methodPack": "short-film@v1",
+  "methodPack": "short-film@v7",
   "extractedFrom": [
     "~/.codex/skills/milo-leo-story/references/story-standard.md#二、整体风格",
     "/Users/xiaogang/Documents/自媒体 2/series/milo-leo/系列设定.md"
@@ -42,10 +42,23 @@
     "packaging": "full"
   },
   "production": {
+    "silentRoles": ["milo", "leo"],
     "assetRoot": "/Users/xiaogang/Documents/自媒体 2/series/milo-leo",
+    "roleAssets": {"manifest":"资产清单.json","series":"系列设定.md","voice":"声音设定.md","roles":["milo","leo","woman"]},
+    "contactOutfits": {"woman":["owner-home-outfit-c01","owner-home-outfit-c02"]},
+    "sceneBaselineRule": {"scope":"milo_home","prefix":"milo-home-"},
+    "assetLibraryIndex": "复用资产库/index.json",
+    "imageOutputRoot": "/Users/xiaogang/Documents/自媒体 2/tools/openai-image-mcp/outputs",
+    "sceneBaselines": "制作基准/固定生产资产.json",
+    "topicCatalog": "选题池/candidates.json",
+    "soundStandard": "声音设定.md",
+    "promptStandard": "制作基准/视频提示词标准.json",
     "characterStandard": "制作基准/角色外观标准.json",
+    "projectLibrary": "puggy/v1",
+    "minimumProductPlacements": 1,
     "productPlacement": "每集视频至少有一个场景自然出现一款已上线商品（第 2 阶段启用）",
     "brandSting": "品牌片尾/",
-    "publishSettings": "发布设置.json"
+    "publishSettings": "发布设置.json",
+    "publishCopyFormat": "instrumental_v1"
   }
 }

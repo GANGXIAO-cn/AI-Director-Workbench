@@ -7,6 +7,13 @@ import time
 import uuid
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS import_extraction(
+  import_id TEXT PRIMARY KEY REFERENCES import_record(id), method TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS api_provider(
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, base_url TEXT NOT NULL, auth TEXT NOT NULL,
+  binding TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, probe_seq INTEGER NOT NULL DEFAULT 0,
+  models TEXT NOT NULL DEFAULT '[]', labels TEXT NOT NULL DEFAULT '{}',
+  checked_at REAL, synced_at REAL, diagnostic TEXT);
 CREATE TABLE IF NOT EXISTS app_setting(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS command(
   command_id TEXT PRIMARY KEY, kind TEXT NOT NULL, payload_hash TEXT NOT NULL,
@@ -16,6 +23,9 @@ CREATE TABLE IF NOT EXISTS project(
   config_id TEXT NOT NULL, method_pack TEXT NOT NULL, settings_revision INTEGER NOT NULL DEFAULT 0,
   spec_preset TEXT NOT NULL, production TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1,
   created_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS project_recent(
+  project_id TEXT PRIMARY KEY REFERENCES project(id), visible INTEGER NOT NULL DEFAULT 1 CHECK(visible IN (0,1)),
+  last_opened REAL);
 CREATE TABLE IF NOT EXISTS setting_entry(
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES project(id),
   setting_revision INTEGER NOT NULL, key TEXT NOT NULL, category TEXT NOT NULL,
@@ -43,6 +53,19 @@ CREATE TABLE IF NOT EXISTS kickoff(
   predecessor_ids TEXT NOT NULL DEFAULT '[]', carried_facts TEXT NOT NULL DEFAULT '[]',
   settings_revision INTEGER NOT NULL, settings_snapshot TEXT NOT NULL, spec TEXT NOT NULL,
   executor_plan TEXT NOT NULL, created_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS kickoff_preset(
+  episode_id TEXT PRIMARY KEY REFERENCES episode(id), name TEXT NOT NULL, rev INTEGER NOT NULL, base_values TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS kickoff_method(episode_id TEXT PRIMARY KEY REFERENCES episode(id), method_pack TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS episode_source(episode_id TEXT NOT NULL REFERENCES episode(id), kind TEXT NOT NULL, relpath TEXT NOT NULL, sha256 TEXT NOT NULL, PRIMARY KEY(episode_id,kind));
+CREATE TABLE IF NOT EXISTS baseline_revision(
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES project(id), kind TEXT NOT NULL,
+  revision INTEGER NOT NULL, block_key TEXT NOT NULL, relpath TEXT NOT NULL,
+  base_sha256 TEXT NOT NULL, sha256 TEXT NOT NULL, created_at REAL NOT NULL,
+  UNIQUE(project_id,kind,revision));
+CREATE TABLE IF NOT EXISTS episode_baseline_change(
+  episode_id TEXT NOT NULL REFERENCES episode(id), revision_id TEXT NOT NULL REFERENCES baseline_revision(id),
+  sha256 TEXT NOT NULL, PRIMARY KEY(episode_id,revision_id));
+CREATE TABLE IF NOT EXISTS topic_source(topic_id TEXT PRIMARY KEY REFERENCES topic(id), relpath TEXT NOT NULL, sha256 TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS artifact(
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES project(id),
   episode_id TEXT NOT NULL REFERENCES episode(id), stage TEXT NOT NULL CHECK(stage IN ('story','script','plan','prompts','publish')),
@@ -53,6 +76,7 @@ CREATE TABLE IF NOT EXISTS version(
   base_id TEXT REFERENCES version(id), origin TEXT NOT NULL CHECK(origin IN ('ai','manual','combined')),
   source_run_id TEXT UNIQUE REFERENCES run(id), content TEXT NOT NULL, blob_hash TEXT NOT NULL,
   note TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL, UNIQUE(artifact_id, display_no));
+CREATE TABLE IF NOT EXISTS version_baseline_source(version_id TEXT PRIMARY KEY REFERENCES version(id), sources TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS task(
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES project(id),
   episode_id TEXT NOT NULL REFERENCES episode(id), artifact_id TEXT NOT NULL REFERENCES artifact(id),
@@ -77,6 +101,9 @@ CREATE TABLE IF NOT EXISTS run(
   status TEXT NOT NULL DEFAULT 'queued', reason TEXT, diagnostic TEXT, format_attempts INTEGER NOT NULL DEFAULT 0,
   quota_resets_at TEXT, executable TEXT, executor_version TEXT,
   created_at REAL NOT NULL, started_at REAL, ended_at REAL, result_hash TEXT);
+CREATE TABLE IF NOT EXISTS story_candidate(
+  source_version_id TEXT NOT NULL REFERENCES version(id), round_no INTEGER NOT NULL, side TEXT NOT NULL CHECK(side IN ('A','B')),
+  run_id TEXT NOT NULL UNIQUE REFERENCES run(id), PRIMARY KEY(source_version_id,round_no,side));
 CREATE TABLE IF NOT EXISTS event(
   id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES run(id), seq INTEGER NOT NULL,
   payload TEXT NOT NULL, UNIQUE(run_id, seq));
@@ -95,6 +122,50 @@ CREATE TABLE IF NOT EXISTS waiver(
   id TEXT PRIMARY KEY, issue_id TEXT NOT NULL REFERENCES issue(id), version_id TEXT NOT NULL REFERENCES version(id),
   reason TEXT NOT NULL CHECK(length(trim(reason)) > 0), created_at REAL NOT NULL,
   scope_hash TEXT, UNIQUE(issue_id, version_id));
+CREATE TABLE IF NOT EXISTS prompt_draft_task(
+  task_id TEXT PRIMARY KEY REFERENCES task(id), include_images INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS step_revision(
+  episode_id TEXT NOT NULL REFERENCES episode(id), stage TEXT NOT NULL, revision INTEGER NOT NULL,
+  body TEXT NOT NULL, PRIMARY KEY(episode_id,stage,revision));
+CREATE TABLE IF NOT EXISTS episode_resource_version(
+  episode_id TEXT PRIMARY KEY REFERENCES episode(id), library_ref TEXT
+);
+CREATE TABLE IF NOT EXISTS stage_project_reference(
+  episode_id TEXT NOT NULL REFERENCES episode(id), stage TEXT NOT NULL, refs TEXT NOT NULL, PRIMARY KEY(episode_id, stage)
+);
+CREATE TABLE IF NOT EXISTS fixed_role_asset(
+  episode_id TEXT NOT NULL REFERENCES episode(id), role TEXT NOT NULL, sha256 TEXT NOT NULL, asset_version_id TEXT NOT NULL REFERENCES asset_version(id),
+  PRIMARY KEY(episode_id,role,sha256)
+);
+CREATE TABLE IF NOT EXISTS episode_product_rule(
+  episode_id TEXT PRIMARY KEY REFERENCES episode(id), minimum INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS product_placement(
+  episode_id TEXT NOT NULL REFERENCES episode(id), code TEXT NOT NULL, shot_id TEXT NOT NULL, shot_hash TEXT NOT NULL,
+  intent TEXT NOT NULL, scene_version TEXT REFERENCES asset_version(id), observation TEXT NOT NULL,
+  PRIMARY KEY(episode_id,code,shot_id)
+);
+CREATE TABLE IF NOT EXISTS episode_product(
+  episode_id TEXT NOT NULL REFERENCES episode(id), code TEXT NOT NULL, version_id TEXT NOT NULL REFERENCES asset_version(id),
+  source TEXT NOT NULL, PRIMARY KEY(episode_id, code)
+);
+CREATE TABLE IF NOT EXISTS historical_episode(
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES project(id), folder TEXT NOT NULL, fingerprint TEXT NOT NULL UNIQUE,
+  files TEXT NOT NULL, settings TEXT NOT NULL, checks TEXT NOT NULL, created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS historical_archive(
+  receipt_id TEXT PRIMARY KEY REFERENCES historical_episode(id), metadata TEXT NOT NULL, checks TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS historical_check(
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES project(id), kind TEXT NOT NULL,
+  name TEXT NOT NULL, source TEXT NOT NULL, sha256 TEXT NOT NULL, settings TEXT NOT NULL,
+  ok INTEGER NOT NULL, diagnostic TEXT, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS version_publish_basis(
+  version_id TEXT PRIMARY KEY REFERENCES version(id), basis TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS version_publish_config(
+  version_id TEXT PRIMARY KEY REFERENCES version(id), settings TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS adoption(
   id TEXT PRIMARY KEY, artifact_id TEXT NOT NULL REFERENCES artifact(id),
   version_id TEXT NOT NULL REFERENCES version(id), previous_version_id TEXT,
@@ -152,6 +223,11 @@ CREATE TABLE IF NOT EXISTS image_choice(
   id TEXT PRIMARY KEY, episode_id TEXT NOT NULL, asset_version_id TEXT NOT NULL,
   mark TEXT NOT NULL CHECK(mark IN ('required','recommended','backup','adopted')),
   shot_ids TEXT NOT NULL DEFAULT '[]', created_at REAL NOT NULL, UNIQUE(episode_id, asset_version_id, mark));
+CREATE TABLE IF NOT EXISTS shot_image_observation(
+  id TEXT PRIMARY KEY, episode_id TEXT NOT NULL REFERENCES episode(id), segment TEXT NOT NULL,
+  asset_version_id TEXT NOT NULL REFERENCES asset_version(id), details TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS required_image_details(
+  choice_id TEXT PRIMARY KEY REFERENCES image_choice(id) ON DELETE CASCADE, details TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS image_batch(
   id TEXT PRIMARY KEY, episode_id TEXT NOT NULL REFERENCES episode(id), input_hash TEXT NOT NULL,
   provider TEXT NOT NULL, model TEXT, operation TEXT NOT NULL, size TEXT NOT NULL, count INTEGER NOT NULL,
@@ -173,6 +249,12 @@ CREATE TABLE IF NOT EXISTS cast_cell(
   role TEXT NOT NULL, asset_version_id TEXT, cells TEXT NOT NULL DEFAULT '[]',
   status TEXT NOT NULL CHECK(status IN ('ok','unclear','absent')), note TEXT NOT NULL DEFAULT '',
   UNIQUE(episode_id, segment_id, role));
+CREATE TABLE IF NOT EXISTS episode_role_baseline(
+  episode_id TEXT NOT NULL REFERENCES episode(id), role TEXT NOT NULL, asset_version_id TEXT NOT NULL REFERENCES asset_version(id),
+  appearance TEXT NOT NULL, PRIMARY KEY(episode_id,role));
+CREATE TABLE IF NOT EXISTS cast_opening(
+  episode_id TEXT NOT NULL REFERENCES episode(id), sha256 TEXT NOT NULL, segment_id TEXT NOT NULL,
+  PRIMARY KEY(episode_id,sha256));
 CREATE TABLE IF NOT EXISTS delivery(
   id TEXT PRIMARY KEY, episode_id TEXT NOT NULL REFERENCES episode(id), scope TEXT NOT NULL,
   segments TEXT NOT NULL, manifest_hash TEXT NOT NULL, relpath TEXT NOT NULL, state TEXT NOT NULL,
@@ -180,6 +262,9 @@ CREATE TABLE IF NOT EXISTS delivery(
 CREATE TABLE IF NOT EXISTS package(
   id TEXT PRIMARY KEY, delivery_id TEXT NOT NULL REFERENCES delivery(id), segments TEXT NOT NULL,
   relpath TEXT NOT NULL, sha256 TEXT NOT NULL, project_json TEXT NOT NULL, created_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS package_tool(
+  package_id TEXT PRIMARY KEY REFERENCES package(id), tool_sha256 TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS package_tool_hash ON package_tool(tool_sha256);
 CREATE TABLE IF NOT EXISTS ledger(
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL, episode_id TEXT NOT NULL REFERENCES episode(id),
   delivery_id TEXT, kind TEXT NOT NULL, content TEXT NOT NULL, evidence TEXT NOT NULL DEFAULT '',
@@ -216,6 +301,27 @@ CREATE TABLE IF NOT EXISTS expert_auth(
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL, episodes TEXT NOT NULL, stop_stage TEXT NOT NULL,
   division TEXT NOT NULL, image_cap INTEGER NOT NULL DEFAULT 0, stops TEXT NOT NULL,
   state TEXT NOT NULL, stop_reason TEXT, log TEXT NOT NULL DEFAULT '[]', created_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS expert_scope(
+  auth_id TEXT PRIMARY KEY REFERENCES expert_auth(id), baseline TEXT NOT NULL,
+  budget_cents INTEGER NOT NULL, cursor TEXT, pause_requested INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS expert_budget_currency(
+  auth_id TEXT PRIMARY KEY REFERENCES expert_scope(auth_id), currency TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS expert_episode_owner(
+  episode_id TEXT PRIMARY KEY REFERENCES episode(id), auth_id TEXT NOT NULL REFERENCES expert_auth(id));
+CREATE TABLE IF NOT EXISTS expert_batch(
+  batch_id TEXT PRIMARY KEY REFERENCES image_batch(id), auth_id TEXT NOT NULL REFERENCES expert_auth(id));
+CREATE TABLE IF NOT EXISTS free_thread(
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES project(id), title TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS free_turn(
+  id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES free_thread(id), text TEXT NOT NULL, reply TEXT,
+  provider TEXT NOT NULL, status TEXT NOT NULL, reason TEXT, attempt TEXT NOT NULL, input_hash TEXT NOT NULL,
+  manifest_relpath TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS free_turn_thread ON free_turn(thread_id);
+CREATE TABLE IF NOT EXISTS uploaded_method(
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES project(id), title TEXT NOT NULL, UNIQUE(project_id,title));
+CREATE TABLE IF NOT EXISTS uploaded_method_revision(
+  id TEXT PRIMARY KEY, method_id TEXT NOT NULL REFERENCES uploaded_method(id), number INTEGER NOT NULL,
+  filename TEXT NOT NULL, sha256 TEXT NOT NULL, created_at REAL NOT NULL, UNIQUE(method_id,number));
 CREATE TABLE IF NOT EXISTS pack_adoption(
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES project(id), ref TEXT NOT NULL,
   regression TEXT NOT NULL, created_at REAL NOT NULL);

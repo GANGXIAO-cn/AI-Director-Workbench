@@ -1,0 +1,92 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs/promises");
+const path = require("node:path");
+const {createHash} = require("node:crypto");
+const {chromium} = require("playwright");
+
+async function main() {
+  const base = "http://127.0.0.1:"+process.env.ADW_TEST_PORT;
+  const dir = path.resolve(__dirname,"../../修复验证_20261108");
+  const report = JSON.parse(await fs.readFile(path.join(dir,"历史集图片盘点与子集边界对照.json")));
+  const folder = "2026-11-03-one-orange-short";
+  const expected = report.results.find(r=>r.episode===folder);
+  assert.ok(expected?.matched);
+  const browser = await chromium.launch({executablePath:process.env.CHROME_PATH,headless:true});
+  try {
+    const page = await browser.newPage({viewport:{width:1440,height:960}});
+    page.setDefaultTimeout(15000);
+    const errors = [];
+    page.on("pageerror",e=>errors.push(e.message));
+    const get = async(name,args={})=>{
+      const res=await page.request.get(base+"/api/q/"+name,{params:{args:JSON.stringify(args)}});
+      assert.equal(res.status(),200);return res.json();
+    };
+    assert.match((await get("storage_status")).dataDir,/adw-workflows-/);
+    const {token} = await (await page.request.get(base+"/api/session")).json();
+    const res = await page.request.post(base+"/api/cmd/create_project",{headers:{"x-adw-token":token},data:{config_id:"puggy",name:"盘点验收"}});
+    assert.equal(res.status(),200);
+    const {projectId} = await res.json();
+    await page.goto(base+"/#/p/"+projectId+"/knowledge");
+    await page.getByText(/核对历史集资料（/).click();
+    await page.getByLabel("历史集",{exact:true}).selectOption(folder);
+    await page.getByLabel("同时盘点并保存本集候选原图").check();
+    await page.getByRole("button",{name:"导入副本并核对"}).click();
+    const title = page.getByText("查看图片来源与使用段",{exact:true});
+    await title.click();
+    const table = title.locator("..");
+    await table.getByLabel("图片盘点范围").waitFor();
+    const receipt = await page.getByLabel("核对版本").inputValue();
+    const stored = await get("historical_receipt",{project_id:projectId,receipt});
+    const inventory = stored.materialRechecked.imageInventory.details;
+    assert.equal(stored.integrity.ok,true);
+    assert.deepEqual(inventory.excluded_projects,expected.excludedProjects);
+    assert.equal(inventory.current_images,expected.currentCount);
+    assert.equal(await table.locator("li").count(),30);
+    const first = await table.locator("code").first().innerText();
+    await table.getByRole("button",{name:"下一页"}).click();
+    assert.notEqual(await table.locator("code").first().innerText(),first);
+    await table.getByLabel("图片盘点范围").selectOption("required");
+    const mandatory = expected.images.filter(r=>r.priority==="required");
+    assert.deepEqual((await table.locator("code").allTextContents()).sort(),mandatory.map(r=>r.sha256).sort());
+    const item = mandatory.find(r=>r.current.length && r.segments.length);
+    await table.getByLabel("搜索盘点图片").fill(item.id);
+    assert.equal(await table.locator("li").count(),1);
+    assert.match(await table.locator("li").innerText(),/正式输入/);
+    await table.getByRole("button",{name:"查看冻结原图"}).click();
+    const img = table.locator("img");
+    await img.evaluate(el=>el.decode());
+    assert.equal(await img.getAttribute("src"),"/api/blob/"+item.sha256);
+    const bytes = await (await page.request.get(base+"/api/blob/"+item.sha256)).body();
+    assert.equal(createHash("sha256").update(bytes).digest("hex"),item.sha256);
+    await img.scrollIntoViewIfNeeded();
+    await page.screenshot({path:path.join(dir,"38_历史集必用原图与使用段.png")});
+    await page.reload();
+    await page.getByText(/核对历史集资料（/).click();
+    await page.getByLabel("历史集",{exact:true}).selectOption(folder);
+    await title.click();
+    assert.equal(await page.getByLabel("核对版本").inputValue(),receipt);
+    await table.getByLabel("图片盘点范围").selectOption("used");
+    assert.equal(await table.locator("li").count(),Math.min(30,expected.images.filter(r=>r.segments.length>0).length));
+    const sourceReport = expected.reports[0];
+    const view = await Promise.all([page.waitForEvent("popup"),page.getByRole("link",{name:"打开逐镜报告"}).click()]).then(([p])=>p);
+    await view.getByRole("heading",{name:"逐镜报告",exact:true}).first().waitFor();
+    const frames = view.locator("figure img");
+    assert.equal(await frames.count(),sourceReport.images);
+    await frames.first().scrollIntoViewIfNeeded();
+    await frames.first().evaluate(el=>el.decode());
+    const download = await view.getByRole("link",{name:"下载原版报告与配图"}).getAttribute("href");
+    const zipped = await view.request.get(new URL(download,view.url()).href);
+    assert.equal(zipped.status(),200);
+    assert.equal((await zipped.body()).subarray(0,2).toString(),"PK");
+    const html = await view.request.get(new URL("report.html",view.url()).href);
+    assert.match(html.headers()["content-disposition"],/attachment/);
+    assert.equal(createHash("sha256").update(await html.body()).digest("hex"),sourceReport.html);
+    await view.close();
+    assert.deepEqual(errors,[]);
+    await fs.writeFile(path.join(dir,"历史集图片盘点浏览器验收.json"),JSON.stringify({folder,receipt,
+      current:inventory.current_images,excluded:inventory.excluded_projects,required:mandatory.map(r=>r.id),
+      preview:{id:item.id,sha256:item.sha256,usedIn:item.segments,bytes:bytes.length},paginated:true,reopened:true,report:sourceReport,errors},null,2)+"\n");
+    console.log("PASS archived image boundaries, pagination, required choices, segment search and original frozen image");
+  } finally {await browser.close();}
+}
+main().catch(e=>{console.error(e);process.exitCode=1;});

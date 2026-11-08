@@ -29,6 +29,39 @@ def layout(plan: dict) -> dict:
     return dict(segments=out_segments, shots=out_shots, total_ms=clock)
 
 
+def script_budget(script, plan, segments):
+    """Attribute each shot's milliseconds to its declared scene within the selected segments."""
+    scenes = {scene["id"]: scene for scene in script.get("scenes", [])}
+    source_text = {}
+    for scene_id, scene in scenes.items():
+        fields = (scene.get(k) for k in ("action", "performance", "choice", "response", "change",
+                                         "payoff", "dialogue", "sound"))
+        source_text[scene_id] = [line for field in fields for line in (field if isinstance(field, list) else [field])
+                                 if isinstance(line, str)]
+    shots = {shot["id"]: shot for shot in plan.get("shots", [])}
+    rows, traced = [], set()
+    for segment in segments:
+        by_scene = {}
+        for shot_id in segment["shots"]:
+            shot = shots[shot_id]
+            origin = shot.get("origin") if isinstance(shot.get("origin"), dict) else {}
+            scene_id = origin.get("scene") if isinstance(origin.get("scene"), str) else None
+            scene = scenes.get(scene_id)
+            group = by_scene.setdefault(scene_id, dict(scene=scene_id, known=scene is not None,
+                                                       duration_ms=0, shots=[], unverifiedQuotes=[]))
+            group["duration_ms"] += shot["duration_ms"]
+            group["shots"].append(shot_id)
+            quote = origin.get("line")
+            if scene is not None:
+                traced.add(scene_id)
+            if not isinstance(quote, str) or not quote.strip() or not any(quote in line for line in source_text.get(scene_id, [])):
+                group["unverifiedQuotes"].append(shot_id)
+        rows.append(dict(segment=segment["id"], episode_start_ms=segment["start_ms"],
+                         duration_ms=segment["duration_ms"], scenes=list(by_scene.values())))
+    return dict(segments=rows, total_ms=sum(r["duration_ms"] for r in rows),
+                scenesOutsideSelection=[key for key in scenes if key not in traced])
+
+
 def check(plan: dict, packaging: bool = False) -> list[dict]:
     """Structural problems as [{segment, problem}]; packaging adds the H3 5–15 s integer rule."""
     problems = []

@@ -1,6 +1,7 @@
 """§10 端到端验收：each test is one row of the product design's acceptance table (FakeExecutor /
 FakeImageProvider). Assertions read back DB rows, adoption pointers, input manifests and files on disk."""
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import zipfile
 
@@ -118,6 +119,128 @@ def test_04_reference_film_to_script(env):
                                                          source=dict(storyVersion=r2, beat="B03", refShot="S03"))]))
     scene = env.art(eid, "script")["versions"][-1]["content"]["scenes"][0]
     assert scene["source"] == dict(storyVersion=r2, beat="B03", refShot="S03")
+
+
+def saved_reference(env, pid):
+    src, pack = make_pack(env, pid, cuts=())
+    pack_id = pack["packId"]
+    env.wb.edit_cuts(pack_id, "confirm", "S01", fields={"narrative": "检票员核对票根"})
+    env.wb.save_pack(pack_id)
+    return src, pack
+
+
+def test_adaptation_command_is_atomic_project_scoped_and_replayable(env):
+    wb = env.wb
+    pid, eid = env.new_episode()
+    _, other = env.new_episode(name="另一项目")
+    src, pack = saved_reference(env, pid)
+    args = (eid, pack["packId"], "按这镜的发现顺序写新故事", "adapt-once")
+    with pytest.raises(Rejected, match="项目"):
+        wb.adapt_from_pack(other, *args[1:])
+    with pytest.raises(Rejected, match="项目"):
+        wb.create_pack(src["sourceId"], other)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a, b = list(pool.map(lambda _: wb.adapt_from_pack(*args), range(2)))
+    assert a == b
+    with env.db() as db:
+        for table in ("task", "run", "task_pack"):
+            assert db.execute("SELECT count(*) FROM "+table).fetchone()[0] == 1
+    with pytest.raises(Conflict):
+        wb.adapt_from_pack(eid, pack["packId"], "换题目", args[-1])
+    wb.create_pack(src["sourceId"], eid, lineage=pack["lineage"])
+    assert wb.adapt_from_pack(*args) == a
+    with pytest.raises(Rejected, match="旧参考包"):
+        wb.adapt_from_pack(*args[:-1], "new-command")
+
+
+def test_adaptation_revisions_and_comparisons_keep_original_evidence(env):
+    wb = env.wb
+    pid, eid = env.new_episode()
+    original = env.adopt_story(eid)
+    _, pack = saved_reference(env, pid)
+    created = wb.adapt_from_pack(eid, pack["packId"], "从这一镜改编", "start-adaptation")
+    env.drain(created["runId"])
+    story = env.art(eid, "story")
+    first = story["versions"][-1]
+    assert story["adopted_version_id"] == original and first["base_id"] is None
+    assert first["content"]["adaptation"][0]["unit"] == "S01"
+    def sources(run):
+        return {i["role"]:i["sha256"] for i in wb.run_manifest(run)["manifest"]["inputs"]
+                if i["role"] in {"adaptation_source","reference_pack"}}
+    frozen = sources(created["runId"])
+    assert set(frozen) == {"adaptation_source","reference_pack"}
+    wb.add_beat(pack["packId"], "B09", ["S01"], "后来登记的新观察", "已补录")
+    changed = wb.post_message(created["taskId"], "仅修改交接", "revise", base_version_id=first["id"])
+    env.drain(changed["runId"])
+    revised = env.art(eid,"story")["versions"][-1]
+    assert revised["base_id"] == first["id"] and revised["content"]["adaptation"] == first["content"]["adaptation"]
+    paired = wb.start_story_comparison(revised["id"], "both-authors")
+    reviewed = wb.submit_review(revised["id"], "rv-adapt")
+    for run in [changed["runId"], *paired["runIds"], reviewed["runId"]]:
+        assert sources(run) == frozen
+    malformed = [dict(first["content"]["adaptation"][0], unit="B09")]
+    invalid = wb.save_manual(story["id"], first["id"], {"adaptation":malformed}, "bad-manual")["versionId"]
+    assert any("未在本稿" in e for e in wb.adoption_gate(invalid)["formatErrors"])
+    assert not wb.adoption_gate(invalid)["adoptable"]
+    assert not wb.adoption_gate(original)["formatErrors"]
+
+
+def test_model_adaptation_requires_actual_source_and_complete_fields(env):
+    wb = env.wb
+    pid, eid = env.new_episode()
+    _, pack = saved_reference(env, pid)
+    env.codex.script = [lambda req: draft(req,synopsis="他拼好票根。"),
+        lambda req: draft(req,adaptation=json.dumps([dict(pack=pack["packId"], unit="S99",
+            original="缺口", adapted="票根", reason="保留揭示顺序")]))]
+    t = wb.adapt_from_pack(eid, pack["packId"], "从参考镜改编", "bad-output")
+    env.drain(t["runId"])
+    art = env.art(eid,"story")
+    assert not art["versions"] and len(env.codex.calls) == 2
+    assert art["tasks"][0]["runs"][0]["status"] == "failed"
+
+
+def test_story_review_uses_manuscript_ancestry_and_updates_topic_when_structure_ready(env):
+    wb = env.wb
+    pid = wb.create_project("_template","待审稿状态核对")["projectId"]
+    topic = wb.add_topic(pid,"B07","两张交接单")["topicId"]
+    eid = wb.create_episode(pid,"E01")["episodeId"]
+    wb.start_episode(eid,"topic",{"create":{"provider":"codex"},"review":{"provider":"claude"}},topic_id=topic)
+    task = wb.create_task(eid,"story","写故事")
+    env.drain(task["runId"])
+    base = env.art(eid,"story")["versions"][0]["id"]
+    damaged = {"synopsis":{"text":"旧数据"}, "cast":["值班员"], "handoff":4, "notes":{"待完善":True}}
+    manual = wb.save_manual(task["artifactId"],base,damaged,"malformed")["versionId"]
+    # A second task on the same artifact has a different reviewer.
+    wb.create_task(eid,"story","另一个任务",executor={"review":{"provider":"codex"}})
+    gate = env.art(eid,"story")["versions"][-1]["gate"]
+    assert len(gate["formatErrors"]) == 4 and not gate["adoptable"]
+    queued = wb.submit_review(manual,"review-invalid")
+    assert queued["taskId"] == task["taskId"]
+    assert wb.run_manifest(queued["runId"])["manifest"]["provider"] == "claude"
+    def status():
+        return next(t for t in wb.topics(pid) if t["id"] == topic)["status"]
+    assert status() == "开发中"
+    wb.submit_review(base,"review-ready")
+    assert status() == "待审稿"
+
+
+def test_legacy_adaptation_command_replays_only_its_pack_backed_run(env):
+    wb = env.wb
+    pid, eid = env.new_episode()
+    _, pack = saved_reference(env,pid)
+    command = "legacy-adaptation"
+    old = wb.create_task(eid,"story","原有请求",command_id=command+":task")
+    # An interrupted legacy transaction has a task receipt, but no pack-backed run.
+    with pytest.raises(Conflict,match="旧改编命令"):
+        wb.adapt_from_pack(eid,pack["packId"],"原有请求",command)
+    with env.db() as db:
+        db.execute("INSERT INTO task_pack VALUES(?,?)",(old["taskId"],pack["packId"]))
+        original_run = wb._queue_run(db,old["taskId"],"create",None,"原有请求")
+    result = wb.adapt_from_pack(eid,pack["packId"],"原有请求",command)
+    assert result["runId"] == original_run and result["taskId"] == old["taskId"]
+    assert wb.adapt_from_pack(eid,pack["packId"],"原有请求",command) == result
+    with env.db() as db:
+        assert db.execute("SELECT count(*) FROM run").fetchone()[0] == 2
 
 
 # 05 ---------------------------------------------------------------------------------------------
@@ -420,6 +543,8 @@ def test_18_space_and_cast(env):
     two = dict(entry, refs=entry["refs"] + [dict(assetVersionId=r["img"]["versionId"], label="图片2", kind="image")])
     assert any("九宫格" in p["problem"] for p in check_segment_prompt("G04", two, 12000, "grid"))
     assert check_segment_prompt("G04", dict(two, txt="00:00.000-00:12.000 图片1 图片2"), 12000, "flex") == []
+    audio_only = dict(txt="00:00.000-00:12.000 音频1", refs=[dict(assetVersionId="audio", label="音频1", kind="audio")])
+    assert any("图片1–9" in issue["problem"] for issue in check_segment_prompt("G04", audio_only, 12000, "flex"))
 
 
 # 19 ---------------------------------------------------------------------------------------------
@@ -472,7 +597,9 @@ def test_20_candidate_local_redraw(env):
     wb.authorize_batch(batch["batchId"], batch["summaryHash"], "auth")
     new_v = wb.execute_batch(batch["batchId"])["requests"][0]["asset_version_id"]
     cmp_ = wb.compare_cells(new_v)
-    assert cmp_["base"] == a["versionId"] and cmp_["changed"] == [5] and len(cmp_["unchanged"]) == 8
+    assert cmp_["base"] == a["versionId"] and cmp_["requested"] == [5]
+    # Fake provider replaced the whole image; all nine returned cells really changed.
+    assert cmp_["comparable"] and cmp_["changed"] == list(range(1, 10)) and cmp_["unchanged"] == []
     av = wb.asset_version(new_v)
     assert av["asset_id"] == a["assetId"] and av["version_no"] == 2          # B 仅用于绘图
     # 把 A 放进 G03 并采用，再采用新图 → 复审真实引用者
@@ -485,6 +612,7 @@ def test_20_candidate_local_redraw(env):
     assert pre["needsConfirm"] and pre["references"][0]["segment"] == "G03"  # 采用前 A 仍有效
     done = wb.adopt_image(eid, new_v, "adopt-img", confirm=True)
     assert [i["target"] for i in done["recheck"]] == ["prompts:G03"]
+    assert not wb.adopt_image(eid, new_v, "second-tab", confirm=True, expected=pre["fingerprint"])["recheck"]
     marks = {v["id"]: v["marks"] for v in wb.episode_assets(eid)}
     assert "required" in marks[a["versionId"]] and b_["versionId"] in marks  # 补选图仍可见
 
@@ -536,7 +664,8 @@ def test_23_two_pass_review_and_partial_recheck(env):
     cold_run = env.claude.calls[-2] if env.claude.calls[-2].purpose == "cold_read" else None
     cold = next(c for c in env.claude.calls if c.purpose == "cold_read")
     m, text = manifest_text(wb, cold.run_id)
-    assert [e["role"] for e in m["inputs"]] == ["segment_txt", "reference_order", "image"]   # 冷读只见本段 TXT 与原图
+    assert [e["role"] for e in m["inputs"]] == ["method", "segment_txt", "reference_order", "image"]   # 冷读只见本段 TXT 与原图
+    assert m["inputs"][0]["name"] == "独立审查的冷读观察.md"
     assert "便利店夜" in text and "一只过分认真" not in text and len(cold.images) == 1
     comp = next(c for c in env.claude.calls if c.purpose == "comparison")
     cm, _ = manifest_text(wb, comp.run_id)
@@ -587,7 +716,7 @@ def test_25_local_packager_and_generic_role(env):
     assert project["segments"][0]["params"]["ratio"] == "9:16" and project["segments"][0]["params"]["duration"] == 13
     root = Path(r["delivery"]["path"])
     (root / "prompts/G02.txt").write_text("00:00.000-00:10.000 图片7 未知标签")   # 未知标签
-    with pytest.raises(Rejected, match="未知参考标签"):
+    with pytest.raises(Rejected, match="交付验包失败：prompts/G02.txt"):
         wb.package(r["delivery"]["deliveryId"], ["G02"], "pkg2")
     assert not wb.verify_delivery(r["delivery"]["deliveryId"])["ok"]
     big = env.full_episode(code="E02", project_id=r["pid"], segments=segs, deliver=False)
@@ -614,6 +743,7 @@ def test_26_partial_delivery_g03(env):
     with zipfile.ZipFile(out["path"]) as z:
         names = z.namelist()
         project = json.loads(z.read("project.json"))
+    assert project["scope"] == "segments"
     assert project["episodeId"] == "E01" and [s["id"] for s in project["segments"]] == ["G03"]
     assert sorted(names) == sorted(["project.json", *[a["path"] for a in project["assets"]]])
     assert wb.verify_delivery(trial["deliveryId"])["ok"]
@@ -784,3 +914,41 @@ def test_33_ask_about_cut(env):
                                        atMs=9000, judgement="cut", reason="x", evidence=[dict(atMs=1, observation="y")])]
     wb.ask_cut(pack["packId"], 9000, "再问一次", "codex")
     assert wb.ref_questions(pack["packId"])[0]["state"] == "failed"           # 不属于本次提问的回包不入库
+
+
+def test_comparison_reuse_follows_actual_review_material(env):
+    wb = env.wb
+    r = env.full_episode(deliver=False, segments={"G01": [5000], "G02": [5000]})
+    eid, pv = r["eid"], r["prompts"]
+    prompt_art = env.art(eid, "prompts")
+    content = prompt_art["versions"][-1]["content"]
+    content["segments"]["G02"]["refs"][0]["role"] = "只作画风"
+    v = wb.save_manual(prompt_art["id"], pv, content, "role-change")["versionId"]
+    status = wb.prompt_review_status(v)
+    assert status["G01"]["ok"] and status["G02"]["coldRead"]["state"] == "needed"
+    r["plan"]["shots"][0]["camera"] = "正俯拍"
+    env.save_adopt(eid, "plan", r["plan"], "camera-change")
+    status = wb.prompt_review_status(pv)
+    assert status["G01"]["coldRead"]["state"] == "passed" and status["G01"]["comparison"]["state"] == "needed"
+    assert status["G02"]["ok"]
+    wb.propose_setting_change(r["pid"], "rule", "灯光只能从左侧进入", "required", "空间连续", "new-setting")
+    wb.choose_episode_settings(eid, True, "follow-setting")
+    status = wb.prompt_review_status(pv)
+    assert all(x["coldRead"]["state"] == "passed" and x["comparison"]["state"] == "needed" for x in status.values())
+
+
+def test_prompt_adoption_blocks_an_invented_asset_and_malformed_sound(env):
+    wb = env.wb
+    episode = env.full_episode(segments={"G01": [8000]}, deliver=False)
+    art = env.art(episode["eid"], "prompts")
+    content = art["versions"][-1]["content"]
+    seg = content["segments"]["G01"]
+    seg["refs"][0]["assetVersionId"] = "unknown-id"
+    seg["sound"] = "微弱水声"
+    vid = wb.save_manual(art["id"], episode["prompts"], content, "bad-reference")["versionId"]
+    gate = wb.adoption_gate(vid)
+    assert not gate["adoptable"]
+    assert any("不在本集" in problem for problem in gate["formatErrors"])
+    assert any("sound" in problem for problem in gate["formatErrors"])
+    with pytest.raises(Rejected, match="不在本集"):
+        wb.start_prompt_review(vid, "G01", "cold_read", "reject-invalid-input")

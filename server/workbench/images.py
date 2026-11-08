@@ -3,15 +3,24 @@
 Paid-batch guard: a batch is authorised against a summary hash; each request is persisted before it
 is sent; a request whose outcome is unknown is never re-sent automatically.
 """
+from contextlib import contextmanager
 from dataclasses import dataclass
 import json
+from . import imagechoices
+from io import BytesIO
+from itertools import zip_longest
 import os
+import queue
+import threading
 from pathlib import Path
 import struct
 import subprocess
 import time
 import zlib
 
+from PIL import Image
+
+from .palette_inputs import SCOPE, stage_card
 from .db import connect, dumps, new_id, transaction
 from .errors import Conflict, Rejected, loads, row
 from .storage import canonical, sha256_bytes, write_atomic
@@ -26,21 +35,20 @@ def png_bytes(width: int, height: int, rgb=(200, 120, 40)) -> bytes:
             + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
 
 
+def image_attachment(name, data):
+    suffix = ".jpg" if data.startswith(b"\xff\xd8") else ".png"
+    return dict(role="image", name=name + suffix, data=data)
+
+
 def image_size(data: bytes):
-    if data[:8] == b"\x89PNG\r\n\x1a\n" and data[12:16] == b"IHDR":
-        return struct.unpack(">II", data[16:24])
-    if data[:2] == b"\xff\xd8":   # JPEG: walk SOF markers
-        i = 2
-        while i < len(data) - 9:
-            if data[i] != 0xFF:
-                i += 1
-                continue
-            marker, length = data[i + 1], struct.unpack(">H", data[i + 2:i + 4])[0]
-            if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
-                h, w = struct.unpack(">HH", data[i + 5:i + 9])
-                return w, h
-            i += 2 + length
-    return None
+    try:
+        with Image.open(BytesIO(data), formats=("PNG", "JPEG")) as source:
+            source.verify()
+        with Image.open(BytesIO(data), formats=("PNG", "JPEG")) as source:
+            source.load()
+            return source.size
+    except (ValueError, OSError, SyntaxError, Image.DecompressionBombError):
+        return None
 
 
 # ---------------------------------------------------------------- providers
@@ -54,6 +62,8 @@ class ImageOutcome:
 
 class FakeImageProvider:
     """Scripted outcomes for tests: 'ok' | 'timeout' | 'disconnect' | 'duplicate' | 'insufficient'."""
+
+    currency = "USD"
 
     def __init__(self, name="fake-image", script=None, price_cents=4):
         self.name, self.script, self.price_cents = name, list(script or []), price_cents
@@ -91,6 +101,7 @@ class OpenAIImageMCPProvider:
     image_job_status). Each call is paid. Not exercised by tests; status is 'pending_verification' in-app."""
 
     name = "openai-image-mcp"
+    currency = "USD"
     price_cents = None
     verified = "pending_verification"
     capabilities = dict(operations=["generate", "edit"], sizes=["1024x1024", "864x1536", "1536x864"],
@@ -99,25 +110,58 @@ class OpenAIImageMCPProvider:
     def __init__(self, root=Path.home() / "Documents/自媒体 2/tools/openai-image-mcp", poll_seconds=10, timeout=600):
         self.root, self.poll, self.timeout = Path(root), poll_seconds, timeout
 
-    def _call(self, tool, arguments):
+    @contextmanager
+    def _session(self):
         python = self.root / ".venv/bin/python"
-        proc = subprocess.Popen([str(python), "server.py"], cwd=self.root, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, text=True)
-        def send(msg):
-            proc.stdin.write(json.dumps(msg) + "\n")
-            proc.stdin.flush()
-        try:
-            send(dict(jsonrpc="2.0", id=1, method="initialize",
-                      params=dict(protocolVersion="2025-06-18", capabilities={},
-                                  clientInfo=dict(name="ai-director-workbench", version="1"))))
-            proc.stdout.readline()
-            send(dict(jsonrpc="2.0", method="notifications/initialized"))
-            send(dict(jsonrpc="2.0", id=2, method="tools/call", params=dict(name=tool, arguments=arguments)))
-            reply = json.loads(proc.stdout.readline())
-        finally:
-            proc.stdin.close()
-            proc.terminate()
+        with subprocess.Popen([str(python), "server.py"], cwd=self.root, stdin=subprocess.PIPE,
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True) as proc:
+            replies = queue.Queue()
+
+            def read_replies():
+                try:
+                    for line in proc.stdout:
+                        replies.put(json.loads(line))
+                finally:
+                    replies.put(None)
+
+            threading.Thread(target=read_replies, daemon=True).start()
+            sequence = 0
+
+            def send(message):
+                proc.stdin.write(json.dumps(dict(jsonrpc="2.0", **message)) + "\n")
+                proc.stdin.flush()
+
+            def rpc(method, params):
+                nonlocal sequence
+                sequence += 1
+                send(dict(id=sequence, method=method, params=params))
+                deadline = time.monotonic() + 30
+                while True:
+                    reply = replies.get(timeout=max(0, deadline - time.monotonic()))
+                    if reply is None:
+                        raise ConnectionError("图像服务已断开")
+                    if reply.get("id") == sequence:
+                        if "error" in reply:
+                            raise RuntimeError(str(reply["error"]))
+                        return reply
+
+            try:
+                rpc("initialize", dict(protocolVersion="2025-06-18", capabilities={},
+                                       clientInfo=dict(name="ai-director-workbench", version="1")))
+                send(dict(method="notifications/initialized"))
+                yield lambda tool, args: self._decode(rpc("tools/call", dict(name=tool, arguments=args)))
+            finally:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+
+    @staticmethod
+    def _decode(reply):
         result = reply.get("result", {})
+        if result.get("isError"):
+            raise RuntimeError(str(result.get("content"))[:500])
         content = result.get("structuredContent") or {}
         items = content.get("result") if isinstance(content.get("result"), list) else None
         if items is None and not content:
@@ -127,29 +171,50 @@ class OpenAIImageMCPProvider:
             content = json.loads(texts[0]) if texts else {}
         return content
 
+    def _call(self, tool, arguments):
+        with self._session() as call:
+            return call(tool, arguments)
+
     def status(self):
         return self._call("image_service_status", {})
 
+    def _input_copy(self, filename):
+        source = Path(filename)
+        data = source.read_bytes()
+        digest = sha256_bytes(data)
+        if source.name != digest:
+            raise ValueError("图像输入指纹不符")
+        extension = ".png" if data.startswith(b"\x89PNG") else ".jpg"
+        target = self.root / "outputs" / "workbench-inputs" / (digest + extension)
+        if not target.is_file() or sha256_bytes(target.read_bytes()) != digest:
+            write_atomic(target, data)
+        return str(target.resolve())
+
     def submit(self, req):
         args = dict(prompt=req["prompt"], request_id=req["local_request_id"], size=req["size"])
-        if req.get("model"):
-            args["model"] = req["model"]
-        if req.get("quality"):
-            args["quality"] = req["quality"]
+        for key in ("model", "quality"):
+            if req.get(key):
+                args[key] = req[key]
         tool = "generate_image"
-        if req["operation"] == "edit":
-            tool, args["image_paths"] = "edit_image", req["inputs"]
-        first = self._call(tool, args)
-        deadline = time.time() + self.timeout
-        while time.time() < deadline:
-            got = self.inspect(req["local_request_id"])
-            if got and got.state != "unknown":
-                return got
-            time.sleep(self.poll)
+        if req["operation"] == "edit" or req.get("inputs"):
+            tool = "edit_image"
+            args["image_paths"] = [self._input_copy(path) for path in req["inputs"]]
+        with self._session() as call:
+            first = call(tool, args)
+            deadline = time.monotonic() + self.timeout
+            while time.monotonic() < deadline:
+                info = call("image_job_status", dict(request_id=req["local_request_id"], include_preview=False))
+                got = self._outcome(info)
+                if got.state != "unknown" or info.get("status") not in ("queued", "running"):
+                    return got
+                time.sleep(self.poll)
         return ImageOutcome("unknown", provider_request_id=first.get("api_request_id"), error="timeout")
 
     def inspect(self, local_request_id):
-        info = self._call("image_job_status", dict(request_id=local_request_id))
+        return self._outcome(self._call("image_job_status", dict(request_id=local_request_id, include_preview=False)))
+
+    @staticmethod
+    def _outcome(info):
         state = info.get("status")
         if state == "completed" and info.get("image_path"):
             return ImageOutcome("succeeded", Path(info["image_path"]).read_bytes(), info.get("api_request_id"))
@@ -164,6 +229,12 @@ class ImagesMixin:
                        origin="import", grid=False, cells=None, asset_id=None, source_version_id=None,
                        changed_cells=None, note="", db=None):
         def apply(db):
+            if episode_id is not None:
+                self._episode_in(db, episode_id, project_id)
+            if asset_id is not None:
+                target = row(db, "SELECT project_id,episode_id,kind FROM asset WHERE id=?", asset_id)
+                if target["project_id"] != project_id or target["episode_id"] not in (None, episode_id) or target["kind"] != kind:
+                    raise Rejected("新版本的目标素材不属于当前项目或集，或媒体类型不符")
             size = image_size(data) if kind == "image" else None
             if kind == "image" and not size:
                 raise Rejected("图片无法解码")
@@ -186,9 +257,37 @@ class ImagesMixin:
         with transaction(self.db_path) as db2:
             return apply(db2)
 
+    def upload_reference_media(self, episode_id, name, stream, command_id):
+        from . import h3export
+        if not isinstance(name, str) or not name.strip() or Path(name).name != name or any(
+                ord(c) < 32 or c in "/\\" for c in name):
+            raise Rejected("参考文件名无效")
+        try:
+            kind = h3export.media_kind(name)
+            limit = h3export.media_size_limit(kind)
+            data = stream.read(limit + 1)
+            if len(data) > limit:
+                raise ValueError(f"{name} 超出 {limit // h3export.MIB} MiB 的限制")
+            payload = dict(episode=episode_id, name=name, sha256=sha256_bytes(data))
+            with connect(self.db_path) as db:
+                episode = row(db, "SELECT project_id FROM episode WHERE id=?", episode_id, missing="本集不存在")
+                prior = self._existing_command(db, command_id, "reference_media", payload)
+                if prior is not None:
+                    return prior
+            stream.seek(0)
+            duration = h3export.media_duration(Path("/dev/stdin"), kind, name, stream)
+        except ValueError as exc:
+            raise Rejected(str(exc)) from exc
+        with transaction(self.db_path) as db:
+            def register():
+                result = self.register_asset(episode["project_id"], name, data, "reference", kind=kind,
+                                             episode_id=episode_id, db=db)
+                return dict(result, kind=kind, duration=duration)
+            return self._command(db, command_id, "reference_media", payload, register)
+
     def asset_version(self, version_id, db=None):
         def get(db):
-            v = loads(row(db, "SELECT av.*, a.name, a.kind, a.category, a.episode_id, a.project_id, a.roles FROM asset_version av "
+            v = loads(row(db, "SELECT av.*, a.name, a.kind, a.category, a.origin, a.episode_id, a.project_id, a.roles FROM asset_version av "
                              "JOIN asset a ON a.id=av.asset_id WHERE av.id=?", version_id, missing="素材版本不存在"),
                       "cells", "changed_cells", "roles")
             return v
@@ -203,13 +302,17 @@ class ImagesMixin:
 
     def episode_assets(self, episode_id):
         with connect(self.db_path) as db:
-            rows = db.execute("SELECT av.id FROM asset_version av JOIN asset a ON a.id=av.asset_id WHERE a.episode_id=? "
+            rows = db.execute("SELECT av.id FROM asset_version av JOIN asset a ON a.id=av.asset_id "
+                              "JOIN episode e ON e.id=a.episode_id AND e.project_id=a.project_id WHERE e.id=? "
                               "ORDER BY a.name, av.version_no", (episode_id,)).fetchall()
             out = [self.asset_version(r[0], db) for r in rows]
             marks = {}
             for r in db.execute("SELECT asset_version_id, mark FROM image_choice WHERE episode_id=?", (episode_id,)):
                 marks.setdefault(r[0], []).append(r[1])
+            rules = {r["versionId"]: r for r in imagechoices.requirements(db, episode_id)}
         for v in out:
+            if v["id"] in rules:
+                v["requirement"] = rules[v["id"]]
             v["marks"] = marks.get(v["id"], [])
         return out
 
@@ -269,7 +372,7 @@ class ImagesMixin:
 
     # ============================================================ image batches
     def image_providers(self):
-        return {name: dict(verified=p.verified, capabilities=p.capabilities, priceCents=p.price_cents)
+        return {name: dict(verified=p.verified, capabilities=p.capabilities, priceCents=p.price_cents, currency=p.currency)
                 for name, p in self.image_providers_map.items()}
 
     def create_batch(self, episode_id, provider, operation, items, size, model=None, quality=None, budget_cents=None,
@@ -278,37 +381,96 @@ class ImagesMixin:
         if provider not in self.image_providers_map:
             raise Rejected("未配置的图像通道")
         prov = self.image_providers_map[provider]
+        if budget_cents is not None:
+            self._check_batch_budget(budget_cents)
         if operation not in prov.capabilities["operations"]:
             raise Rejected(f"{provider} 不支持 {operation}")
         if size not in prov.capabilities["sizes"]:
             raise Rejected(f"{provider} 不支持尺寸 {size}")
-        blocked = self.blocked_segments(episode_id)
-        hits = sorted({s for it in items for s in it.get("segments", []) if s in blocked})
-        if hits:
-            raise Rejected("依赖未确认空间锁定的段不能出图：" + "、".join(hits), detail={s: blocked[s] for s in hits})
+        quality = quality or "low"
+        if quality not in prov.capabilities["quality"]:
+            raise Rejected(f"{provider} 不支持质量 {quality}")
+        if not items or any(not it.get("prompt", "").strip() for it in items):
+            raise Rejected("批次至少需要一张图，每张须有绘图要求")
+        if any(len(it.get("inputs", [])) > 16 or (operation == "edit" and not it.get("inputs")) for it in items):
+            raise Rejected("带图请求须提供 1–16 张有序输入")
         with transaction(self.db_path) as db:
-            inputs = [[self.asset_version(i, db)["sha256"] for i in it.get("inputs", [])] for it in items]
+            ep = self._episode_in(db, episode_id)
+            locks = self._space_locks(db, episode_id)
+            inputs = []
+            scene_inputs = []
+            for item in items:
+                aid = item.get("target", {}).get("assetId")
+                if aid:
+                    target = row(db, "SELECT project_id,episode_id,kind FROM asset WHERE id=?", aid, missing="目标素材不存在")
+                    if target["project_id"] != ep["project_id"] or target["episode_id"] not in (None, episode_id) or target["kind"] != "image":
+                        raise Rejected("本批次只能为本项目、本集可用的图像生成新版本")
+                ordered = [self.asset_version(i, db) for i in item.get("inputs", [])]
+                if any(v["kind"] != "image" or v["project_id"] != ep["project_id"]
+                       or v["episode_id"] not in (None, episode_id) for v in ordered):
+                    raise Rejected("出图输入必须是本项目、本集可用的图像版本")
+                inputs.append([v["sha256"] for v in ordered])
+                scoped = item.get("segments", [])
+                if not isinstance(scoped, list) or any(not isinstance(seg,str) for seg in scoped):
+                    raise Rejected("每张图的适用段须为段号列表")
+                relevant = [lock for lock in locks if set(lock["segments"]).intersection(scoped)]
+                blocked = [lock for lock in relevant if lock["status"] == "pending"]
+                if blocked:
+                    names = [seg for seg in scoped if any(seg in lock["segments"] for lock in blocked)]
+                    raise Rejected("依赖未确认空间锁定的段不能出图：" + "、".join(names),
+                                   detail={seg:[lock["label"] for lock in blocked if seg in lock["segments"]] for seg in names})
+                scene_inputs.append([dict(lock,positions=[n for n,h in enumerate(inputs[-1],1) if h==lock["sha256"]])
+                                     for lock in relevant])
             spec = dict(items=items, inputs=inputs, model=model, quality=quality)
+            if any(scene_inputs):
+                spec["sceneLocks"] = scene_inputs
+            palettes = self.episode_palettes(episode_id,"assets")["cards"]
+            if palettes:
+                spec["palettes"] = [stage_card(card, "assets") for card in palettes]
+                reference = "\n".join(card["visual"] + "\n" + card["image"] for card in palettes)
+                spec["items"] = [dict(item, prompt=item["prompt"] + "\n" + SCOPE + "\n" + reference) for item in items]
             input_hash = sha256_bytes(canonical(dict(spec, operation=operation, size=size)))
+            spec["currency"] = prov.currency
             estimate = prov.price_cents * len(items) if prov.price_cents is not None else None
-            summary = dict(provider=provider, verified=prov.verified, model=model, operation=operation, count=len(items),
-                           size=size, inputs=inputs, budget_cents=budget_cents, estimate_cents=estimate)
-            summary_hash = sha256_bytes(canonical(summary))
+            summary = dict(provider=provider, currency=prov.currency, verified=prov.verified, model=model, operation=operation, count=len(items),
+                           size=size, inputs=inputs, quality=quality, inputHash=input_hash, budget_cents=budget_cents, estimate_cents=estimate)
             def run():
-                existing = db.execute("SELECT id FROM image_batch WHERE episode_id=? AND input_hash=? AND provider=?",
-                                      (episode_id, input_hash, provider)).fetchone()
-                if existing:
-                    raise Conflict("相同输入的批次已存在，不重复提交", current=existing[0])
+                # A cancelled, never-sent batch keeps its receipt. Tie its replacement to that receipt.
+                candidate_hash = input_hash
+                while True:
+                    existing = db.execute("SELECT id,state,spec FROM image_batch WHERE episode_id=? AND input_hash=? AND provider=?",
+                                          (episode_id, candidate_hash, provider)).fetchone()
+                    if not existing:
+                        break
+                    # A failed historical batch may be rebuilt after every outcome is resolved.
+                    historical_failure = existing["state"] == "failed" and not json.loads(existing["spec"]).get("currency")
+                    if existing["state"] != "cancelled" and not historical_failure:
+                        raise Conflict("相同输入的批次已存在，不重复提交", current=existing["id"])
+                    candidate_hash = sha256_bytes(canonical([input_hash, existing["id"]]))
+                receipt = dict(summary, inputHash=candidate_hash)
+                summary_hash = sha256_bytes(canonical(receipt))
                 bid = new_id()
                 db.execute("INSERT INTO image_batch VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                           (bid, episode_id, input_hash, provider, model, operation, size, len(items), dumps(spec),
+                           (bid, episode_id, candidate_hash, provider, model, operation, size, len(items), dumps(spec),
                             budget_cents, estimate, "estimated" if estimate is not None else "unknown", summary_hash, None,
                             "awaiting_authorization", self.clock()))
                 for n, it in enumerate(items, 1):
                     db.execute("INSERT INTO image_request(id,batch_id,ordinal,local_request_id,state) VALUES(?,?,?,?,?)",
                                (new_id(), bid, n, f"adw-{bid[:8]}-{n:02d}", "pending"))
-                return dict(batchId=bid, summary=summary, summaryHash=summary_hash)
-            return self._command(db, command_id, "batch", dict(e=episode_id, h=input_hash, p=provider), run)
+                return dict(batchId=bid, summary=receipt, summaryHash=summary_hash)
+            return self._command(db, command_id, "batch", dict(e=episode_id, h=input_hash, p=provider, budget=budget_cents, currency=prov.currency), run)
+
+    @staticmethod
+    def _check_batch_budget(amount):
+        if type(amount) is not int or not 0 <= amount <= 2**53 - 1:
+            raise Rejected("预算须为有效的非负整数分")
+
+    def _batch_currency(self, batch):
+        currency = json.loads(batch["spec"]).get("currency")
+        provider = self.image_providers_map.get(batch["provider"])
+        if not currency or not provider or currency != provider.currency:
+            raise Rejected("原批次未记录币种或通道币种已改变，请核对历史回执，为待发项目重新建立批次")
+        return currency
 
     def authorize_batch(self, batch_id, summary_hash, command_id, accept_unknown_cost=False, budget_cents=None):
         with transaction(self.db_path) as db:
@@ -321,44 +483,70 @@ class ImagesMixin:
                 budget = budget_cents if budget_cents is not None else b["budget_cents"]
                 if budget is None:
                     raise Rejected("付费确认须填写预算")
+                currency = self._batch_currency(b)
+                self._check_batch_budget(budget)
+                if type(accept_unknown_cost) is not bool:
+                    raise Rejected("费用未知的授权须明确勾选")
                 if b["estimate_cents"] is None and not accept_unknown_cost:
                     raise Rejected("费用未知，须明确接受后才能提交")
                 if b["estimate_cents"] is not None and b["estimate_cents"] > budget:
                     raise Rejected("估算超出预算：缩小批次或换配置")
-                auth = dict(summaryHash=summary_hash, budget_cents=budget, acceptUnknownCost=accept_unknown_cost,
+                if b["estimate_cents"] is None and budget == 0:
+                    raise Rejected("费用未知时须填写正数预算")
+                self._reserve_expert_budget(db, b, budget)
+                auth = dict(summaryHash=summary_hash, currency=currency, budget_cents=budget, acceptUnknownCost=accept_unknown_cost,
                             at=self.clock(), command=command_id)
                 db.execute("UPDATE image_batch SET state='authorized', authorization=?, budget_cents=? WHERE id=?",
                            (dumps(auth), budget, batch_id))
                 return dict(batchId=batch_id, state="authorized")
-            return self._command(db, command_id, "authorize", dict(b=batch_id, h=summary_hash), run)
+            return self._command(db, command_id, "authorize", dict(b=batch_id, h=summary_hash, budget=budget_cents, unknown=accept_unknown_cost), run)
 
     def cancel_batch(self, batch_id, command_id=None):
         with transaction(self.db_path) as db:
             def run():
                 b = row(db, "SELECT state FROM image_batch WHERE id=?", batch_id)
-                if b["state"] not in ("awaiting_authorization", "authorized"):
+                started = db.execute("SELECT 1 FROM image_request WHERE batch_id=? AND state!='pending' LIMIT 1",
+                                     (batch_id,)).fetchone()
+                if started or b["state"] not in ("awaiting_authorization", "authorized"):
                     raise Rejected("已执行的批次不能取消，只能核对")
                 db.execute("UPDATE image_batch SET state='cancelled' WHERE id=?", (batch_id,))
                 return dict(batchId=batch_id, state="cancelled")
             return self._command(db, command_id, "cancel_batch", dict(b=batch_id), run)
 
-    def execute_batch(self, batch_id):
-        """Send only requests that were never sent. Unknown / submitted ones wait for reconciliation."""
+    def execute_batch_precheck(self, batch_id):
         with connect(self.db_path) as db:
             b = row(db, "SELECT * FROM image_batch WHERE id=?", batch_id)
         if b["state"] not in ("authorized", "partial"):
             raise Rejected("批次未授权或已结束")
+        currency = self._batch_currency(b)
+        if json.loads(b["authorization"] or "{}").get("currency") != currency:
+            raise Rejected("历史授权未确认通道币种，请重新核对待发项目")
+        return b
+
+    def execute_batch(self, batch_id):
+        """Send only requests that were never sent. Unknown / submitted ones wait for reconciliation."""
+        b = self.execute_batch_precheck(batch_id)
         prov = self.image_providers_map[b["provider"]]
         spec = json.loads(b["spec"])
         while True:
             with transaction(self.db_path) as db:
+                if row(db, "SELECT state FROM image_batch WHERE id=?", batch_id)["state"] == "cancelled":
+                    break
                 req = db.execute("SELECT * FROM image_request WHERE batch_id=? AND state='pending' ORDER BY ordinal LIMIT 1",
                                  (batch_id,)).fetchone()
                 if not req:
                     break
                 db.execute("UPDATE image_request SET state='submitted', submitted_at=? WHERE id=?", (self.clock(), req["id"]))
-            item = spec["items"][(req["replaces_id"] and self._ordinal_of(req["replaces_id"]) or req["ordinal"]) - 1]
-            inputs = [str(self.store.blob_path(self.asset_version(i)["sha256"])) for i in item.get("inputs", [])]
+            ordinal = self._original_ordinal(req)
+            item = spec["items"][ordinal - 1]
+            inputs = []
+            try:
+                for digest in spec["inputs"][ordinal - 1]:
+                    self.store.read_blob(digest)
+                    inputs.append(str(self.store.blob_path(digest)))
+            except (OSError, ValueError) as exc:
+                self._land(batch_id, req["id"], ImageOutcome("failed", error="冻结的输入图片不可用：" + str(exc)), b, item)
+                continue
             try:
                 out = prov.submit(dict(local_request_id=req["local_request_id"], operation=b["operation"],
                                        prompt=item["prompt"], inputs=inputs, size=b["size"], model=b["model"],
@@ -368,12 +556,19 @@ class ImagesMixin:
             self._land(batch_id, req["id"], out, b, item)
         return self.batch_view(batch_id)
 
-    def _ordinal_of(self, request_id):
+    def _original_ordinal(self, request):
+        if not request["replaces_id"]:
+            return request["ordinal"]
         with connect(self.db_path) as db:
-            return db.execute("SELECT ordinal FROM image_request WHERE id=?", (request_id,)).fetchone()[0]
+            while request["replaces_id"]:
+                request = row(db, "SELECT ordinal,replaces_id FROM image_request WHERE id=?", request["replaces_id"])
+        return request["ordinal"]
 
     def _land(self, batch_id, request_id, out, b, item):
         with transaction(self.db_path) as db:
+            current = row(db, "SELECT state FROM image_request WHERE id=? AND batch_id=?", request_id, batch_id)
+            if current["state"] not in ("submitted", "unknown"):
+                return False
             if out.state == "succeeded":
                 size = image_size(out.data)
                 want = tuple(map(int, b["size"].split("x")))
@@ -397,6 +592,7 @@ class ImagesMixin:
                            ("unknown" if out.state == "unknown" else "failed", out.error, out.provider_request_id,
                             self.clock(), request_id))
             self._batch_state(db, batch_id)
+            return True
 
     def _batch_state(self, db, batch_id):
         states = [r[0] for r in db.execute("SELECT state FROM image_request WHERE batch_id=? AND id NOT IN "
@@ -423,13 +619,16 @@ class ImagesMixin:
         if finding == "completed":
             if not data:
                 raise Rejected("登记已完成须提供实际图片")
-            ordinal = self._ordinal_of(req["replaces_id"]) if req["replaces_id"] else req["ordinal"]
+            ordinal = self._original_ordinal(req)
             item = json.loads(b["spec"])["items"][ordinal - 1]   # a resubmitted request keeps the original item
-            self._land(b["id"], request_id, ImageOutcome("succeeded", data, req["provider_request_id"]), b, item)
+            if not self._land(b["id"], request_id, ImageOutcome("succeeded", data, req["provider_request_id"]), b, item):
+                raise Conflict("该请求已核对，请刷新回执")
         elif finding == "not_executed":
             with transaction(self.db_path) as db:
-                db.execute("UPDATE image_request SET state='confirmed_not_executed', ended_at=? WHERE id=?",
-                           (self.clock(), request_id))
+                changed = db.execute("UPDATE image_request SET state='confirmed_not_executed', ended_at=? "
+                                     "WHERE id=? AND state IN ('unknown','submitted')", (self.clock(), request_id))
+                if not changed.rowcount:
+                    raise Conflict("该请求已核对，请刷新回执")
                 self._batch_state(db, b["id"])
         else:
             raise Rejected("未知核对结论")
@@ -443,8 +642,11 @@ class ImagesMixin:
                 if req["state"] not in ("confirmed_not_executed", "failed"):
                     raise Rejected("结果未查明前不能重新提交")
                 b = row(db, "SELECT * FROM image_batch WHERE id=?", req["batch_id"])
+                self._batch_currency(b)
                 if not b["authorization"]:
                     raise Rejected("批次未授权")
+                if db.execute("SELECT 1 FROM image_request WHERE replaces_id=?", (request_id,)).fetchone():
+                    raise Conflict("此请求已登记补发，请查看最新请求")
                 n = db.execute("SELECT max(ordinal)+1 FROM image_request WHERE batch_id=?", (b["id"],)).fetchone()[0]
                 nid = new_id()
                 db.execute("INSERT INTO image_request(id,batch_id,ordinal,local_request_id,state,replaces_id) "
@@ -464,9 +666,41 @@ class ImagesMixin:
 
     def batch_view(self, batch_id):
         with connect(self.db_path) as db:
+            db.execute("BEGIN")
             b = loads(row(db, "SELECT * FROM image_batch WHERE id=?", batch_id), "spec", "authorization")
-            b["requests"] = [dict(r) for r in db.execute("SELECT * FROM image_request WHERE batch_id=? ORDER BY ordinal",
-                                                         (batch_id,))]
+            b["currency"] = b["spec"].get("currency")
+            provider = self.image_providers_map.get(b["provider"])
+            b["billingCurrent"] = bool(provider and b["currency"] == provider.currency)
+            b["requests"] = [dict(r) for r in db.execute("SELECT r.*, EXISTS (SELECT 1 FROM image_request next WHERE next.replaces_id=r.id) AS replaced "
+                                                         "FROM image_request r WHERE r.batch_id=? ORDER BY r.ordinal",(batch_id,))]
+            ordinals = {}
+            for request in b["requests"]:
+                parent = request["replaces_id"]
+                origin = ordinals.get(parent) if parent else request["ordinal"]
+                request["sourceOrdinal"] = ordinals[request["id"]] = origin
+            groups = []
+            labels = {}
+            frozen = b["spec"].get("inputs") or []
+            for index, item in enumerate(b["spec"]["items"]):
+                ids = item.get("inputs")
+                hashes = frozen[index] if index < len(frozen) else None
+                if hashes is None and not ids:
+                    groups.append(None)
+                    continue
+                group = []
+                for vid, digest in zip_longest(ids or [], hashes or []):
+                    if vid not in labels:
+                        labels[vid] = db.execute("SELECT a.name,v.version_no,v.sha256 FROM asset_version v "
+                            "JOIN asset a ON a.id=v.asset_id JOIN episode e ON e.project_id=a.project_id "
+                            "WHERE v.id=? AND e.id=? AND (a.episode_id IS NULL OR a.episode_id=e.id)",
+                            (vid,b["episode_id"])).fetchone()
+                    record = dict(versionId=vid, sha256=digest)
+                    label = labels[vid]
+                    if label and label["sha256"] == digest:
+                        record.update(name=label["name"], versionNo=label["version_no"])
+                    group.append(record)
+                groups.append(group)
+            b["inputGroups"] = groups
         return b
 
     def episode_batches(self, episode_id):
@@ -475,78 +709,175 @@ class ImagesMixin:
         return [self.batch_view(i) for i in ids]
 
     # ============================================================ choice, redraw, adoption
-    def mark_image(self, episode_id, version_id, mark, shot_ids=(), command_id=None):
+    def _episode_image(self, db, episode_id, version_id):
+        asset = self.asset_version(version_id, db)
+        self._episode_in(db, episode_id, asset["project_id"])
+        if asset["episode_id"] != episode_id or asset["kind"] != "image":
+            raise Rejected("请选择本集的图片版本")
+        return asset
+
+    def mark_image(self, episode_id, version_id, mark, shot_ids=(), command_id=None, enabled=True, requirement=None):
         with transaction(self.db_path) as db:
             def run():
-                self.asset_version(version_id, db)
-                db.execute("INSERT OR IGNORE INTO image_choice VALUES(?,?,?,?,?,?)",
-                           (new_id(), episode_id, version_id, mark, dumps(list(shot_ids)), self.clock()))
+                asset = self._episode_image(db, episode_id, version_id)
+                if mark not in ("required","backup","recommended"):
+                    raise Rejected("只能标记本集的候选图")
+                if requirement is not None and (not enabled or mark != "required"):
+                    raise Rejected("用途和目标段只用于必用图")
+                if enabled:
+                    db.execute("INSERT OR IGNORE INTO image_choice VALUES(?,?,?,?,?,?)",
+                               (new_id(), episode_id, version_id, mark, dumps(list(shot_ids)), self.clock()))
+                    if requirement is not None:
+                        details = imagechoices.validate_request(requirement, self._adopted_content(db, episode_id, "plan"))
+                        details["sha256"] = asset["sha256"]
+                        cid = row(db, "SELECT id FROM image_choice WHERE episode_id=? AND asset_version_id=? AND mark=?",
+                                  episode_id, version_id, mark)["id"]
+                        db.execute("INSERT INTO required_image_details VALUES(?,?) ON CONFLICT(choice_id) "
+                                   "DO UPDATE SET details=excluded.details", (cid, dumps(details)))
+                else:
+                    db.execute("DELETE FROM image_choice WHERE episode_id=? AND asset_version_id=? AND mark=?",(episode_id,version_id,mark))
                 return dict(ok=True)
-            return self._command(db, command_id, "mark", dict(e=episode_id, v=version_id, m=mark), run)
+            payload = dict(e=episode_id, v=version_id, m=mark, enabled=enabled, shots=list(shot_ids))
+            if requirement is not None:
+                payload["requirement"] = requirement
+            return self._command(db, command_id, "mark", payload, run)
 
     def redraw_cells(self, episode_id, base_version_id, cells, reference_version_ids, prompt, provider, size,
-                     budget_cents=None, command_id=None):
+                     budget_cents=None, command_id=None, quality=None, segments=None):
         """修一格: edit A's cells using B as a drawing reference. The result is a new candidate of asset A."""
         base = self.asset_version(base_version_id)
         if not base["grid"]:
             raise Rejected("局部修格只适用于九宫格")
         if not cells or any(not 1 <= c <= 9 for c in cells):
             raise Rejected("格号须为 1–9")
-        item = dict(prompt=prompt, inputs=[base_version_id, *reference_version_ids], cells=sorted(cells),
+        cell_text = "、".join(str(c) for c in sorted(set(cells)))
+        instruction = f"以第一张九宫格为底图，按从左到右、从上到下编号，只修改第 {cell_text} 格；保留其他格。\n{prompt}"
+        item = dict(prompt=instruction, inputs=[base_version_id, *reference_version_ids], cells=sorted(cells),
                     target=dict(assetId=base["asset_id"], name=base["name"], category=base["category"], grid=True,
                                 cellsMeta=base["cells"], roles=base["roles"]))
-        return self.create_batch(episode_id, provider, "edit", [item], size, budget_cents=budget_cents, command_id=command_id)
+        if segments:
+            item["segments"] = segments
+        return self.create_batch(episode_id, provider, "edit", [item], size, quality=quality, budget_cents=budget_cents, command_id=command_id)
 
     def compare_cells(self, new_version_id):
         v = self.asset_version(new_version_id)
-        changed = v["changed_cells"] or []
-        return dict(base=v["source_version_id"], changed=changed, unchanged=[c for c in range(1, 10) if c not in changed])
+        base = v["source_version_id"]
+        requested = v["changed_cells"] or []
+        result = dict(base=base, requested=requested, changed=[], unchanged=[], comparable=False)
+        if not base or not v["grid"]:
+            return result
+        with Image.open(BytesIO(self.asset_bytes(base))) as original, Image.open(BytesIO(self.asset_bytes(new_version_id))) as candidate:
+            if original.size != candidate.size:
+                return result
+            before, after = original.convert("RGBA"), candidate.convert("RGBA")
+            width, height = before.size
+            for index in range(9):
+                y, x = divmod(index, 3)
+                box = (x * width // 3, y * height // 3, (x + 1) * width // 3, (y + 1) * height // 3)
+                changed = before.crop(box).tobytes() != after.crop(box).tobytes()
+                result["changed" if changed else "unchanged"].append(index + 1)
+        result["comparable"] = True
+        return result
 
     def image_references(self, version_id):
         """Segments whose adopted prompts reference any version of the same asset."""
         with connect(self.db_path) as db:
             v = self.asset_version(version_id, db)
-            versions = {r[0] for r in db.execute("SELECT id FROM asset_version WHERE asset_id=?", (v["asset_id"],))}
-            prompts_ = self._adopted_content(db, v["episode_id"], "prompts") or {}
+            return self._image_references(db, v)
+
+    def _image_references(self, db, v):
+        versions = dict(db.execute("SELECT id,version_no FROM asset_version WHERE asset_id=?", (v["asset_id"],)))
+        adopted = db.execute("SELECT v.id,v.display_no,v.content FROM artifact a JOIN version v ON v.id=a.adopted_version_id "
+                             "WHERE a.episode_id=? AND a.stage='prompts'", (v["episode_id"],)).fetchone()
+        if not adopted:
+            return []
+        prompts_ = json.loads(adopted["content"])
         hits = []
         for seg, entry in (prompts_.get("segments") or {}).items():
             for ref in entry.get("refs", []):
                 if ref.get("assetVersionId") in versions:
-                    hits.append(dict(segment=seg, label=ref["label"], current=ref["assetVersionId"]))
+                    current = ref["assetVersionId"]
+                    hits.append(dict(segment=seg, label=ref["label"], current=current, imageVersion=versions[current],
+                                     shots=ref.get("shots") or [], purpose=ref.get("role",""), txt=entry.get("txt",""),
+                                     promptVersionId=adopted["id"], promptVersion=adopted["display_no"]))
         return hits
 
-    def adopt_image(self, episode_id, version_id, command_id, confirm=False):
-        refs = self.image_references(version_id)
+    def adopt_image(self, episode_id, version_id, command_id, confirm=False, expected=None):
         if not confirm:
-            return dict(needsConfirm=True, references=refs)
+            with connect(self.db_path) as db:
+                v = self._episode_image(db, episode_id, version_id)
+                refs = self._image_references(db, v)
+                return dict(needsConfirm=True, references=refs, fingerprint=sha256_bytes(canonical([version_id, refs])))
         with transaction(self.db_path) as db:
             def run():
-                v = self.asset_version(version_id, db)
+                v = self._episode_image(db, episode_id, version_id)
+                refs = self._image_references(db, v)
+                if expected is not None and expected != sha256_bytes(canonical([version_id, refs])):
+                    raise Conflict("采用提示词的引用已变化，请重新核对镜头和 TXT")
                 db.execute("INSERT OR IGNORE INTO image_choice VALUES(?,?,?,?,?,?)",
                            (new_id(), episode_id, version_id, "adopted", "[]", self.clock()))
-                ep = row(db, "SELECT * FROM episode WHERE id=?", episode_id)
-                items = [dict(target=f"prompts:{r['segment']}", reason=f"{v['name']} 采用新版 v{v['version_no']}，需改引用并复审")
-                         for r in refs if r["current"] != version_id]
+                source = f"asset:{version_id}"
+                pending = {r[0] for r in db.execute(
+                    "SELECT target_ref FROM impact WHERE episode_id=? AND source_ref=? "
+                    "AND kind='image_adopted' AND state='pending'", (episode_id, source))}
+                affected = dict.fromkeys("prompts:"+r["segment"] for r in refs if r["current"] != version_id)
+                items = [dict(target=t, reason=f"{v['name']} 采用新版 v{v['version_no']}，需改引用并复审")
+                         for t in affected if t not in pending]
                 return dict(versionId=version_id, recheck=self._record_impacts(
-                    db, dict(project_id=ep["project_id"], episode_id=ep["id"]), items, "image_adopted", f"asset:{version_id}"))
-            return self._command(db, command_id, "adopt_image", dict(e=episode_id, v=version_id), run)
+                    db, v, items, "image_adopted", source))
+            payload = dict(e=episode_id, v=version_id)
+            if expected is not None:
+                payload["expected"] = expected
+            return self._command(db, command_id, "adopt_image", payload, run)
 
     # ============================================================ generation canvas (J15)
     def canvas_view(self, episode_id):
         with connect(self.db_path) as db:
+            self._episode_in(db, episode_id)
             r = db.execute("SELECT doc, revision FROM canvas WHERE episode_id=?", (episode_id,)).fetchone()
-        return dict(doc=json.loads(r["doc"]) if r else dict(nodes=[], edges=[]), revision=r["revision"] if r else 0)
+            if r:
+                return dict(doc=json.loads(r["doc"]), revision=r["revision"])
+            prompts = self._adopted_content(db,episode_id,"prompts") or {}
+        nodes,edges=[],[]
+        counts={}
+        def add(id,kind,column,title,data):
+            ordinal=counts.get(column,0)
+            nodes.append(dict(id=id,type=kind,x=270+column*330,y=70+ordinal*320,title=title,data=data))
+            counts[column]=ordinal+1
+        for asset in self.episode_assets(episode_id):
+            if asset["kind"]=="image":
+                col=2 if asset["grid"] else 0 if asset["category"]=="identity" else 1
+                add(asset["id"],"lock" if asset["category"]=="identity" else "reference",col,
+                    f"{asset['name']} v{asset['version_no']}",dict(assetVersionId=asset["id"]))
+        image_ids={n["id"] for n in nodes}
+        for sid,entry in prompts.get("segments",{}).items():
+            usage="use-"+sid
+            add(usage,"usage",3,sid+" 实际输入",dict(segment=sid))
+            edges.extend({"from":ref["assetVersionId"],"to":usage,"kind":"input"}
+                         for ref in entry.get("refs",[]) if ref.get("assetVersionId") in image_ids)
+        for batch in self.episode_batches(episode_id):
+            spec=batch["spec"]
+            items=spec.get("items",[])
+            ident="batch-"+batch["id"]
+            add(ident,"generate",4,(items[0].get("target",{}).get("name") if items else None) or "图像批次",
+                dict(batchId=batch["id"],provider=batch["provider"],operation=batch["operation"],size=batch["size"],
+                     quality=spec.get("quality"),model=batch["model"],
+                     count=max(1,len(items)),prompt=items[0].get("prompt","") if items else ""))
+        return dict(doc=dict(nodes=nodes,edges=edges),revision=0)
 
     def save_canvas(self, episode_id, doc, expected_revision, command_id=None):
         """Layout and wiring only; generation still goes through create_batch + authorization."""
         with transaction(self.db_path) as db:
-            r = db.execute("SELECT revision FROM canvas WHERE episode_id=?", (episode_id,)).fetchone()
-            cur = r["revision"] if r else 0
-            if cur != expected_revision:
-                raise Conflict("画布已在别处更新，请刷新后再改", current=cur)
-            ids = {n["id"] for n in doc.get("nodes", [])}
-            if any(e["from"] not in ids or e["to"] not in ids for e in doc.get("edges", [])):
-                raise Rejected("连线指向不存在的节点")
-            db.execute("INSERT INTO canvas VALUES(?,?,?) ON CONFLICT(episode_id) DO UPDATE SET doc=excluded.doc, "
-                       "revision=excluded.revision", (episode_id, dumps(doc), cur + 1))
-            return dict(revision=cur + 1)
+            return self._write_canvas(db, episode_id, doc, expected_revision)
+
+    def _write_canvas(self, db, episode_id, doc, expected_revision):
+        r = db.execute("SELECT revision FROM canvas WHERE episode_id=?", (episode_id,)).fetchone()
+        cur = r["revision"] if r else 0
+        if cur != expected_revision:
+            raise Conflict("画布已在别处更新，请刷新后再改", current=cur)
+        ids = {n["id"] for n in doc.get("nodes", [])}
+        if any(e["from"] not in ids or e["to"] not in ids for e in doc.get("edges", [])):
+            raise Rejected("连线指向不存在的节点")
+        db.execute("INSERT INTO canvas VALUES(?,?,?) ON CONFLICT(episode_id) DO UPDATE SET doc=excluded.doc, "
+                   "revision=excluded.revision", (episode_id, dumps(doc), cur + 1))
+        return dict(revision=cur + 1)

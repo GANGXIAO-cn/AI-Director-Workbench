@@ -1,0 +1,783 @@
+{
+  "id": "short-film@v3",
+  "source": {
+    "milo-leo-story": "a07840b5aa286d8f4a388d007ae6ba921a899024",
+    "milo-leo-short-video": "ab0fa75e3b2254a9341a8501a48be7577ab023eb"
+  },
+  "stages": {
+    "story": [
+      "story_standard",
+      "story_draft",
+      "审读依据与角色交接",
+      "可选的故事开发辅助",
+      "故事脊与阶段设计",
+      "机制与结构联合选择",
+      "时间线与可读故事正文",
+      "故事梗概、角色表与交接模板",
+      "系列结构与时长参考",
+      "系列风格",
+      "故事反例",
+      "系列反制与时长策略"
+    ],
+    "story_review": [
+      "story_review",
+      "story_standard",
+      "审读依据与角色交接",
+      "六问复核",
+      "选题三问初筛",
+      "可读性、因果、时间与节奏的审读清单",
+      "系列风格",
+      "系列人物、风格与近期差异审读"
+    ],
+    "topic": [
+      "机制与结构联合选择",
+      "六问复核",
+      "选题研究与证据",
+      "选题三问初筛",
+      "可读选题与确认点",
+      "近期差异与已有故事组",
+      "系列结构与时长参考",
+      "系列风格",
+      "系列三问、近期差异与同批比较"
+    ],
+    "script": [
+      "承接已审故事与跨段动作",
+      "剧情阶段与可见表演",
+      "机制的表演落实",
+      "连续集与单集兑现",
+      "动作能量与反应",
+      "对白时窗与动作接续",
+      "故事接收与版本依据",
+      "近期差异与已有故事组",
+      "剧情阶段、分段预算与修订模板",
+      "系列既有作品",
+      "系列声音基准与台词示例"
+    ],
+    "plan": [
+      "动作能量与反应",
+      "设备视点、观看窗口、声音与剪点",
+      "分镜、分段与空间锁定",
+      "复用资产与用途",
+      "逐镜选择实际输入",
+      "身份与逐段出镜",
+      "镜头计划、时序与空间模板",
+      "商品入景",
+      "商品入景规划模板"
+    ],
+    "space": [
+      "分镜、分段与空间锁定",
+      "原图与对应镜头复核",
+      "空间锁定与开场核对模板",
+      "固定家庭场景与换装边界"
+    ],
+    "assets": [
+      "复用资产与用途",
+      "逐镜选择实际输入",
+      "画面价值、用途与明确取舍",
+      "原图与对应镜头复核",
+      "资产职责、输入顺序与九格状态模板",
+      "商品入景",
+      "系列身份与服装视觉核对",
+      "固定家庭场景与换装边界",
+      "商品入景规划模板"
+    ],
+    "cast": [
+      "身份与逐段出镜",
+      "原图与对应镜头复核",
+      "身份基准与实际上传的区分",
+      "系列身份与服装视觉核对"
+    ],
+    "comparison": [
+      "原图与对应镜头复核",
+      "H3 原文查阅表",
+      "独立审查的对照依据",
+      "送审版本与问题处理",
+      "系列身份与服装视觉核对"
+    ],
+    "prompts": [
+      "H3 原文查阅表",
+      "参考、起幅、平铺时间段与声音",
+      "对白时窗与动作接续",
+      "系列声音基准与台词示例"
+    ],
+    "cold_read": [
+      "独立审查的冷读观察"
+    ],
+    "publish": [
+      "发布系统拼接与项目设置",
+      "系列发布与配乐"
+    ],
+    "delivery": [
+      "核验依据与返修路径",
+      "精剪交接与实际粗剪核对",
+      "身份基准与实际上传的区分",
+      "审核对象、观察与处置模板",
+      "完整精剪交接模板",
+      "发布包与商品入景核对"
+    ],
+    "group": [
+      "跨集来源、依赖与复核",
+      "跨集共享与验收模板"
+    ]
+  },
+  "files": {
+    "审读依据与角色交接": {
+      "path": "sections/审读依据与角色交接.md",
+      "sha256": "93687d87d9a2f408be168f5f43efd81cf0a55df3f7da0f7ba848c2d49448ab79",
+      "source": {
+        "repo": "milo-leo-story",
+        "path": "references/story-standard.md",
+        "commit": "a07840b5aa286d8f4a388d007ae6ba921a899024",
+        "sha256": "5d19f74c83c603c52f2beddd8461e362f48afc8db661c2687e1e2cad2a024241",
+        "lines": "103-111,133-136"
+      }
+    },
+    "可选的故事开发辅助": {
+      "path": "sections/可选的故事开发辅助.md",
+      "sha256": "cef839c3cacc9a4804c1aed5d42d5b0fa5c1329b7b3ddf77f3421c20a282aa1e",
+      "source": {
+        "repo": "milo-leo-story",
+        "path": "references/story-draft.md",
+        "commit": "a07840b5aa286d8f4a388d007ae6ba921a899024",
+        "sha256": "1903da625ff784cbed4f97b8a44680d780b4ab2738b582ef007060731df87e6c",
+        "lines": "5-7,9,16,18,20-26,29-35,44-46"
+      }
+    },
+    "故事脊与阶段设计": {
+      "path": "sections/故事脊与阶段设计.md",
+      "sha256": "55c3c078a0bedd2f38b5d96e5a7b0eaafc12fe0f6f1a545d97eb74658bdfd7c4",
+      "source": {
+        "repo": "milo-leo-story",
+        "path": "references/outline.md",
+        "commit": "a07840b5aa286d8f4a388d007ae6ba921a899024",
+        "sha256": "79615ca36667aa96b4cdd995e8e245cc0b9896e909d94ad72aa24f93bb427a3b",
+        "lines": "5-8,10,15,18-19"
+      }
+    },
+    "机制与结构联合选择": {
+      "path": "sections/机制与结构联合选择.md",
+      "sha256": "b9b76a8fd089883eb784602bd1283a9b653f0bb5c54f52b70529f944ab8812a7",
+      "source": {
+        "repo": "milo-leo-story",
+        "path": "references/selection.md",
+        "commit": "a07840b5aa286d8f4a388d007ae6ba921a899024",
+        "sha256": "6bbf00db651642b40b4141316f91c332f727beb1148da544399491c6e6d3e545",
+        "lines": "35-49"
+      }
+    },
+    "六问复核": {
+      "path": "sections/六问复核.md",
+      "sha256": "31bba2c1607b370197dc33be54424d9656d80c9f5a591f48d7fe79c7cf937e06",
+      "source": {
+        "repo": "milo-leo-story",
+        "path": "references/selection.md",
+        "commit": "a07840b5aa286d8f4a388d007ae6ba921a899024",
+        "sha256": "6bbf00db651642b40b4141316f91c332f727beb1148da544399491c6e6d3e545",
+        "lines": "51-53"
+      }
+    },
+    "选题研究与证据": {
+      "path": "sections/选题研究与证据.md",
+      "sha256": "e5ae71619cd6701b1f14101292c023d6b622630654b9b4c9a0bd791ad50ecd9a",
+      "source": {
+        "repo": "milo-leo-story",
+        "path": "references/topic-research.md",
+        "commit": "a07840b5aa286d8f4a388d007ae6ba921a899024",
+        "sha256": "7325356eacca966bc6ad8d9d65b3a9d07ddf853f8425330ea3f7117bd82fdcc9",
+        "lines": "21-27,52-60"
+      }
+    },
+    "承接已审故事与跨段动作": {
+      "path": "sections/承接已审故事与跨段动作.md",
+      "sha256": "c00151e9967126cfe681c736a3b5f3f316b2d7269a48fc68b734f61518da892a",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "references/story-handoff.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "44671e34890fdcc5dae0e44ec852cf5101ddb9eae1a1e89f25ac9ff04b8358de",
+        "lines": "17-19,21-38,42-44"
+      }
+    },
+    "剧情阶段与可见表演": {
+      "path": "sections/剧情阶段与可见表演.md",
+      "sha256": "172e53f62fd1ae80a64be084579c41db047e1f13123bb0df8a32020f2b1f917e",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "references/story-ip.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "cd1fe850c3c2e07946104d0315cbdeb18e39ec5916b00cc33640727117cf369b",
+        "lines": "5-11,17-19,23"
+      }
+    },
+    "机制的表演落实": {
+      "path": "sections/机制的表演落实.md",
+      "sha256": "06142a5ceb0273e943e8ddc887d11cf1ecedc5e8d6752cc31fb3cc1e547f475e",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "references/plot-mechanisms.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "6d3e7d40da9bc3a4ca324969e93d8380c6d3620ecb292cdb3e6e19afa8c0c73f",
+        "lines": "5-7"
+      }
+    },
+    "连续集与单集兑现": {
+      "path": "sections/连续集与单集兑现.md",
+      "sha256": "7209a0eaa57b5fe4a985693ec0424f809b086ccb01661160360a136133ec5eec",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "references/series-continuity.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "93f701f771f84c4cdcd12219d895f62f2ca829adf7e09f718ba9c0d8da6973ab",
+        "lines": "15,21"
+      }
+    },
+    "动作能量与反应": {
+      "path": "sections/动作能量与反应.md",
+      "sha256": "c638fac4f7e65d702a9be049cafe5b36c6cb919932c83d6fff62e12c25c12e3c",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "references/camera-rhythm.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "59d03dbe6f9e3f42600037ef6ca1e462fc3cbc865be5d4fd0deb3478deab7d33",
+        "lines": "22-34"
+      }
+    },
+    "设备视点、观看窗口、声音与剪点": {
+      "path": "sections/设备视点、观看窗口、声音与剪点.md",
+      "sha256": "a05314e62e6d12ccfafb48de7ec92d645ccd664add4dbfe878cdb0b679b7de3b",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "references/camera-rhythm.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "59d03dbe6f9e3f42600037ef6ca1e462fc3cbc865be5d4fd0deb3478deab7d33",
+        "lines": "5-20,36-68,72-90"
+      }
+    },
+    "分镜、分段与空间锁定": {
+      "path": "sections/分镜、分段与空间锁定.md",
+      "sha256": "4d6ac48552822c154e24eef983f8cdec1f99799307feabcb69f816ff90d0ab19",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "references/scene-assets.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "88232b43e44edbfa2395c9eb8df439cce8497489a045fa1f96d76c12da599bae",
+        "lines": "5-38"
+      }
+    },
+    "复用资产与用途": {
+      "path": "sections/复用资产与用途.md",
+      "sha256": "d6337a47a32c6fb88ce1107889c0f2baf294ea8033ce9af1508f4b6ed50a25bf",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "references/asset-library.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "da04d31cb2e27f0296007bf6e4e66cb84adbd95e4cc3412ff25297a025235f4a",
+        "lines": "4-6"
+      }
+    },
+    "逐镜选择实际输入": {
+      "path": "sections/逐镜选择实际输入.md",
+      "sha256": "109660563fcc9a787ca3a4219c23b43900b7e98115e5d212880a22b07ba9ecae",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "references/shot-references.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "21bdc0e152d822d948c5056a49329c425bc36648a1f3f1e5895b636ddd9ad26d",
+        "lines": "3-17"
+      }
+    },
+    "身份与逐段出镜": {
+      "path": "sections/身份与逐段出镜.md",
+      "sha256": "3b270580582441e4c37ed938519dcecf428c0db530152e5512fdffe1fca98bb0",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "references/character-contract.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "e50a2c1b1f6eede33ed71577f7b1ea6c359e34e8b6c00334a12a34ab04583ea8",
+        "lines": "3-5,11-13,17"
+      }
+    },
+    "画面价值、用途与明确取舍": {
+      "path": "sections/画面价值、用途与明确取舍.md",
+      "sha256": "b3f6fd82f67bb8718462bc9c057a851c1d1a1e495250a21721969024774d6b26",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "references/image-selection.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "222a31cee4fa7da44c70981f626f6d4131646a50088249f8fb212787c3df087a",
+        "lines": "9-30,53-57"
+      }
+    },
+    "原图与对应镜头复核": {
+      "path": "sections/原图与对应镜头复核.md",
+      "sha256": "d5f90d6139535dc24cfdab8314ab863020a575a663a3843c6402260abcc0ddd9",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "references/visual-checklist.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "083981a3e06460a8d2f2e1a57251876613c188cbda59b735b33401faaac51fcf",
+        "lines": "5,7-14"
+      }
+    },
+    "H3 原文查阅表": {
+      "path": "sections/H3 原文查阅表.md",
+      "sha256": "5ff188a81930e95c5eea20350b2393b4e674d9270aa02bf737d6fb8eccbb42b1",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "references/prompt-format.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "eee17785c2bf92868cbb21e8594b211ec547635dfdea7ad639cddaafc2a35d0e",
+        "lines": "5-16"
+      }
+    },
+    "参考、起幅、平铺时间段与声音": {
+      "path": "sections/参考、起幅、平铺时间段与声音.md",
+      "sha256": "c8a47c1769b6c04bc60b5c60c53d49919b27c1d8bd65dbbba2e98bd3998fca37",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "references/prompt-format.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "eee17785c2bf92868cbb21e8594b211ec547635dfdea7ad639cddaafc2a35d0e",
+        "lines": "59-76,78-85,87-106,118-120,124-126,130-134"
+      }
+    },
+    "对白时窗与动作接续": {
+      "path": "sections/对白时窗与动作接续.md",
+      "sha256": "67f2318c5047db3409a0cdc8e0d1d04f8ba2c229ef7cbe6bb6dcd3522ecf0534",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "references/voice-dialogue.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "796b2ca1f936f1116df0417b16239f954f7f3bffc85bcccb03f2f7ccf0804f63",
+        "lines": "11-15,23,29-31"
+      }
+    },
+    "独立审查的冷读观察": {
+      "path": "sections/独立审查的冷读观察.md",
+      "sha256": "fb0a120488fcfb30a457586949ae4949d1f2df0d736413eb274f5a51487c9a07",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "references/prompt-review.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "6e4f2acfef8eb091a7e2504fa367afd70fea01ad2e195893fe36d9bfd31a2bc0",
+        "lines": "3,9"
+      }
+    },
+    "独立审查的对照依据": {
+      "path": "sections/独立审查的对照依据.md",
+      "sha256": "735294fe0b9cab6eebbd4138add90dbc8109c2c1d80052ef5b93646983d24a80",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "references/prompt-review.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "6e4f2acfef8eb091a7e2504fa367afd70fea01ad2e195893fe36d9bfd31a2bc0",
+        "lines": "3,9"
+      }
+    },
+    "发布系统拼接与项目设置": {
+      "path": "sections/发布系统拼接与项目设置.md",
+      "sha256": "d3dd2d9b9ad169fe70a76ee3d56d648dee6729bce01559fab5082c97b7f9fcc3",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "references/publish-pack.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "48c99930fbce8f5725171dfcc6689376aea7879efcf1a5fcd9130cc08d1bcb2e",
+        "lines": "5-7,17,19-25"
+      }
+    },
+    "核验依据与返修路径": {
+      "path": "sections/核验依据与返修路径.md",
+      "sha256": "ad9df9ee6ae33b45f978f31bd88e160d2ffa165684762c7aa54f1c61e5c1ed22",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "references/review-delivery.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "fb36cca89f35f5725d734089741a93bc08c237ecbc60a98e2b9e9a7f864d264e",
+        "lines": "26-40,92-96"
+      }
+    },
+    "精剪交接与实际粗剪核对": {
+      "path": "sections/精剪交接与实际粗剪核对.md",
+      "sha256": "6d938e3256d7e63ec878136a88497a8e81e9aa54b6f32f2dc8b28419659368ed",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "references/finecut-handoff.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "a660f2e6af2ccf4b1d2ce762afeea12917f6bbdadbcaa6bc100420da0cc84c10",
+        "lines": "5-11,15-23,27-31"
+      }
+    },
+    "选题三问初筛": {
+      "path": "sections/选题三问初筛.md",
+      "sha256": "d0534d26458751fa647239de1d3013d2dcadcf2850182b3925bc371c1982dec4",
+      "source": {
+        "repo": "milo-leo-story",
+        "path": "references/selection.md",
+        "commit": "a07840b5aa286d8f4a388d007ae6ba921a899024",
+        "sha256": "6bbf00db651642b40b4141316f91c332f727beb1148da544399491c6e6d3e545",
+        "lines": "3-9"
+      }
+    },
+    "可读选题与确认点": {
+      "path": "sections/可读选题与确认点.md",
+      "sha256": "ac5ec45ffba7c43f200e0b5ed3755daba9c02ad9e876a7a9d4f6ad127081725c",
+      "source": {
+        "repo": "milo-leo-story",
+        "path": "references/selection.md",
+        "commit": "a07840b5aa286d8f4a388d007ae6ba921a899024",
+        "sha256": "6bbf00db651642b40b4141316f91c332f727beb1148da544399491c6e6d3e545",
+        "lines": "23-27,31-33,55-57"
+      }
+    },
+    "时间线与可读故事正文": {
+      "path": "sections/时间线与可读故事正文.md",
+      "sha256": "20b6026b62c3146ce3cb103b4c3f1875a9d792ed98d2acc52c4b4667dfd9b7ca",
+      "source": {
+        "repo": "milo-leo-story",
+        "path": "references/story-draft.md",
+        "commit": "a07840b5aa286d8f4a388d007ae6ba921a899024",
+        "sha256": "1903da625ff784cbed4f97b8a44680d780b4ab2738b582ef007060731df87e6c",
+        "lines": "11-14,37-42"
+      }
+    },
+    "可读性、因果、时间与节奏的审读清单": {
+      "path": "sections/可读性、因果、时间与节奏的审读清单.md",
+      "sha256": "014f1ef30871d411f40dc7d8e9be89f99be5b05a8dd54b3f4114f2a6c034a992",
+      "source": {
+        "repo": "milo-leo-story",
+        "path": "references/story-standard.md",
+        "commit": "a07840b5aa286d8f4a388d007ae6ba921a899024",
+        "sha256": "5d19f74c83c603c52f2beddd8461e362f48afc8db661c2687e1e2cad2a024241",
+        "lines": "56,60,64,66-97"
+      }
+    },
+    "故事梗概、角色表与交接模板": {
+      "path": "sections/故事梗概、角色表与交接模板.md",
+      "sha256": "13ac023cbb1aee5cbcfe9a088e8e9d645427116b4baaf9b7508b0923f44eab04",
+      "source": {
+        "repo": "milo-leo-story",
+        "path": "templates/story-draft.md",
+        "commit": "a07840b5aa286d8f4a388d007ae6ba921a899024",
+        "sha256": "fe56a8425a2518c69c1ee1fbba784de6354cfd95eccfdfb6bd25d419fdb928ce",
+        "lines": "3-19"
+      }
+    },
+    "故事接收与版本依据": {
+      "path": "sections/故事接收与版本依据.md",
+      "sha256": "9129777e0c993da4bead5a7c81929a75ac926ce8f9fcdae5c74b6539be108123",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "references/story-handoff.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "44671e34890fdcc5dae0e44ec852cf5101ddb9eae1a1e89f25ac9ff04b8358de",
+        "lines": "5-11,15"
+      }
+    },
+    "近期差异与已有故事组": {
+      "path": "sections/近期差异与已有故事组.md",
+      "sha256": "cabe4e2646c51d02c5647c2a40cc88805cf9fe379ed2ee8c96f298eb946939d8",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "references/series-continuity.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "93f701f771f84c4cdcd12219d895f62f2ca829adf7e09f718ba9c0d8da6973ab",
+        "lines": "5-7,23-25"
+      }
+    },
+    "剧情阶段、分段预算与修订模板": {
+      "path": "sections/剧情阶段、分段预算与修订模板.md",
+      "sha256": "0fee7ad862fe85fd05cc4c59c037d2b5f44e0b1b15fdac1a9195b5c8f9a4bf30",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "templates/story-script.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "aec330cde5d35da2ea8c899a12744b7bb36f064765fb05d86359bc5096cba90e",
+        "lines": "3-42"
+      }
+    },
+    "镜头计划、时序与空间模板": {
+      "path": "sections/镜头计划、时序与空间模板.md",
+      "sha256": "fcd463f416550283ba1e70a69281d1194dd0b2bb1eec53756dfe9adc9911ef77",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "templates/production-plan.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "28f9589d6f2917ba97f149cea008610fc5ce656cc9a773d18505937e19e130a8",
+        "lines": "3-25,29-47,58-73,77-93"
+      }
+    },
+    "空间锁定与开场核对模板": {
+      "path": "sections/空间锁定与开场核对模板.md",
+      "sha256": "82ddacbd2c8b98211d1b93d8ddb1e62834e73c00de885a7a3f1d8c1f02c2ccae",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "templates/production-plan.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "28f9589d6f2917ba97f149cea008610fc5ce656cc9a773d18505937e19e130a8",
+        "lines": "13-18,91-93"
+      }
+    },
+    "身份基准与实际上传的区分": {
+      "path": "sections/身份基准与实际上传的区分.md",
+      "sha256": "58bbd511e4870f4269db6ca73afb123c8ff0e79fb817a7b63938608192526eb3",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "references/character-contract.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "e50a2c1b1f6eede33ed71577f7b1ea6c359e34e8b6c00334a12a34ab04583ea8",
+        "lines": "19-21"
+      }
+    },
+    "资产职责、输入顺序与九格状态模板": {
+      "path": "sections/资产职责、输入顺序与九格状态模板.md",
+      "sha256": "0b1f292a010807559b6ba33cd283e896aae53aac2cf2551bb096af6d9584399c",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "templates/production-plan.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "28f9589d6f2917ba97f149cea008610fc5ce656cc9a773d18505937e19e130a8",
+        "lines": "58-73"
+      }
+    },
+    "审核对象、观察与处置模板": {
+      "path": "sections/审核对象、观察与处置模板.md",
+      "sha256": "c44e76b26f261841935a7f9e4d3327e514d46e319b3b5d1e0a285c74e6d5bcc4",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "templates/review-record.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "409bf544edf3b82230d94c06c7bc937d0a1ea9eff2acf61f690128628546320d",
+        "lines": "3-24,32-36"
+      }
+    },
+    "送审版本与问题处理": {
+      "path": "sections/送审版本与问题处理.md",
+      "sha256": "d53ef3ae29d329ac4d33023f621255e00b1ec857a7b6e4e3aecd6404a231344e",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "references/prompt-review.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "6e4f2acfef8eb091a7e2504fa367afd70fea01ad2e195893fe36d9bfd31a2bc0",
+        "lines": "10,13-15,27"
+      }
+    },
+    "完整精剪交接模板": {
+      "path": "sections/完整精剪交接模板.md",
+      "sha256": "3ea7a7470d854b36165564b9629676b720eac2680080e39f0a25e902a5f4f3c0",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "templates/finecut-handoff.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "959c86cf441507775fc4117e1f5f2b11fc194ac4a264dbc7dcd7192e7bd63ddd",
+        "lines": "1-33"
+      }
+    },
+    "跨集来源、依赖与复核": {
+      "path": "sections/跨集来源、依赖与复核.md",
+      "sha256": "6d2c1f2e35e03c4c57a4750229756da9c6bb64e4cf9aa30a528b348383466cd4",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "references/continuous-production.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "8700e95fff9cb9dad0faa75bd02dddb01f48f5917472e58ee4a999e335cb38b7",
+        "lines": "5-11,13-19,21-27,29-36,38-42"
+      }
+    },
+    "跨集共享与验收模板": {
+      "path": "sections/跨集共享与验收模板.md",
+      "sha256": "c3fe38e9c7995810f53ada8d1dce5f6801fd9cc3cb91bc31ada4171bee2889b5",
+      "source": {
+        "repo": "milo-leo-short-video",
+        "path": "templates/group-production.md",
+        "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+        "sha256": "c3fe38e9c7995810f53ada8d1dce5f6801fd9cc3cb91bc31ada4171bee2889b5",
+        "lines": "1-41"
+      }
+    },
+    "story_standard": {
+      "path": "story/story-standard.md",
+      "sha256": "43e15b64f18a9aa5e61e4898c6849269a0b3d29b726e17a2a904bbd405482957",
+      "source": {
+        "pack": "short-film@v1",
+        "path": "story/story-standard.md",
+        "sha256": "43e15b64f18a9aa5e61e4898c6849269a0b3d29b726e17a2a904bbd405482957"
+      }
+    },
+    "story_draft": {
+      "path": "story/story-draft.md",
+      "sha256": "00828ca3bcadbda0168ba9f99a0ea9cb53d17364dc476fd54957bdccfdc3164f",
+      "source": {
+        "pack": "short-film@v1",
+        "path": "story/story-draft.md",
+        "sha256": "00828ca3bcadbda0168ba9f99a0ea9cb53d17364dc476fd54957bdccfdc3164f"
+      }
+    },
+    "story_review": {
+      "path": "review/story-review.md",
+      "sha256": "c30cf716f9ce9d678fcbe11a2c4f8bbe7a1e45f0b028943b8ab3711b6f51dff0",
+      "source": {
+        "pack": "short-film@v1",
+        "path": "review/story-review.md",
+        "sha256": "c30cf716f9ce9d678fcbe11a2c4f8bbe7a1e45f0b028943b8ab3711b6f51dff0"
+      }
+    }
+  },
+  "projectFiles": {
+    "puggy": {
+      "系列结构与时长参考": {
+        "path": "project/系列结构与时长参考.md",
+        "sha256": "42a684b6db9ee51da1186c18f45138b88b3cd69912c32b283d7b92e99119a687",
+        "source": {
+          "repo": "milo-leo-story",
+          "path": "references/selection.md",
+          "commit": "a07840b5aa286d8f4a388d007ae6ba921a899024",
+          "sha256": "6bbf00db651642b40b4141316f91c332f727beb1148da544399491c6e6d3e545",
+          "lines": "39-45"
+        }
+      },
+      "系列风格": {
+        "path": "project/系列风格.md",
+        "sha256": "87f969d07e95af55c211a47df73732f12963a855e08971954d000807b60860f7",
+        "source": {
+          "repo": "milo-leo-story",
+          "path": "references/story-standard.md",
+          "commit": "a07840b5aa286d8f4a388d007ae6ba921a899024",
+          "sha256": "5d19f74c83c603c52f2beddd8461e362f48afc8db661c2687e1e2cad2a024241",
+          "lines": "15-22"
+        }
+      },
+      "故事反例": {
+        "path": "project/故事反例.md",
+        "sha256": "2a71a6fe9e3414f125a20115b1092b20796a85f8480101ca3cbbd59186d434dd",
+        "source": {
+          "repo": "milo-leo-story",
+          "path": "references/story-draft.md",
+          "commit": "a07840b5aa286d8f4a388d007ae6ba921a899024",
+          "sha256": "1903da625ff784cbed4f97b8a44680d780b4ab2738b582ef007060731df87e6c",
+          "lines": "62-76"
+        }
+      },
+      "系列既有作品": {
+        "path": "project/系列既有作品.md",
+        "sha256": "fca12480c4cd2555dcd7bf1cd338d405bab74b8113eae7c1f8bbe9a7235c7c1b",
+        "source": {
+          "repo": "milo-leo-short-video",
+          "path": "references/examples.md",
+          "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+          "sha256": "8d5fba5e0f638f0460f7b2ecae68a4e5b8900764cb2796571ad4d8b03b28719d",
+          "lines": "1-12"
+        }
+      },
+      "商品入景": {
+        "path": "project/商品入景.md",
+        "sha256": "010475a43c1c129c9663ba29baa6263fed697d1f07bcdf2387fa2ce8a39b92cf",
+        "source": {
+          "repo": "milo-leo-short-video",
+          "path": "references/product-placement.md",
+          "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+          "sha256": "010475a43c1c129c9663ba29baa6263fed697d1f07bcdf2387fa2ce8a39b92cf",
+          "lines": "1-35"
+        }
+      },
+      "系列声音基准与台词示例": {
+        "path": "project/系列声音基准与台词示例.md",
+        "sha256": "f6a6cf82f149906c374a78491a95ba54cced925ae7b27c3720408563bdf894e4",
+        "source": {
+          "repo": "milo-leo-short-video",
+          "path": "references/voice-dialogue.md",
+          "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+          "sha256": "796b2ca1f936f1116df0417b16239f954f7f3bffc85bcccb03f2f7ccf0804f63",
+          "lines": "5-9,17,21"
+        }
+      },
+      "系列发布与配乐": {
+        "path": "project/系列发布与配乐.md",
+        "sha256": "cff625e0fd5db58dcd7d7669f8c981f0a6eb808c56516a44da0c63d2c9353c6e",
+        "source": {
+          "repo": "milo-leo-short-video",
+          "path": "references/publish-pack.md",
+          "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+          "sha256": "48c99930fbce8f5725171dfcc6689376aea7879efcf1a5fcd9130cc08d1bcb2e",
+          "lines": "9-15,27-33"
+        }
+      },
+      "系列三问、近期差异与同批比较": {
+        "path": "project/系列三问、近期差异与同批比较.md",
+        "sha256": "bb1120ea2956e4dbe64785d13f3a6f15bcf5cc8704e5e1f15c7e8fe9581eab2c",
+        "source": {
+          "repo": "milo-leo-story",
+          "path": "references/selection.md",
+          "commit": "a07840b5aa286d8f4a388d007ae6ba921a899024",
+          "sha256": "6bbf00db651642b40b4141316f91c332f727beb1148da544399491c6e6d3e545",
+          "lines": "3-33"
+        }
+      },
+      "系列反制与时长策略": {
+        "path": "project/系列反制与时长策略.md",
+        "sha256": "302ae446f9e734062b76392228e972779b39b692a3a3a3adf06c642124e001f6",
+        "source": {
+          "repo": "milo-leo-story",
+          "path": "references/outline.md",
+          "commit": "a07840b5aa286d8f4a388d007ae6ba921a899024",
+          "sha256": "79615ca36667aa96b4cdd995e8e245cc0b9896e909d94ad72aa24f93bb427a3b",
+          "lines": "9-13"
+        }
+      },
+      "系列人物、风格与近期差异审读": {
+        "path": "project/系列人物、风格与近期差异审读.md",
+        "sha256": "2f357eddf9429b373f61d054193dd834fa857b4e767e202595107a0ee6a83b13",
+        "source": {
+          "repo": "milo-leo-story",
+          "path": "references/story-standard.md",
+          "commit": "a07840b5aa286d8f4a388d007ae6ba921a899024",
+          "sha256": "5d19f74c83c603c52f2beddd8461e362f48afc8db661c2687e1e2cad2a024241",
+          "lines": "98-101"
+        }
+      },
+      "系列身份与服装视觉核对": {
+        "path": "project/系列身份与服装视觉核对.md",
+        "sha256": "4cc1f294137eda5721e13a548d397dcd6c778a068f27ff158a5f1d4252476893",
+        "source": {
+          "repo": "milo-leo-short-video",
+          "path": "references/visual-checklist.md",
+          "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+          "sha256": "083981a3e06460a8d2f2e1a57251876613c188cbda59b735b33401faaac51fcf",
+          "lines": "6"
+        }
+      },
+      "固定家庭场景与换装边界": {
+        "path": "project/固定家庭场景与换装边界.md",
+        "sha256": "2dc52a071ad03192f8526b48a2d9a9f32820e865fe62b0c8514a231ec6851840",
+        "source": {
+          "repo": "milo-leo-short-video",
+          "path": "references/asset-library.md",
+          "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+          "sha256": "da04d31cb2e27f0296007bf6e4e66cb84adbd95e4cc3412ff25297a025235f4a",
+          "lines": "8"
+        }
+      },
+      "商品入景规划模板": {
+        "path": "project/商品入景规划模板.md",
+        "sha256": "1e1226fb7523d7224589cf8d596e986260ae95ae7e2315b6f83a6cbde790137d",
+        "source": {
+          "repo": "milo-leo-short-video",
+          "path": "templates/production-plan.md",
+          "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+          "sha256": "28f9589d6f2917ba97f149cea008610fc5ce656cc9a773d18505937e19e130a8",
+          "lines": "49-56"
+        }
+      },
+      "发布包与商品入景核对": {
+        "path": "project/发布包与商品入景核对.md",
+        "sha256": "89c95bc5222e9d827a8faca39f9f101f9dad3cfdfbf40b7dbdaab069fdd79b85",
+        "source": {
+          "repo": "milo-leo-short-video",
+          "path": "templates/review-record.md",
+          "commit": "ab0fa75e3b2254a9341a8501a48be7577ab023eb",
+          "sha256": "409bf544edf3b82230d94c06c7bc937d0a1ea9eff2acf61f690128628546320d",
+          "lines": "26,30"
+        }
+      }
+    }
+  }
+}

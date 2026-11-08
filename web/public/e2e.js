@@ -78,9 +78,9 @@ window.E2E.pipeline = async function (eid, { idea = "第二夜", draft = true, f
   if (draft) { await T.type("输入你的想法", "写本集故事稿"); await T.click("↑", { sel: ".composer button" }); await T.waitFor("已生成草稿 R01", 15000); }
   await T.click("发起独立审查", { sel: ".actionbar button", after: 1500 }); await T.waitFor("原结论 通过", 15000);
   await T.click("采用并继续", { sel: ".actionbar button", after: 1200 });
-  await T.click("按故事分场起草", { after: 1200 }); await T.waitFor("场01");
+  await T.click("按采用的故事起草剧本", { after: 1200 }); await T.waitFor("场01");
   await T.click("采用并继续", { sel: ".actionbar button", after: 1200 });
-  await T.click("从剧本起草镜头表", { after: 1200 }); await T.waitFor("K01 ");
+  await T.click("按剧本设计镜头与生成段", { after: 1200 }); await T.waitFor("K01 ");
   await T.click("采用并继续", { sel: ".actionbar button", after: 1200 });
   await T.click("素材与选图", { sel: ".catalog .item" });
   await T.upload("上传", await png(96, 64, "#2b3a55", "纸箱火箭外观.png")); await T.waitFor("纸箱火箭外观", 8000);
@@ -94,8 +94,9 @@ window.E2E.pipeline = async function (eid, { idea = "第二夜", draft = true, f
   await T.click("开始第二遍", { after: 1500 });
   await T.waitFor(() => /待判断 \/ 待审\n0 段/.test(document.body.innerText), 15000, "两遍完成");
   await T.go("#/e/" + eid + "/publish"); await T.waitFor("发布包");
-  const L = (t) => [...document.querySelectorAll("label")].find((l) => l.innerText.startsWith(t)).querySelector("input");
-  T.setValue(L("发布标题"), "Second Night"); T.setValue(L("正文第一行"), "The parrot learns the till sound."); T.setValue(L("Suno Title"), "Till Beep"); T.setValue(L("Style of Music"), "lofi"); T.setValue(L("Exclude Styles"), "vocals");
+  const L = (t) => [...document.querySelectorAll("label")].find((l) => l.innerText.startsWith(t))?.querySelector("input,textarea");
+  await T.waitFor(() => L("Exclude Styles"), 8000, "读取项目的扩展发布字段");
+  T.setValue(L("发布标题"), "Second Night"); T.setValue(L("正文第一行"), "The parrot learns the till sound."); T.setValue(L("Suno Title"), "Till Beep"); T.setValue(L("Style of Music"), "lofi, 92 BPM"); T.setValue(L("Exclude Styles"), "vocals");
   await T.click("保存为新版本", { after: 1200 }); await T.waitFor("Second Night");
   await T.click("采用并继续", { sel: ".actionbar button", after: 1500 });
   await T.waitFor("核验通过", 10000);

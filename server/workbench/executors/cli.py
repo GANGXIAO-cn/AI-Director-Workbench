@@ -158,8 +158,11 @@ class CliExecutor(Executor):
         rc, help_out, help_err = invoke([str(binary), *self.help_args, "--help"], Path.home(), "", 20)
         info["missing_flags"] = [f for f in self.required_flags if f not in help_out + help_err]
         info["authenticated"] = self.auth_status(binary)
-        info["status"] = "available" if info["version"] and not info["missing_flags"] and info["authenticated"] \
-            else "unavailable"
+        ready = info["version"] and not info["missing_flags"]
+        if ready and info["authenticated"] is None:
+            info["status"] = "auth_unknown"
+        else:
+            info["status"] = "available" if ready and info["authenticated"] else "unavailable"
         return info
 
     help_args: tuple = ()

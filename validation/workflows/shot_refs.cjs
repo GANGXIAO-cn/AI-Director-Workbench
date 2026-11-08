@@ -1,0 +1,111 @@
+const assert = require("node:assert/strict");
+const path = require("node:path");
+const {chromium} = require("playwright");
+async function main() {
+  const base = "http://127.0.0.1:"+process.env.ADW_TEST_PORT;
+  const browser = await chromium.launch({executablePath:process.env.CHROME_PATH,headless:true});
+  try {
+    const page = await browser.newPage({viewport:{width:1440,height:1000}});
+    page.setDefaultTimeout(8000);
+    const faults=[];
+    page.on("pageerror",e=>faults.push(e.message));
+    const query=async(name,args={})=>{
+      const res=await page.request.get(base+"/api/q/"+name,{params:{args:JSON.stringify(args)}});
+      assert.equal(res.status(),200);return res.json();
+    };
+    assert.match((await query("storage_status")).dataDir,/\/adw-workflows-[^/]+\/data$/);
+    const [project]=await query("list_projects");
+    const eid=project.recent[0].id;
+    const view=()=>query("episode_view",{episode_id:eid});
+    const button=name=>page.getByRole("button",{name,exact:true});
+    const fixture=path.join(__dirname,"../../修复验证_20261108");
+    await page.goto(base+"/#/e/"+eid+"/plan");
+    await page.getByText("镜头充分性与节奏核对",{exact:true}).click();
+    await page.getByText("逐镜出镜与关键道具",{exact:true}).click();
+    for (let i=0;i<3;i++) {
+      const row=page.locator("tr").filter({has:page.getByRole("textbox",{name:new RegExp("G01 S0"+(i+1)+".*实际可见角色ID")})});
+      await row.getByRole("textbox",{name:/实际可见角色ID/}).fill(i===2?"阿福":"无");
+      await row.getByRole("textbox",{name:/关键道具状态/}).fill(i===0?"crate=空箱":"crate=装满");
+    }
+    await button("保存逐镜表为方案新版").click();
+    await button("只采用").click();
+    await page.locator(".actionbar").getByText(/已采用/).waitFor();
+    await page.goto(base+"/#/e/"+eid+"/prompts");
+    await page.getByText("阿福 的身份图作用镜头 · S03",{exact:true}).waitFor();
+    const open=()=>page.getByText(/图片1 · 阿福身份图 · 看图与作用镜头/).click();
+    await open();
+    const note=page.getByRole("textbox",{name:"看图观察",exact:true});
+    const editor=page.getByLabel("G01 提示词正文");
+    const annotated=(await editor.inputValue())+"\n画面右侧留出收银台。";
+    await editor.fill(annotated);
+    await note.fill("测试夹具为单色图块，版本已逐张核对");
+    const field=page.locator("fieldset").filter({hasText:"作用镜头"});
+    await field.getByRole("checkbox",{name:"S01",exact:true}).check();
+    await field.getByRole("checkbox",{name:"S03",exact:true}).check();
+    await button("保存看图记录为提示词新版").click();
+    const data=()=>view().then(v=>v.artifacts.find(a=>a.stage==="prompts"));
+    await button("只采用").waitFor();
+    assert.equal(await button("只采用").isDisabled(),true);
+    assert.ok((await data()).versions.at(-1).gate.formatErrors.some(e=>e.includes("身份图作用镜头与出镜不符")));
+    assert.equal(await editor.inputValue(),annotated);
+    await open();
+    await field.getByRole("checkbox",{name:"S01",exact:true}).uncheck();
+    await button("保存看图记录为提示词新版").click();
+    await button("只采用").click();
+    await page.locator(".actionbar").getByText(/已采用/).waitFor();
+    await page.reload();
+    await open();
+    assert.equal(await note.inputValue(),"测试夹具为单色图块，版本已逐张核对");
+    assert.equal(await field.getByRole("checkbox",{name:"S01",exact:true}).isChecked(),false);
+    assert.equal(await field.getByRole("checkbox",{name:"S03",exact:true}).isChecked(),true);
+    await note.scrollIntoViewIfNeeded();
+    await page.screenshot({path:path.join(fixture,"15_逐镜身份图作用与看图记录.png")});
+    const token=(await (await page.request.get(base+"/api/session")).json()).token;
+    async function command(name,data) {
+      const res=await page.request.post(base+"/api/cmd/"+name,{data,headers:{"x-adw-token":token}});
+      assert.equal(res.status(),200,await res.text());return res.json();
+    }
+    const wav=path.join((await query("storage_status")).dataDir,"登记声.wav");
+    require("node:child_process").execFileSync("ffmpeg",["-loglevel","error","-f","lavfi","-i","sine=frequency=880:duration=2",wav]);
+    await page.getByLabel("上传本集音视频参考").setInputFiles(wav);
+    await page.getByLabel("音视频参考用途").fill("收银台提示音");
+    await button("用于本段").click();
+    const audioScope=page.getByRole("group",{name:"音频1 · 作用镜头"});
+    await audioScope.getByRole("checkbox",{name:"S02",exact:true}).check();
+    const scopedText=(await editor.inputValue())+"\n收银员抬头听音频1。";
+    await editor.fill(scopedText);
+    await page.getByPlaceholder("环境声（逗号分隔）").fill("收银台提示音");
+    await audioScope.getByRole("button",{name:"保存作用镜头"}).click();
+    await button("只采用").click();
+    await page.locator(".actionbar").getByText(/已采用/).waitFor();
+    const adopted=(await data()).adopted_version_id;
+    const current=(await data()).versions.find(v=>v.id===adopted).content.segments.G01;
+    assert.equal(current.txt,scopedText);
+    assert.deepEqual(current.sound.ambience,["收银台提示音"]);
+    assert.deepEqual(current.refs.find(r=>r.kind==="audio").shots,["S02"]);
+    for (const pass_name of ["cold_read","comparison"])
+      await command("start_prompt_review",{version_id:adopted,segment:"G01",pass_name});
+    const delivered=await command("deliver",{episode_id:eid,scope:"trial",segments:["G01"]});
+    await page.goto(base+"/api/delivery-file/"+delivered.deliveryId+"/00_图文对照.html");
+    await page.getByRole("link",{name:"逐镜引用与看图记录"}).click();
+    await page.getByRole("heading",{name:"逐镜引用与看图记录"}).waitFor();
+    assert.equal(await page.getByRole("row").filter({hasText:"S03"}).getByRole("cell",{name:"阿福",exact:true}).count(),1);
+    assert.deepEqual(await page.locator("figcaption").allInnerTexts(),["作用镜头：S03","作用镜头：S02"]);
+    await page.locator("img").evaluate(img=>img.decode());
+    await page.getByText("看图观察 · 测试夹具为单色图块，版本已逐张核对").waitFor();
+    await page.screenshot({path:path.join(fixture,"16_交付页逐镜参考核对.png")});
+    await page.goto(base+"/#/e/"+eid+"/assets");
+    await button("采用").first().click();
+    const impact=page.locator(".card.amber").filter({hasText:"采用新图前的影响"});
+    await impact.getByText(/作用镜头 S03/).waitFor();
+    await impact.getByText(/查看 G01 采用的 TXT/).click();
+    assert.equal(await impact.locator("pre").textContent(),current.txt);
+    await impact.scrollIntoViewIfNeeded();
+    await page.screenshot({path:path.join(fixture,"49_候选图采用前逐镜与TXT核对.png")});
+    await impact.getByRole("button",{name:"确认采用"}).click();
+    await impact.waitFor({state:"detached"});
+    assert.deepEqual(faults,[]);
+    console.log("PASS three-shot board, out-of-scope identity rejected, corrected observation adopted and reloaded");
+  } finally { await browser.close(); }
+}
+main().catch(e=>{console.error(e);process.exitCode=1;});

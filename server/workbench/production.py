@@ -6,9 +6,12 @@ import re
 import shutil
 import subprocess
 
-from . import stages, timeline
+from . import h3export, imagechoices, promptrefs, readable, shotrefs
+from . import stages, timeline, rhythm, acting
+from .palette_inputs import stage_card
 from .db import connect, dumps, new_id, transaction
 from .errors import Conflict, NotFound, Rejected, loads, row
+from .images import image_attachment
 from .storage import sha256_bytes
 
 
@@ -81,7 +84,7 @@ class ProductionMixin:
             if run_["status"] not in ("queued", "running"):
                 raise Rejected("该运行已结束")
             db.execute("UPDATE run SET status='stopped', reason='用户停止', ended_at=? WHERE id=?", (self.clock(), run_id))
-            db.execute("UPDATE task SET state='awaiting_decision' WHERE id=?", (run_["task_id"],))
+            self._set_task_run_state(db,run_["task_id"],"awaiting_decision")
         killed = self.executors[run_["provider"]].cancel(run_id) if run_["status"] == "running" else False
         return dict(runId=run_id, state="stopped", processStopped=killed)
 
@@ -149,6 +152,23 @@ class ProductionMixin:
             return self._command(db, command_id, "combine", payload, run)
 
     # ============================================================ plan timing
+    def restore_version(self, version_id, expected_adopted_version_id, command_id):
+        with transaction(self.db_path) as db:
+            def run():
+                old = loads(row(db,"SELECT * FROM version WHERE id=?",version_id),"content")
+                art = row(db,"SELECT * FROM artifact WHERE id=?",old["artifact_id"])
+                if art["adopted_version_id"]!=expected_adopted_version_id:
+                    raise Conflict("采用版已变化，请刷新后重新比较",current=art["adopted_version_id"])
+                vid = self._new_version(db,art["id"],version_id,"manual",old["content"],note=f"恢复完整稿 v{old['display_no']}",baseline_from=version_id)
+                if art["stage"]=="publish":
+                    source_basis = db.execute("SELECT basis FROM version_publish_basis WHERE version_id=?", (version_id,)).fetchone()
+                    if source_basis:
+                        db.execute("UPDATE version_publish_basis SET basis=? WHERE version_id=?", (source_basis[0], vid))
+                    db.execute("UPDATE version_publish_config SET settings=(SELECT settings FROM version_publish_config WHERE version_id=?) "
+                               "WHERE version_id=? AND EXISTS(SELECT 1 FROM version_publish_config WHERE version_id=?)",(version_id,vid,version_id))
+                return dict(versionId=vid, sourceVersionId=version_id)
+            return self._command(db,command_id,"restore_version",dict(version=version_id,adopted=expected_adopted_version_id),run)
+
     def plan_preview(self, version_id):
         with connect(self.db_path) as db:
             v = loads(row(db, "SELECT * FROM version WHERE id=?", version_id), "content")
@@ -251,6 +271,11 @@ class ProductionMixin:
                 src = row(db, "SELECT * FROM ref_source WHERE id=?", source_id, missing="来源不存在")
                 if src["state"] != "readable":
                     raise Rejected("原片不可读，不能建参考包")
+                if episode_id:
+                    self._episode_in(db,episode_id,src["project_id"])
+                if lineage and db.execute("SELECT 1 FROM ref_pack WHERE lineage=? AND project_id<>?",
+                                          (lineage,src["project_id"])).fetchone():
+                    raise Rejected("参考包版本链属于另一个项目")
                 start, end = range_ms or (0, src["duration_ms"])
                 if not 0 <= start < end <= src["duration_ms"]:
                     raise Rejected("分析区间超出原片时长")
@@ -313,9 +338,12 @@ class ProductionMixin:
                     db.execute("DELETE FROM ref_shot WHERE id=?", (nxt["id"],))
                     self._renumber(db, pack_id)
                 elif op == "confirm":
-                    f = fields or {}
-                    unknown = sorted(set(json.loads(shot["unknown_fields"])) | {k for k in ("camera", "motion", "sound", "narrative")
-                                                                              if f.get(k) in (None, "", "未知")})
+                    f = {**shot, **(fields or {})}
+                    has_audio = row(db, "SELECT has_audio FROM ref_source WHERE id=?", pack["source_id"])["has_audio"]
+                    if not has_audio:
+                        f["sound"] = None
+                    unknown = sorted(k for k in ("camera", "motion", "sound", "narrative")
+                                     if f.get(k) in (None, "", "未知"))
                     db.execute("UPDATE ref_shot SET first_frame=?, last_frame=?, camera=?, motion=?, sound=?, narrative=?, "
                                "unknown_fields=?, confirmed=1 WHERE id=?",
                                (f.get("first_frame"), f.get("last_frame"), f.get("camera"), f.get("motion"), f.get("sound"),
@@ -373,52 +401,232 @@ class ProductionMixin:
         lines += [f"节拍 {b['code']}（{'、'.join(b['shot_codes'])}）：{b['event']}；观众新知道：{b['info_gain']}" for b in p["beats"]]
         return "\n".join(lines)
 
-    def _extra_creation_inputs(self, db, task):
-        k = db.execute("SELECT topic_id FROM kickoff WHERE episode_id=?", (task["episode_id"],)).fetchone()
+    def _shot_ref_version(self, db, vid, segment):
+        r = row(db, "SELECT v.content,v.artifact_id,a.episode_id FROM version v JOIN artifact a ON a.id=v.artifact_id "
+                    "WHERE v.id=? AND a.stage='prompts'", vid)
+        content = json.loads(r["content"])
+        if segment not in content.get("segments", {}):
+            raise Rejected("该提示词版本没有所选段")
+        plan = self._adopted_plan(db,r["episode_id"])
+        return r,content,plan
+
+    def shot_reference_view(self, version_id, segment):
+        with connect(self.db_path) as db:
+            r, content, plan = self._shot_ref_version(db,version_id,segment)
+            if not shotrefs.plan_enabled(plan):
+                return dict(enabled=False)
+            try:
+                packet = shotrefs.segment_packet(self,db,r["episode_id"],plan,self._cast_matrix(db,r["episode_id"]),
+                                                 segment,content["segments"][segment], draft=True)
+                suggested = shotrefs.suggestions(packet["files"].__getitem__,packet["manifest"])[segment]
+                return dict(enabled=True, packet=packet, suggestions=suggested)
+            except (ValueError, KeyError, TypeError) as exc:
+                raise Rejected(str(exc)) from exc
+
+    def save_shot_observation(self, version_id, segment, asset_version_id, expected_sha256, shots, observed,
+                              prominent_props, conflicts, combined=False, other_uses=None, command_id=None, draft=None):
+        args = dict(version=version_id,segment=segment,asset=asset_version_id,sha=expected_sha256,shots=shots,
+                    observed=observed,props=prominent_props,conflicts=conflicts,combined=combined,other=other_uses)
+        if draft is not None:
+            args["draft"] = draft
+        with transaction(self.db_path) as db:
+            def run():
+                r,content,plan = self._shot_ref_version(db,version_id,segment)
+                content["segments"][segment] = promptrefs.edited_entry(content["segments"][segment], draft)
+                if not shotrefs.plan_enabled(plan):
+                    raise Rejected("请先在采用的制作方案中填写逐镜出镜与道具")
+                image = self.asset_version(asset_version_id,db)
+                ref = next((ref for ref in content["segments"][segment]["refs"] if ref["assetVersionId"]==asset_version_id),None)
+                if not ref or image["kind"]!="image" or expected_sha256!=image["sha256"]:
+                    raise Rejected("当前提示词引用的图片与所看原图不一致")
+                if not isinstance(observed,str) or not observed.strip() or not isinstance(conflicts,list) or any(
+                    not isinstance(c,str) or not c.strip() for c in conflicts):
+                    raise Rejected("请填写实际看图观察，冲突须逐条说明")
+                if not isinstance(prominent_props,dict) or any(not re.fullmatch("[a-z][a-z0-9-]*",k) or
+                       not isinstance(v,str) or not v.strip() for k,v in prominent_props.items()):
+                    raise Rejected("显眼道具须逐项填写道具ID和状态")
+                if type(combined) is not bool or (other_uses is not None and (not isinstance(other_uses,dict)
+                        or any(not isinstance(v,str) or not v.strip() for v in other_uses.values()))):
+                    raise Rejected("组合图的其他用途须逐镜填写道具ID")
+                details = dict(sha256=image["sha256"],observed=observed.strip(),prominent_props=prominent_props,
+                               conflicts=conflicts,combined=combined)
+                if other_uses:
+                    details["other_uses"] = other_uses
+                ident = new_id()
+                db.execute("INSERT INTO shot_image_observation VALUES(?,?,?,?,?)",(ident,r["episode_id"],segment,asset_version_id,dumps(details)))
+                ref.update(visualReviewId=ident, shots=shots)
+                try:
+                    packet = shotrefs.segment_packet(self,db,r["episode_id"],plan,self._cast_matrix(db,r["episode_id"]),
+                                                     segment,content["segments"][segment], draft=True)
+                    if not isinstance(shots,list) or not shots or any(not isinstance(k,str) or k not in packet["windowShots"] for k in shots) or len(set(shots))!=len(shots):
+                        raise ValueError("请选择实际作用镜头")
+                except (ValueError, TypeError, KeyError) as exc:
+                    raise Rejected(str(exc)) from exc
+                vid = self._new_version(db,r["artifact_id"],version_id,"manual",content,note="登记实际看图观察与作用镜头")
+                return dict(versionId=vid,observationId=ident)
+            return self._command(db,command_id,"shot_image_observation",args,run)
+
+    def draft_prompts(self, episode_id):
+        from .promptdraft import draft
+        return draft(self, episode_id)
+
+    def acting_review(self, version_id):
+        return self.preview_acting(version_id, {})
+
+    def preview_acting(self, version_id, changes):
+        with connect(self.db_path) as db:
+            v = row(db, "SELECT v.content FROM version v JOIN artifact a ON a.id=v.artifact_id "
+                        "WHERE v.id=? AND a.stage='plan'", version_id)
+        plan = json.loads(v["content"])
+        shots = {s["id"]: s for s in plan["shots"]}
+        if not isinstance(changes, dict) or changes.keys() - shots.keys():
+            raise Rejected("表演调整须引用本版方案中的镜号")
+        for sid, edit in changes.items():
+            if not isinstance(edit, dict) or edit.keys() - {"performance", "reaction", "sound", "dialogueCues"}:
+                raise Rejected("表演调整字段无效")
+            shots[sid].update(edit)
+        return acting.report(plan)
+
+    def rhythm_review(self, version_id):
+        with connect(self.db_path) as db:
+            version=row(db,"SELECT a.stage,a.episode_id,v.content FROM version v JOIN artifact a ON a.id=v.artifact_id WHERE v.id=?",version_id)
+            stage=version["stage"]
+            if stage not in ("prompts","plan"):
+                raise Rejected("请选择制作方案或提示词版本")
+            eid=version["episode_id"]
+            content=json.loads(version["content"])
+            plan=content if stage=="plan" else self._adopted_plan(db,eid)
+            prompts=content if stage=="prompts" else self._adopted_content(db,eid,"prompts")
+        result=dict(markdown="",errors=[],report=None,legacy=[],hasPrompts=bool(prompts))
+        if plan:
+            try:
+                result["boardRows"] = rhythm.plan_table(plan)
+                result["markdown"]=plan.get("rhythmTable") or rhythm.markdown(rhythm.plan_rows(plan))
+                if prompts:
+                    checked=rhythm.check(plan,prompts.get("segments",{}))
+                    result.update(report=checked["report"],legacy=checked["legacy"])
+            except (KeyError,ValueError,TypeError) as exc:
+                result["errors"].append(str(exc))
+        return result
+
+    def _stage_reference_entries(self, episode_id, stage):
         extra = []
+        for ref in self.episode_project_sections(episode_id, stage):
+            extra.append(dict(role="citation", name=ref["title"], text=dumps(ref)))
+        config = self.step_config(episode_id, stage)
+        if config:
+            extra.append(dict(role="step_requirements", name="本步需求", text=dumps({k:v for k,v in config.items() if k != "references"})))
+            for ref in config["references"]:
+                extra.append(dict(role="citation", name=ref["title"], text=dumps({k:v for k,v in ref.items() if k != "metadata"})))
+        if stage == "prompts":
+            for card in self.episode_palettes(episode_id, "prompts")["cards"]:
+                extra.append(dict(role="visual_reference", name=card["name"], text=dumps(stage_card(card, "prompts"))))
+        return extra
+
+    def _extra_creation_inputs(self, db, task):
+        extra = self._source_entries(db, task["episode_id"], task["stage"])
+        if task["stage"] == "prompts":
+            rules = imagechoices.requirements(db, task["episode_id"])
+            if rules:
+                extra.append(dict(role="required_images", name="必用图与目标段.json", text=dumps(rules)))
+            records = self.product_placements(task["episode_id"])["records"]
+            if records:
+                extra.append(dict(role="product_placement", name="本集商品与镜头用途.json",
+                                  text=dumps([dict(code=p["code"],name=p["product"]["name"],shot=p["shot_id"],
+                                                   segment=p["segment"],intent=p["intent"],source=p["product"]["source"],
+                                                   sha256=p["product"]["sha256"]) for p in records if p["segment"]])))
+        extra += self._stage_reference_entries(task["episode_id"], task["stage"])
         if task["stage"] == "story":
             for (pack_id,) in db.execute("SELECT pack_id FROM task_pack WHERE task_id=?", (task["id"],)) \
                     if self._has_table(db, "task_pack") else []:
                 extra.append(dict(role="reference_pack", name=f"pack-{pack_id}.txt", text=self._pack_text(db, pack_id)))
+                units = [dict(code=b["code"],original=b["event"]) for b in db.execute(
+                    "SELECT code,event FROM beat WHERE pack_id=? ORDER BY code",(pack_id,))]
+                if not units:
+                    units = [dict(code=s["code"],original=s["narrative"] or "叙事作用待判断") for s in db.execute(
+                        "SELECT code,narrative FROM ref_shot WHERE pack_id=? ORDER BY start_ms",(pack_id,))]
+                extra.append(dict(role="adaptation_source",name=f"adaptation-{pack_id}.json",
+                                  text=dumps(dict(pack=pack_id,units=units))))
         for c in db.execute("SELECT k.title,k.body,k.source,c.reason FROM citation c JOIN knowledge k ON k.id=c.knowledge_id "
                             "WHERE c.task_id=?", (task["id"],)):
             extra.append(dict(role="citation", name=c["title"], text=f"来源：{c['source']}\n理由：{c['reason']}\n{c['body']}"))
+        if task["stage"] == "plan":
+            bookmarks = self.episode_bookmarks(task["episode_id"])
+            extra.append(dict(role="bookmarks", name="bookmarks.json", text=dumps(bookmarks)))
+        if task["stage"] == "publish":
+            basis = self._publish_basis(db, task["episode_id"])
+            extra.append(dict(role="publish_basis", name="本集发布与音乐对位依据.json", text=dumps(basis)))
+            extra.append(dict(role="publish_settings", name="publish-settings.json",
+                              text=dumps(self.publish_settings(task["project_id"]) or {})))
         if task["stage"] == "prompts":
             plan = self._adopted_content(db, task["episode_id"], "plan") or {}
+            if any(shot.get("dialogueCues") for shot in plan.get("shots", [])):
+                extra.append(dict(role="dialogue_timing", name="台词读秒.json", text=dumps(acting.report(plan))))
+            assets = [dict(assetVersionId=a["id"], name=a["name"], kind=a["kind"], category=a["category"],
+                           grid=bool(a["grid"]), marks=a["marks"]) for a in self.episode_assets(task["episode_id"])]
+            extra.append(dict(role="episode_assets", name="assets.json", text=dumps(assets)))
+            extra.append(dict(role="cast_bindings", name="cast.json", text=dumps(self.cast_matrix(task["episode_id"]))))
+            binding = db.execute("SELECT include_images FROM prompt_draft_task WHERE task_id=?", (task["id"],)).fetchone()
+            if binding:
+                scaffold = self.draft_prompts(task["episode_id"])["segments"]
+                extra.append(dict(role="prompt_scaffold", name="本集逐段参考与时间骨架.json", text=dumps(scaffold)))
+                extra.append(dict(role="shot_rhythm",name="镜头充分性联合表.json",text=dumps(rhythm.plan_table(plan))))
+                if binding[0]:
+                    index = {a["id"]:a for a in self.episode_assets(task["episode_id"])}
+                    seen = set()
+                    for segment in scaffold.values():
+                        for ref in segment["refs"]:
+                            vid = ref["assetVersionId"]
+                            if vid not in seen and index[vid]["kind"] == "image":
+                                seen.add(vid)
+                                extra.append(image_attachment(vid, self.store.read_blob(index[vid]["sha256"])))
             downstream = [dict(s, refs=[r for r in s.get("refs", []) if r.get("mode") != "D"]) for s in plan.get("shots", [])]
             extra.append(dict(role="plan_layout", name="layout.json",
-                              text=json.dumps(dict(layout=timeline.layout(plan), shots=downstream), ensure_ascii=False)))
+                              text=json.dumps(dict(layout=timeline.layout(plan), shots=downstream,
+                                                   rhythmTable=plan.get("rhythmTable","")), ensure_ascii=False)))
         return extra
 
     def _extra_review_inputs(self, db, task, version):
-        if task["stage"] != "story" or not self._has_table(db, "task_pack"):
-            return []
-        return [dict(role="reference_pack", name=f"pack-{p}.txt", text=self._pack_text(db, p))
-                for (p,) in db.execute("SELECT pack_id FROM task_pack WHERE task_id=?", (task["id"],))]
+        entries = self._source_entries(db, task["episode_id"], task["stage"])
+        if task["stage"] == "story":
+            for source in self._version_materials(db,version,{"citation","step_requirements","reference_pack","adaptation_source"}):
+                entries.append(dict(role=source["role"],name=source["name"],text=source["text"]))
+        return entries
 
     def _has_table(self, db, name):
         return bool(db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone())
 
     def adapt_from_pack(self, episode_id, pack_id, request, command_id):
         """从节拍写故事: a story task whose inputs include the fixed pack version."""
+        payload = dict(episode=episode_id,pack=pack_id,request=request)
         with transaction(self.db_path) as db:
-            db.execute("CREATE TABLE IF NOT EXISTS task_pack(task_id TEXT NOT NULL, pack_id TEXT NOT NULL, "
-                       "PRIMARY KEY(task_id, pack_id))")
-        with connect(self.db_path) as db:
-            pack = row(db, "SELECT * FROM ref_pack WHERE id=?", pack_id)
-            if pack["state"] != "saved":
-                raise Rejected("参考包尚未保存")
-            if not self.pack_is_current(db, pack_id):
-                raise Rejected("原片或切点已更新，旧参考包证据不能用于新稿")
-            if pack["episode_id"] not in (None, episode_id):
-                raise Rejected("跨集引用参考包须先在本集收藏")
-        res = self.create_task(episode_id, "story", request, command_id=command_id + ":task")
-        with transaction(self.db_path) as db:
-            db.execute("INSERT OR IGNORE INTO task_pack VALUES(?,?)", (res["taskId"], pack_id))
-            db.execute("DELETE FROM run WHERE id=? AND status='queued'", (res["runId"],))
-            run_id = self._queue_run(db, res["taskId"], "create", None, request)
-        res["runId"] = run_id
-        return res
+            def start():
+                pack = row(db,"SELECT * FROM ref_pack WHERE id=?",pack_id)
+                ep = self._episode_in(db,episode_id,pack["project_id"])
+                if pack["episode_id"] not in (None,episode_id):
+                    raise Rejected("整份参考包属于另一集，可在本集收藏单个拍法")
+                # Older clients recorded only the preliminary create_task command. Recover its
+                # already frozen, pack-backed run on replay, never start a second adaptation.
+                legacy = self._existing_command(db,command_id+":task","create_task",
+                    dict(episode_id=episode_id,stage="story",goal=request,auto=False,ex=None,sel=None))
+                if legacy:
+                    for run in db.execute("SELECT id,manifest_relpath FROM run WHERE task_id=? AND purpose='create' "
+                                          "ORDER BY created_at,rowid",(legacy["taskId"],)):
+                        manifest,_ = self.store.load_manifest(run["manifest_relpath"])
+                        if any(i["role"]=="reference_pack" and i["name"]==f"pack-{pack_id}.txt" for i in manifest["inputs"]):
+                            return dict(legacy,runId=run["id"])
+                    raise Conflict("旧改编命令缺少对应的参考包运行，请核对任务记录")
+                if pack["state"] != "saved":
+                    raise Rejected("参考包尚未保存")
+                if not self.pack_is_current(db,pack_id):
+                    raise Rejected("原片或切点已更新，旧参考包证据不能用于新稿")
+                kickoff = self._kickoff(db,episode_id)
+                aid = row(db,"SELECT id FROM artifact WHERE episode_id=? AND stage='story'",episode_id)["id"]
+                tid,thread = self._draft_thread(db,ep["project_id"],episode_id,aid,"story",request,kickoff["executor_plan"])
+                db.execute("INSERT INTO task_pack VALUES(?,?)",(tid,pack_id))
+                rid = self._queue_run(db,tid,"create",None,request)
+                return dict(taskId=tid,threadId=thread,runId=rid,artifactId=aid)
+            return self._command(db,command_id,"adapt_from_pack",payload,start)
 
     def check_plan_refs(self, episode_id, plan: dict) -> list[str]:
         problems = []
@@ -457,22 +665,53 @@ class ProductionMixin:
         return dict(shot=shot, refs=refs, origin=shot.get("origin"))
 
     # ============================================================ space and cast
+    def _check_lock_image(self, db, episode_id, version_id):
+        ep = self._episode_in(db, episode_id)
+        if not version_id:
+            raise Rejected("请选择已登记的空间锁定图")
+        image = self.asset_version(version_id, db)
+        if image["kind"] != "image" or image["project_id"] != ep["project_id"] or image["episode_id"] not in (None, episode_id):
+            raise Rejected("空间锁定图须为本项目、本集可用的图像版本")
+
+    def space_locks(self, episode_id):
+        with connect(self.db_path) as db:
+            return self._space_locks(db, episode_id)
+
+    def _space_locks(self, db, episode_id):
+        rows = db.execute("SELECT s.*,v.sha256,a.name,v.version_no FROM space_item s "
+                          "JOIN episode e ON e.id=s.episode_id LEFT JOIN asset_version v ON v.id=s.lock_asset_version_id "
+                          "LEFT JOIN asset a ON a.id=v.asset_id AND a.project_id=e.project_id AND a.kind='image' "
+                          "AND (a.episode_id=e.id OR a.episode_id IS NULL) WHERE s.episode_id=? ORDER BY s.created_at,s.id", (episode_id,))
+        return [dict(id=r["id"],label=r["label"],relation=r["relation"],segments=json.loads(r["depends"]),status=r["status"],
+                     versionId=r["lock_asset_version_id"] if r["name"] else None, name=r["name"],
+                     version=r["version_no"] if r["name"] else None, sha256=r["sha256"] if r["name"] else None) for r in rows]
+
     def add_space_item(self, episode_id, label, relation, source, depends, status="pending", count=None,
                        lock_asset_version_id=None, command_id=None):
         with transaction(self.db_path) as db:
             def run():
                 self._episode_in(db, episode_id)
+                if not isinstance(depends, list) or any(not isinstance(s, str) or not s.strip() for s in depends):
+                    raise Rejected("空间依赖段须为段号列表")
+                if status not in ("confirmed", "pending"):
+                    raise Rejected("空间锁定状态无效")
+                if lock_asset_version_id or status == "confirmed":
+                    self._check_lock_image(db, episode_id, lock_asset_version_id)
                 sid = new_id()
                 db.execute("INSERT INTO space_item VALUES(?,?,?,?,?,?,?,?,?,?)",
                            (sid, episode_id, label, relation, count, source, lock_asset_version_id, status,
                             dumps(depends), self.clock()))
                 return dict(itemId=sid)
-            return self._command(db, command_id, "space_add", dict(e=episode_id, l=label, r=relation, d=depends), run)
+            payload = dict(e=episode_id, l=label, r=relation, d=depends)
+            if lock_asset_version_id or status != "pending" or count is not None:
+                payload.update(lock=lock_asset_version_id, status=status, count=count)
+            return self._command(db, command_id, "space_add", payload, run)
 
     def confirm_space_item(self, item_id, lock_asset_version_id, relation=None, command_id=None):
         with transaction(self.db_path) as db:
             def run():
                 item = row(db, "SELECT * FROM space_item WHERE id=?", item_id)
+                self._check_lock_image(db, item["episode_id"], lock_asset_version_id)
                 db.execute("UPDATE space_item SET status='confirmed', lock_asset_version_id=?, relation=coalesce(?,relation) "
                            "WHERE id=?", (lock_asset_version_id, relation, item_id))
                 ep = row(db, "SELECT * FROM episode WHERE id=?", item["episode_id"])
@@ -481,7 +720,10 @@ class ProductionMixin:
                 self._record_impacts(db, dict(project_id=ep["project_id"], episode_id=ep["id"]), items, "space_lock",
                                      f"space:{item_id}")
                 return dict(itemId=item_id, recheck=[i["target"] for i in items])
-            return self._command(db, command_id, "space_confirm", dict(i=item_id, a=lock_asset_version_id), run)
+            payload = dict(i=item_id, a=lock_asset_version_id)
+            if relation is not None:
+                payload["relation"] = relation
+            return self._command(db, command_id, "space_confirm", payload, run)
 
     def blocked_segments(self, episode_id) -> dict:
         with connect(self.db_path) as db:
@@ -491,53 +733,247 @@ class ProductionMixin:
                     out.setdefault(seg, []).append(f"空间锁定待确认：{r['label']}")
         return out
 
-    def set_cast(self, episode_id, segment_id, role, status, asset_version_id=None, cells=(), note="", command_id=None):
+    def set_cast(self, episode_id, segment_id, role, status, asset_version_id=None, cells=(), note="", command_id=None, opening_confirmed=False):
+        if not isinstance(role, str) or not role.strip() or status not in ("ok","absent","unclear"):
+            raise Rejected("请填写角色及有效的出镜状态")
+        role = role.strip()
+        if type(opening_confirmed) is not bool or not isinstance(note, str):
+            raise Rejected("开场核对须为布尔值，对照观察须为文字")
+        if not isinstance(cells, (tuple, list)) or any(type(i) != int or not 1 <= i <= 9 for i in cells) or len(cells) != len(set(cells)):
+            raise Rejected("格位须为 1 至 9 的不重复整数")
+        if status == "absent" and (asset_version_id or cells or opening_confirmed):
+            raise Rejected("未出镜角色不能绑定身份图或格位")
         with transaction(self.db_path) as db:
             def run():
                 self._episode_in(db, episode_id)
+                plan = self._adopted_content(db, episode_id, "plan") or {}
+                if segment_id not in {s["id"] for s in plan.get("segments", [])}:
+                    raise Rejected("请选用已采用制作方案中的生成段")
+                if cells and not asset_version_id:
+                    raise Rejected("选择格位前须选择九宫格版本")
+                if opening_confirmed and not asset_version_id:
+                    raise Rejected("确认开场前须选择本段状态图或九宫格")
+                if status == "ok" and not asset_version_id:
+                    raise Rejected("请明确选择证明本段角色身份的图片版本")
+                if asset_version_id:
+                    av = self.asset_version(asset_version_id, db)
+                    if av["episode_id"] != episode_id or av["kind"] != "image":
+                        raise Rejected("角色身份必须引用本集的图片版本")
+                    if cells and not av["grid"]:
+                        raise Rejected("格位只适用于九宫格版本")
+                    if status == "ok" and not opening_confirmed:
+                        prior = db.execute("SELECT segment_id FROM cast_opening WHERE episode_id=? AND sha256=?",
+                                           (episode_id,av["sha256"])).fetchone()
+                        if prior and prior[0] != segment_id:
+                            raise Rejected(f"这张状态图已登记为 {prior[0]} 的开场，请核对所选版本")
+                    if opening_confirmed:
+                        if av["category"] not in ("state","grid") or not note.strip():
+                            raise Rejected("核对本段开场须选状态图或九宫格并填写实际观察")
+                        # A role's neutral portrait can span the episode. A picture
+                        # of a specific opening belongs to that segment, even when re-imported.
+                        other = db.execute("SELECT c.segment_id FROM cast_cell c JOIN asset_version v ON v.id=c.asset_version_id "
+                                           "WHERE c.episode_id=? AND c.segment_id<>? AND v.sha256=? AND c.status='ok'",
+                                           (episode_id,segment_id,av["sha256"])).fetchall()
+                        active = {s["id"] for s in plan["segments"]}
+                        if any(r[0] in active for r in other):
+                            raise Rejected("同一张含角色的状态图不能登记为不同生成段的开场")
+                        db.execute("INSERT INTO cast_opening VALUES(?,?,?) ON CONFLICT(episode_id,sha256) DO UPDATE SET "
+                                   "segment_id=excluded.segment_id", (episode_id,av["sha256"],segment_id))
+                    if status == "ok" and av["category"] == "identity":
+                        prod = self.project_role_assets(av["project_id"])
+                        baseline = next((item for item in prod["roles"] if item["id"].casefold() == role.casefold()
+                                         or (item.get("name") or "").casefold() == role.casefold()), None)
+                        if baseline and av["sha256"] != baseline["sha256"]:
+                            raise Rejected("固定角色不匹配现行角色基准，请选择对应身份原图")
                 db.execute("INSERT INTO cast_cell VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(episode_id,segment_id,role) DO UPDATE "
                            "SET asset_version_id=excluded.asset_version_id, cells=excluded.cells, status=excluded.status, "
                            "note=excluded.note", (new_id(), episode_id, segment_id, role, asset_version_id, dumps(list(cells)),
                                                   status, note))
                 return dict(ok=True)
-            return self._command(db, command_id, "cast", dict(e=episode_id, s=segment_id, r=role, st=status,
-                                                              a=asset_version_id, c=list(cells)), run)
+            payload = dict(e=episode_id, s=segment_id, r=role, st=status, a=asset_version_id, c=list(cells))
+            if note:
+                payload["note"] = note
+            if opening_confirmed:
+                payload["opening"] = True
+            return self._command(db, command_id, "cast", payload, run)
+
+    def set_role_baseline(self, episode_id, role, asset_version_id, appearance, command_id):
+        if not isinstance(role, str) or not role.strip() or not isinstance(appearance, str) or not appearance.strip():
+            raise Rejected("请填写角色和可用于核对的外观短描述")
+        role, appearance = role.strip(), appearance.strip()
+        with connect(self.db_path) as db:
+            project = self._episode_in(db, episode_id)["project_id"]
+        fixed = self.project_role_assets(project)["roles"]
+        with transaction(self.db_path) as db:
+            def run():
+                asset = self.asset_version(asset_version_id, db)
+                if asset["episode_id"] != episode_id or asset["kind"] != "image" or asset["category"] != "identity" or asset["grid"]:
+                    raise Rejected("请选择本集的单角色身份原图版本")
+                for item in fixed:
+                    matches_role = role.casefold() in {item["id"].casefold(), (item.get("name") or "").casefold()}
+                    if matches_role != (asset["sha256"] == item["sha256"]):
+                        raise Rejected("固定角色不匹配现行角色基准")
+                if db.execute("SELECT 1 FROM episode_role_baseline b JOIN asset_version a ON a.id=b.asset_version_id "
+                              "WHERE b.episode_id=? AND b.role<>? AND a.sha256=?", (episode_id,role,asset["sha256"])).fetchone():
+                    raise Rejected("两个角色不能共用同一张身份原图")
+                db.execute("INSERT INTO episode_role_baseline VALUES(?,?,?,?) ON CONFLICT(episode_id,role) DO UPDATE SET "
+                           "asset_version_id=excluded.asset_version_id,appearance=excluded.appearance",
+                           (episode_id,role,asset_version_id,appearance))
+                return dict(role=role, assetVersionId=asset_version_id, appearance=appearance)
+            return self._command(db, command_id, "set_role_baseline", [episode_id,role,asset_version_id,appearance], run)
 
     def cast_matrix(self, episode_id):
         with connect(self.db_path) as db:
-            plan = self._adopted_content(db, episode_id, "plan") or {}
-            cells = [loads(dict(r), "cells") for r in db.execute("SELECT * FROM cast_cell WHERE episode_id=?", (episode_id,))]
+            return self._cast_matrix(db, episode_id)
+
+    def _cast_matrix(self, db, episode_id):
+        plan = self._adopted_content(db, episode_id, "plan") or {}
+        story = self._adopted_content(db, episode_id,"story") or {}
+        cells = [loads(dict(r), "cells") for r in db.execute(
+            "SELECT c.*,o.segment_id AS opening FROM cast_cell c LEFT JOIN asset_version v ON v.id=c.asset_version_id "
+            "LEFT JOIN cast_opening o ON o.episode_id=c.episode_id AND o.sha256=v.sha256 WHERE c.episode_id=?", (episode_id,))]
+        baselines = db.execute("SELECT b.role,b.asset_version_id,b.appearance,a.sha256 FROM episode_role_baseline b "
+                               "JOIN asset_version a ON a.id=b.asset_version_id WHERE b.episode_id=?", (episode_id,)).fetchall()
         lay = timeline.layout(plan) if plan else dict(segments=[])
-        roles = sorted({c["role"] for c in cells})
+        from .storycheck import cast_records
+        try:
+            roster = cast_records(story.get("cast",""))
+        except ValueError:
+            roster = {}
+        for b in baselines:
+            roster.setdefault(b["role"], {}).update(assetVersionId=b["asset_version_id"], appearance=b["appearance"], sha256=b["sha256"])
+        active_segments = {s["id"] for s in lay["segments"]}
+        for c in cells:
+            if c["segment_id"] in active_segments:
+                roster.setdefault(c["role"], {})
+        roles = sorted(roster)
         matrix = []
         for seg in lay["segments"]:
             row_ = dict(segment=seg["id"], strategy=seg["strategy"], cells={})
             for c in cells:
                 if c["segment_id"] == seg["id"]:
                     entry = dict(status=c["status"], assetVersionId=c["asset_version_id"], cells=c["cells"], note=c["note"])
+                    if c["opening"]:
+                        entry["depictsMoment"] = dict(segment=c["opening"], at="start")
                     if c["status"] == "unclear":
                         entry["options"] = (["按身份参考修格", "改用 flex"] if seg["strategy"] == "grid"
                                             else ["补身份参考", "改动作让身份可见"])
                     row_["cells"][c["role"]] = entry
             matrix.append(row_)
-        return dict(roles=roles, rows=matrix)
+        return dict(roles=roles, roster=roster, rows=matrix)
+
+    def _cast_prompt_errors(self, db, episode_id, segment, entry):
+        rows = db.execute(
+            "SELECT b.role,b.asset_version_id AS baseline,b.appearance,c.status,c.note,c.asset_version_id AS bound,"
+            "a.category,o.segment_id AS opening FROM episode_role_baseline b LEFT JOIN cast_cell c ON c.episode_id=b.episode_id "
+            "AND c.role=b.role AND c.segment_id=? LEFT JOIN asset_version v ON v.id=c.asset_version_id "
+            "LEFT JOIN asset a ON a.id=v.asset_id LEFT JOIN cast_opening o ON o.episode_id=b.episode_id AND o.sha256=v.sha256 "
+            "WHERE b.episode_id=?", (segment, episode_id))
+        errors = []
+        uploaded = {r["assetVersionId"] for r in entry["refs"] if isinstance(r, dict) and isinstance(r.get("assetVersionId"), str)}
+        for r in rows:
+            prefix = segment + " · " + r["role"] + "："
+            if r["status"] == "absent":
+                continue
+            if r["status"] != "ok":
+                errors.append(prefix + "请核对本段身份或明确标记未出镜")
+                continue
+            if r["bound"] not in uploaded:
+                errors.append(prefix + "身份来源未列入本段实际上传")
+            if r["bound"] != r["baseline"]:
+                if r["category"] not in ("state", "grid") or not (r["note"] or "").strip():
+                    errors.append(prefix + "使用其他图片须选本段状态图或九宫格并填写与基准的对照观察")
+                elif r["opening"] != segment:
+                    errors.append(prefix + "身份来源尚未核对为本段开场")
+            if r["appearance"] not in (entry.get("txt") or ""):
+                errors.append(prefix + "提示词缺少已登记的本集外观短描述")
+        return errors
 
     # ============================================================ prompts: refs and sound
-    def reorder_refs(self, version_id, segment_id, new_order: list[str], command_id, confirm=False):
+    def edit_prompt_reference(self, version_id, segment_id, action, command_id, asset_id=None,
+                              previous_id=None, purpose=None, draft=None):
+        payload = dict(version=version_id, segment=segment_id, action=action, asset=asset_id,
+                       previous=previous_id, purpose=purpose, draft=draft)
+        required_ids = {"add": (True, False), "replace": (True, True), "remove": (False, True)}
+        if required_ids.get(action) != (bool(asset_id), bool(previous_id)):
+            raise Rejected("请选择本段要添加、替换或移出的参考")
+        # Media probing may take seconds. Hold a write lock only while publishing the new version.
+        with connect(self.db_path) as db:
+            prior = self._existing_command(db, command_id, "edit_prompt_reference", payload)
+            if prior is not None:
+                return prior
+            version = loads(row(db, "SELECT v.*,a.episode_id FROM version v JOIN artifact a ON a.id=v.artifact_id "
+                                "WHERE v.id=? AND a.stage='prompts'", version_id), "content")
+            eid = version["episode_id"]
+            plan = self._adopted_plan(db, eid) or {}
+            segment = next((s for s in plan.get("segments", []) if s["id"] == segment_id), None)
+            entries = version["content"]["segments"]
+            if not segment or segment_id not in entries:
+                raise Rejected("提示词与已采用方案须包含该生成段")
+            entry = promptrefs.edited_entry(entries[segment_id], draft)
+            refs = [dict(r) for r in entry["refs"]]
+            grid = segment["strategy"] == "grid"
+            if grid and action != "replace":
+                raise Rejected("九宫格段只能替换本段九宫格，其他段可增减或替换参考")
+            old = next((r for r in refs if r["assetVersionId"] == previous_id), None)
+            if action != "add" and old is None:
+                raise Rejected("原参考不在本段")
+            if action == "remove":
+                if old["kind"] == "image" and sum(r["kind"] == "image" for r in refs) <= 1:
+                    raise Rejected("本段须至少保留一张图片")
+                refs.remove(old)
+                entry["txt"] = promptrefs.without_reference(entry, old, refs)
+            else:
+                asset = self.asset_version(asset_id, db)
+                kind = asset["kind"]
+                if (asset["episode_id"] != eid or kind not in stages.KIND_LABEL
+                        or (grid and not asset["grid"]) or (old and old["kind"] != kind)):
+                    raise Rejected("须选择本集同类型参考，九宫格段只能使用九宫格")
+                peers = [self.asset_version(r["assetVersionId"], db) for r in refs if r is not old]
+                if any(a["sha256"] == asset["sha256"] for a in peers):
+                    raise Rejected("本段已引用相同文件内容")
+                matching = [a for a in peers if a["kind"] == kind]
+                if len(peers) >= 12 or len(matching) >= {"image":9, "video":1, "audio":3}[kind]:
+                    raise Rejected("本段最多 12 份参考，其中图片 9 张、视频 1 段、音频 3 段")
+                if kind != "image":
+                    try:
+                        duration = sum(h3export.media_duration(self.store.blob_path(a["sha256"]), kind, a["name"])
+                                       for a in matching + [asset])
+                    except ValueError as exc:
+                        raise Rejected(str(exc)) from exc
+                    if duration > 15:
+                        raise Rejected("本段同类型音视频参考的总时长须在 15 秒以内")
+                if old is None:
+                    if not isinstance(purpose, str) or not purpose.strip() or len(purpose.strip().splitlines()) != 1:
+                        raise Rejected("请用一行填写参考用途")
+                    ref = dict(assetVersionId=asset_id, kind=kind, role=purpose.strip(), grid=bool(asset["grid"]))
+                    refs.append(ref)
+                    ref["label"] = stages.expected_labels(refs)[-1]
+                    entry["txt"] = promptrefs.add_definition(entry, ref["label"], ref["role"])
+                else:
+                    old.update(assetVersionId=asset_id, grid=bool(asset["grid"]))
+                    old.pop("visualReviewId", None)
+            entries[segment_id] = dict(entry, refs=refs)
+        with transaction(self.db_path) as db:
+            def save():
+                if self._adopted_plan(db, eid) != plan:
+                    raise Conflict("制作方案已变更，请重新核对本段")
+                vid = self._new_version(db, version["artifact_id"], version_id, "manual", version["content"],
+                                        note=f"调整 {segment_id} 参考素材")
+                return dict(versionId=vid)
+            return self._command(db, command_id, "edit_prompt_reference", payload, save)
+
+    def reorder_refs(self, version_id, segment_id, new_order: list[str], command_id, confirm=False, draft=None):
         """Reorder references; labels follow asset identity and the TXT is remapped. Preview unless confirm."""
         with transaction(self.db_path) as db:
             v = loads(row(db, "SELECT * FROM version WHERE id=?", version_id), "content")
             entry = v["content"]["segments"][segment_id]
+            entry = promptrefs.edited_entry(entry, draft)
             by_id = {r["assetVersionId"]: r for r in entry["refs"]}
             if sorted(new_order) != sorted(by_id):
                 raise Rejected("新顺序须包含全部且仅包含原有参考")
             refs = [dict(by_id[i]) for i in new_order]
-            labels = stages.expected_labels(refs)
-            mapping = {by_id[i]["label"]: lab for i, lab in zip(new_order, labels)}
-            for r, lab in zip(refs, labels):
-                r["label"] = lab
-            txt = re.sub(r"(?:图片|视频|音频)\d+", lambda m: "\0" + mapping.get(m.group(0), m.group(0)) + "\0", entry["txt"])
-            txt = txt.replace("\0", "")
+            txt, mapping = promptrefs.renumber(refs, entry["txt"])
             unclear = [r["label"] for r in refs if not r.get("role")]
             preview = dict(mapping=mapping, txtDiff=line_diff(entry["txt"], txt), unclearRoles=unclear)
             if not confirm:
@@ -547,34 +983,85 @@ class ProductionMixin:
                 content["segments"][segment_id] = dict(entry, refs=refs, txt=txt)
                 vid = self._new_version(db, v["artifact_id"], version_id, "manual", content, note=f"重排 {segment_id} 参考")
                 return dict(versionId=vid, preview=preview)
-            return self._command(db, command_id, "reorder", dict(v=version_id, s=segment_id, o=new_order), run)
+            return self._command(db, command_id, "reorder", dict(v=version_id, s=segment_id, o=new_order, **({"draft":draft} if draft is not None else {})), run)
 
-    def set_sound(self, version_id, segment_id, change: dict, command_id, confirm=False):
+    def set_sound(self, version_id, segment_id, change: dict, command_id, confirm=False, draft=None):
         """change: {bgm: bool} | {silent: true}. Full silence lists conflicts first."""
+        if not isinstance(change, dict) or ("bgm" in change) == ("silent" in change):
+            raise Rejected("请指定一个声音开关")
+        if type(confirm) is not bool or any(type(change[k]) is not bool for k in ("bgm", "silent") if k in change):
+            raise Rejected("声音开关须为布尔值")
         with transaction(self.db_path) as db:
             v = loads(row(db, "SELECT * FROM version WHERE id=?", version_id), "content")
-            entry = v["content"]["segments"][segment_id]
+            entry = promptrefs.edited_entry(v["content"]["segments"][segment_id], draft)
             sound = dict(entry.get("sound") or {})
+            structured = entry.get("prompt_format") == "readable_v3"
+            strategy = "grid" if entry["txt"].lstrip().startswith(readable.GRID[0]) else "flex"
             conflicts = []
+            retained = None
             if change.get("silent"):
                 if sound.get("dialogue"):
                     conflicts.append(dict(item="对白", detail=sound["dialogue"]))
                 if sound.get("ambience"):
                     conflicts.append(dict(item="环境声", detail=sound["ambience"]))
+                if structured:
+                    heading = "声音与音乐：" if strategy == "grid" else "【声音与文字】"
+                    body = readable.regions(entry["txt"], strategy).get(heading, "")
+                    if body.strip():
+                        conflicts.append(dict(item="原提示词声音栏", detail=body.strip()))
+                    eid = row(db, "SELECT episode_id FROM artifact WHERE id=?", v["artifact_id"])["episode_id"]
+                    sources = self._source_entries(db, eid, "prompts")
+                    rules = next((json.loads(r["text"])["blocks"] for r in sources if r["role"] == "promptStandard"), {})
+                    fixed = [block["zh"] for name, block in rules.items()
+                             if name in ("cats_silent", "frame_text") and block.get("zh") and block["zh"] in body]
+                    retained = change.get("retained_notes", "\n".join(fixed))
+                    if not isinstance(retained, str) or any(line not in retained for line in fixed):
+                        raise Rejected("静音后仍须保留本段已有的项目固定说明")
+                    cues = re.findall(r"<d>[^<]+</d>", entry["txt"], re.I)
+                    if cues:
+                        conflicts.append(dict(item="正文台词（采用前需复核）", detail=cues))
                 if self._episode_audio_on(db, v["artifact_id"]):
                     conflicts.append(dict(item="打包参数", detail="本集打包声音开关为开"))
                 if conflicts and not confirm:
-                    return dict(needsConfirm=True, conflicts=conflicts)
+                    return dict(needsConfirm=True, conflicts=conflicts, retainedNotes=retained)
                 sound = dict(silent=True, bgm=False, dialogue=[], ambience=[])
+            elif "silent" in change:
+                sound["silent"] = False
             if "bgm" in change:
-                sound["bgm"] = bool(change["bgm"])   # dialogue and ambience are untouched
+                sound["bgm"] = change["bgm"]   # dialogue and ambience are untouched
                 sound["silent"] = False
             def run():
                 content = json.loads(json.dumps(v["content"]))
-                content["segments"][segment_id] = dict(entry, sound=sound)
+                updated = dict(entry, sound=sound)
+                if structured:
+                    settings = entry.get("generation_settings")
+                    if isinstance(settings, dict) and "audio" in settings:
+                        if sound.get("silent") or sound.get("bgm") or (entry.get("sound") or {}).get("silent"):
+                            updated["generation_settings"] = dict(settings, audio=not sound.get("silent"))
+                    music = change.get("music_description")
+                    if sound.get("bgm") and "bgm" not in change:
+                        match = readable.MUSIC_LINE.search(entry["txt"])
+                        music = match[1] if match else None
+                    if sound.get("bgm") and (not isinstance(music, str) or not music.strip()
+                                            or music.strip() == "N/A" or len(music.strip().splitlines()) != 1):
+                        raise Rejected("请填写本段具体配乐描述")
+                    try:
+                        txt = readable.edit_sound_fields(entry["txt"], strategy,
+                                                         music.strip() if sound.get("bgm") else "N/A", retained)
+                        readable.check_h3_sound(dict(id=segment_id, prompt_format="readable_v3", reference_strategy=strategy,
+                                                     native_bgm="generate" if sound.get("bgm") else "none",
+                                                     full_silence=sound.get("silent", False)), txt)
+                        readable.sections(txt, strategy)
+                        updated["txt"] = txt
+                    except ValueError as exc:
+                        raise Rejected(str(exc)) from exc
+                content["segments"][segment_id] = updated
                 vid = self._new_version(db, v["artifact_id"], version_id, "manual", content, note=f"{segment_id} 声音")
                 return dict(versionId=vid, sound=sound, conflicts=conflicts)
-            return self._command(db, command_id, "sound", dict(v=version_id, s=segment_id, c=change, k=confirm), run)
+            args = dict(v=version_id, s=segment_id, c=change, k=confirm)
+            if draft is not None:
+                args["draft"] = draft
+            return self._command(db, command_id, "sound", args, run)
 
     def _episode_audio_on(self, db, artifact_id):
         ep = db.execute("SELECT episode_id FROM artifact WHERE id=?", (artifact_id,)).fetchone()[0]

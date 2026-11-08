@@ -8,13 +8,17 @@ export function useQuery<T = any>(name: string | null, args: Record<string, any>
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const key = name ? name + JSON.stringify(args) : null;
+  const current = useRef(key); current.current = key;
+  const seq = useRef(0);
+  const [loadedKey,setLoadedKey]=useState<string|null>(null);
   const load = useCallback(async () => {
     if (!name) return;
-    try { setData(await q<T>(name, args)); setError(null); }
-    catch (e) { setError(e instanceof ApiError ? e.message : String(e)); }
-  }, [key]);   // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { load(); }, [load, ...deps]);   // eslint-disable-line react-hooks/exhaustive-deps
-  return { data, error, reload: load, setData };
+    const ticket=++seq.current;
+    try { const next=await q<T>(name,args); if(current.current===key && ticket===seq.current){setData(next);setError(null);setLoadedKey(key);} }
+    catch (e) { if(current.current===key && ticket===seq.current){setError(e instanceof ApiError?e.message:String(e));setData(null);setLoadedKey(key);} }
+  }, [key]);
+  useEffect(() => { load(); }, [load, ...deps]);
+  return { data: name && loadedKey===key ? data : null, error: name && loadedKey===key ? error : null, reload:load, setData };
 }
 
 export function usePoll(active: boolean, fn: () => void, ms = 1500) {
@@ -85,6 +89,6 @@ export function SegBar({ total, done, now }: { total: number; done: number; now?
 }
 
 export const PROVIDER_LABEL: Record<string, string> = { codex: "Codex", claude: "Claude Code", antigravity: "Antigravity" };
-export function Avatars() {
-  return <span className="avatars"><b style={{ background: "#fb923c" }}>Cl</b><b style={{ background: "#a78bfa" }}>Cx</b></span>;
+export function Avatars({create, review}: {create?:string; review?:string}) {
+  return <span className="tiny muted">{create ? "创作 " + (PROVIDER_LABEL[create] ?? create) : ""} {review ? "· 独审 " + (PROVIDER_LABEL[review] ?? review) : ""}</span>;
 }

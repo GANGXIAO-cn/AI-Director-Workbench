@@ -26,7 +26,7 @@ export const commandId = () => crypto.randomUUID();
 /** Workbench command (writes). commandId is added automatically unless given. */
 export const cmd = <T = any,>(name: string, args: Record<string, any> = {}) =>
   send<T>("POST", `/cmd/${name}`, "command_id" in args || NO_ID.has(name) ? args : { ...args, command_id: commandId() });
-const NO_ID = new Set(["execute_batch", "expert_run", "backup", "restore", "set_publish_settings", "set_task_executor", "open_stage", "save_canvas"]);
+const NO_ID = new Set(["visit_project", "execute_batch", "expert_run", "backup", "restore", "set_publish_settings", "set_task_executor", "open_stage", "save_canvas", "preview_acting","package_preview"]);
 /** Workbench read model. */
 export const q = <T = any,>(name: string, args: Record<string, any> = {}) =>
   send<T>("GET", `/q/${name}?args=${encodeURIComponent(JSON.stringify(args))}`);
@@ -38,3 +38,12 @@ export const upload = <T = any,>(kind: string, file: File, meta: Record<string, 
 };
 export const blob = (sha?: string | null) => (sha ? `/api/blob/${sha}` : undefined);
 export const deliveryFile = (id: string, path: string) => `/api/delivery-file/${id}/${path}`;
+
+export const setCliPath = (provider: string, path: string) => send("PUT", "/settings/executors/" + encodeURIComponent(provider), {path: path || null});
+
+export const setProviderKey = (id: string, revision: number, key: string) =>
+  send("PUT", "/settings/providers/" + encodeURIComponent(id) + "/key", {revision, key});
+
+export const openProjectFolder = (folder:string,expected?:string) => send<{url:string;projectId:string}>("POST","/project-folder/open",{folder,expected});
+export const projectFolders = () => send<{external:boolean;opened:{path:string;url:string;projectId:string}[];recent:{name:string;path:string;available:boolean;fingerprint:string}[]}>("GET","/project-folder");
+export const closeProjectFolder = (folder:string) => send("POST","/project-folder/close",{folder});

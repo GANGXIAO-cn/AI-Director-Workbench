@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>原图细节</title>
+<style>
+  body { font: 16px system-ui; max-width: 1100px; margin: auto; padding: 16px }
+  #viewport { overflow: auto; max-height: 75vh; border: 1px solid #bbb; margin-top: 12px }
+  #source { display: block; width: 100%; max-width: none }
+  label, output { margin-right: 12px }
+</style>
+<main>
+  <a href="index.html">返回场景对照</a>
+  <h1>原图细节</h1>
+  <p>视觉审核待进行</p>
+  <label>缩放 <input id="zoom" type="range" min="100" max="400" value="100" step="25"></label>
+  <output for="zoom">100%</output>
+  <a href="__ORIGINAL__">打开原图</a>
+  <div id="viewport" tabindex="0" aria-label="原图细节"><img id="source" src="__ORIGINAL__" alt="场景对照原图"></div>
+</main>
+<script>
+  const zoom = document.getElementById("zoom");
+  zoom.addEventListener("input", () => {
+    document.getElementById("source").style.width = zoom.value + "%";
+    document.querySelector("output").value = zoom.value + "%";
+  });
+</script>
+</html>

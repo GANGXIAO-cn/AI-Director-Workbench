@@ -1,104 +1,112 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useEffect, useState } from "react";
-import { blob, cmd, q, upload } from "./api";
-import { ErrorLine, go, useAction, useQuery } from "./ui";
+import { FileInput, PencilLine, Plus, PackageOpen, Film, Palette, NotebookPen, Ratio, ChevronDown, ArrowUp, type LucideIcon } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { blob, cmd, upload } from "./api";
+import {OpenProjectFolder, SaveProjectFolder} from "./ProjectFolders";
+import type { useProjectList } from "./projectNavigation";
+import { ErrorLine, Modal, PROVIDER_LABEL, go, useAction, useQuery } from "./ui";
 
-const TABS: [string, string][] = [["import", "⇧ 导入故事稿 / 剧本"], ["idea", "✎ 从一个想法开始"], ["episode", "＋ 给项目开一集"],
-  ["delivery", "↗ 图文交付"], ["reference", "从参考片写剧本"]];
+const TABS: [string, string, LucideIcon][] = [["import", "导入故事稿 / 剧本", FileInput], ["idea", "从一个想法开始", PencilLine],
+  ["episode", "给项目开一集", Plus], ["delivery", "图文交付", PackageOpen], ["reference", "从参考片写剧本", Film]];
 const CHIPS = ["/ 从已成稿选题开一集", "/ 选题研究", "/ 承接上一集开新一集", "/ 审一份已有故事稿", "/ 修改进行中的一段"];
-const FEATURES: [string, string, string][] = [["故事开发", "选题 → 故事稿 → 独审", "linear-gradient(135deg,#3b5aa8,#7aa7e0)"],
-  ["双模型协作", "Claude 写 · Codex 审", "linear-gradient(135deg,#5b3aa8,#c06ae0)"],
-  ["九宫格分镜", "grid / flex 段落设计", "linear-gradient(135deg,#1f6f5a,#7ad0a8)"],
-  ["素材与选图", "必用 · 补选 · 灰度", "linear-gradient(135deg,#8a5a2a,#e0b07a)"],
-  ["专家模式", "授权后自动连续执行", "linear-gradient(135deg,#0f4c6a,#22d3ee)"]];
-
-export function SideNav({ active }: { active: string }) {
-  const projects = useQuery<any[]>("list_projects");
-  const [recent, setRecent] = useState<any[]>([]);
-  useEffect(() => {
-    (async () => {
-      const ps = projects.data ?? [];
-      const all: any[] = [];
-      for (const p of ps.slice(0, 3)) {
-        const v = await q("project_view", { project_id: p.id });
-        all.push(...v.episodes.filter((e: any) => e.kickoff_id).slice(-3).map((e: any) => ({ ...e, project: p.name })));
-      }
-      setRecent(all.slice(0, 5));
-    })();
-  }, [projects.data]);
-  return (
-    <aside className="sidenav">
-      <div className="brand"><div className="logo" style={{ width: 26, height: 26, borderRadius: 7, background: "linear-gradient(135deg,#22d3ee,#3b82f6)", display: "grid", placeItems: "center", color: "#fff", fontSize: 13 }}>导</div>导演工作台</div>
-      {[["idea", "◇ 创作", "#/"], ["projects", "◉ 项目", "#/projects"], ["library", "◆ 资产库", "#/library"],
-        ["topics", "✦ 选题池", "#/topics"], ["knowledge", "▤ 知识库", "#/knowledge"]].map(([k, label, href]) => (
-        <a key={k} href={href} className={`nav ${active === k ? "on" : ""}`}>{label}</a>))}
-      <a className="nav on" style={{ marginTop: 14, background: "#1c1d21" }} href={recent[0] ? `#/e/${recent[0].id}/story` : "#/"}>▣ 导演工作区 <span className="tag blue">双模型</span></a>
-      <div className="sec">最近剧集</div>
-      {recent.map((e) => <a key={e.id} className="nav small" href={`#/e/${e.id}/story`}>▧ {e.display_code} {e.title}</a>)}
-      <div className="sec">其他项目</div>
-      {(projects.data ?? []).map((p) => <a key={p.id} className="nav small" href={`#/p/${p.id}`}>▨ {p.name}</a>)}
-      <div style={{ marginTop: "auto" }} />
-      <a className="nav small" href="#/sys/executors">• 执行与分工</a>
-      <a className="nav small" href="#/sys/skills">• 技能包</a>
-      <a className="nav small" href="#/sys/storage">• 设置</a>
-    </aside>
-  );
-}
-
-let CONFIGS: any[] = [];
-fetch("/api/configs").then((r) => r.json()).then((c) => { CONFIGS = c; });
-
 async function ensureProject(pid: string, name: string) {
   if (pid && !pid.startsWith("__new")) return pid;
   const config = pid.startsWith("__new:") ? pid.slice(6) : "_template";
   return (await cmd("create_project", { config_id: config, name: config === "_template" ? name : undefined })).projectId;
 }
 
-export default function Home({ tab }: { tab?: string }) {
+export default function Home({ tab, projects }: { tab?: string; projects: ReturnType<typeof useProjectList> }) {
   const [mode, setMode] = useState(TABS.some(([k]) => k === tab) ? tab! : "idea");
   const [text, setText] = useState("");
   const [projectId, setProjectId] = useState("");
   const [pop, setPop] = useState<"" | "style" | "topic" | "settings" | "project">("");
-  const [file, setFile] = useState<File | null>(null);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [referenceFile, setReferenceFile] = useState<File | null>(null);
+  const [styleNote, setStyleNote] = useState("");
+  const [topic, setTopic] = useState<any>(null);
+  const [previous, setPrevious] = useState("");
+  const [ratio, setRatio] = useState("");
+  const [creator, setCreator] = useState("claude");
+  const [reviewer, setReviewer] = useState("codex");
+  const [runMode, setRunMode] = useState("manual");
+  const [targetEpisode, setTargetEpisode] = useState("");
   const [purpose, setPurpose] = useState("story_source");
   const [code, setCode] = useState("");
   const [recognized, setRecognized] = useState<any[]>([]);
-  const projects = useQuery<any[]>("list_projects");
-  const project = useQuery<any>(projectId ? "project_overview" : null, { project_id: projectId });
-  const topics = useQuery<any[]>(projectId ? "topics" : null, { project_id: projectId });
+  const creating = projectId.startsWith("__new");
+  const existing = !!projectId && !projectId.startsWith("__new");
+  const project = useQuery<any>(existing ? "project_overview" : null, { project_id: projectId });
+  const topics = useQuery<any[]>(existing ? "topics" : null, { project_id: projectId });
+  const configs=useQuery<any[]>("available_configs");
+  const sourceCards = useQuery<any[]>(existing && pop === "topic" ? "source_topics" : null, {project_id:projectId});
   const exec = useQuery<any>("probe");
   const act = useAction();
   const list = projects.data ?? [];
-  useEffect(() => { if (!projectId && list.length) setProjectId(list.find((p) => p.config_id === "puggy")?.id ?? list[0].id); }, [list.length]);
+  useEffect(() => { if (!projectId && projects.data) setProjectId(list.find((p) => p.id === localStorage.getItem("lastProject"))?.id ?? list[0]?.id ?? "__new"); }, [projectId, projects.data]);
   useEffect(() => {
-    if (tab && ["library", "topics", "knowledge"].includes(tab) && list.length) go(`#/p/${(list.find((p) => p.config_id === "puggy") ?? list[0]).id}/${tab}`);
-  }, [tab, list.length]);
+    if (tab && ["library", "topics"].includes(tab) && projectId && !projectId.startsWith("__new")) go(`#/p/${projectId}/${tab}`);
+  }, [tab, projectId]);
+  const configName = configs.data?.find(c => "__new:" + c.configId === projectId)?.name;
+  const projectLabel = list.find(p => p.id === projectId)?.name ?? (configName ? `新项目（${configName}）` : creating ? "新项目" : "选择项目");
+  const projectReady = creating || (existing && project.data?.project.id === projectId);
+  const listNotice = projects.error
+    ? <div role="alert" className="error">项目列表读取失败 · {projects.error} <button className="btn" onClick={projects.reload}>重试项目列表</button></div>
+    : !projects.data && <p role="status">正在读取项目列表…</p>;
   const nextCode = () => {
-    const eps = project.data?.episodes ?? [];
+    const eps = project.data?.project.id === projectId ? project.data.episodes : [];
     const nums = eps.map((e: any) => parseInt(e.display_code.replace(/\D/g, ""), 10)).filter((n: number) => !isNaN(n));
     const prefix = eps[0]?.display_code.replace(/\d+/g, "") || "E";
     return `${prefix}${String((nums.length ? Math.max(...nums) : 0) + 1).padStart(2, "0")}`;
   };
+  const episodes = project.data?.project.id === projectId ? project.data.episodes : [];
+  const opened = episodes.filter((e: any) => e.kickoff_id);
+  const destination = opened.find((e: any) => e.id === targetEpisode) ?? opened[opened.length - 1];
+  const kickoffMode = ["idea","episode","import"].includes(mode);
+  const prefill = { style: styleNote, ratio, creator, reviewer, mode: runMode, predecessorId: previous };
+  const selectProject = (pid: string) => {
+    localStorage.setItem("lastProject",pid); setProjectId(pid); setRecognized([]); setTopic(null); setPrevious(""); setRatio(""); setStyleNote(""); setTargetEpisode("");
+  };
+  const selectMode = (value: string) => { if (value !== mode) {setTopic(null); setPrevious("");} setMode(value); setPop(""); act.clear(); };
+  const shortcut = (index: number) => act.run(async () => {
+    if (index === 0) { selectMode("episode"); setPop("topic"); }
+    if (index === 1) {
+      if (!existing) {setPop("project");return;}
+      go(`#/p/${projectId}/topics`);
+    }
+    if (index === 2) {
+      if (!opened.length) throw new Error("当前项目还没有可承接的已开工集");
+      selectMode("episode"); setPrevious(opened[opened.length - 1].id);
+    }
+    if (index === 3) selectMode("import");
+    if (index === 4) {
+      const ep = [...opened].reverse().find(e => e.state !== "delivered");
+      if (!ep) throw new Error("当前项目还没有进行中的剧集");
+      go(`#/e/${ep.id}/${ep.adopted.plan ? "prompts" : ep.adopted.script ? "plan" : ep.adopted.story ? "script" : "story"}`);
+    }
+  });
   const send = () => act.run(async () => {
     if (mode === "idea" || mode === "episode") {
+      if (mode === "idea" && !topic && !text.trim()) throw new Error("请输入一句话想法或选择一张选题卡");
       const pid = await ensureProject(projectId, text.slice(0, 12) || "新项目");
-      const ep = await cmd("create_episode", { project_id: pid, display_code: code || (pid === projectId ? nextCode() : "E01") });
-      sessionStorage.setItem("kickoff-prefill", JSON.stringify({ episodeId: ep.episodeId, idea: text }));
+      const displayCode=code || (pid === projectId ? nextCode() : "E01");
+      sessionStorage.setItem("kickoff-prefill:"+pid, JSON.stringify({ ...prefill, projectId:pid, displayCode, idea: topic ? undefined : text, topicId: topic?.id, goal: topic ? text : "" }));
       go(`#/p/${pid}`);
     } else if (mode === "import") {
+      const file = importFile;
       if (!file) throw new Error("请先选择故事稿或剧本文件");
       const pid = await ensureProject(projectId, file.name.replace(/\.[^.]+$/, "").slice(0, 12));
       const fresh = pid !== projectId;
       setProjectId(pid);
-      const ep = await cmd("create_episode", { project_id: pid, display_code: code || (fresh ? "E01" : nextCode()) });
+      const displayCode=code || (fresh ? "E01" : nextCode());
       const fd = new FormData();
-      fd.append("file", file); fd.append("purpose", purpose); fd.append("episodeId", ep.episodeId);
+      fd.append("file", file); fd.append("purpose", purpose);
       const token = (await (await fetch("/api/session")).json()).token;
       const res = await fetch(`/api/projects/${pid}/imports`, { method: "POST", headers: { "x-adw-token": token }, body: fd });
       const r = await res.json();
       if (!res.ok) throw new Error(r.error);
-      setRecognized([{ name: file.name, purpose, episode: ep.displayCode ?? (code || "E01"), episodeId: ep.episodeId, projectId: pid, ...r }]);
+      setRecognized([{ name: file.name, purpose, episode:displayCode, projectId: pid, ...r }]);
     } else if (mode === "reference") {
+      const file = referenceFile;
       if (!file) throw new Error("请选择本地参考片");
       const pid = await ensureProject(projectId, text.slice(0, 12) || "参考片项目");
       setProjectId(pid);
@@ -107,35 +115,56 @@ export default function Home({ tab }: { tab?: string }) {
       const pack = await cmd("create_pack", { source_id: src.sourceId, request: text });
       go(`#/p/${pid}/ref/${pack.packId}`);
     } else if (mode === "delivery") {
-      go(`#/p/${projectId}`);
+      if (!destination) throw new Error("请先选择有已开工剧集的项目");
+      go(`#/e/${destination.id}/delivery`);
     }
   });
+  if (tab==="projects" || tab==="deliveries") return <div className="app"><main className="main page"><h1>{tab==="projects"?"项目":"本地交付包"}</h1>
+    {listNotice}{tab==="projects" && <OpenProjectFolder/>}
+    {tab==="projects"?<div className="director-grid">{list.map(p=><ProjectCard p={p} key={p.id}/>)}</div>:list.map(p=><section key={p.id}><h2>{p.name}</h2>{p.deliveries?.length?p.deliveries.map((d:any)=><p key={d.id}><a href={`#/e/${d.episode_id}/delivery`}>{d.display_code} · {d.title || p.name} · {d.scope==="full"?"整集":"限定段落"} · {new Date(d.created_at*1000).toLocaleString()}</a></p>):<p>暂无交付记录</p>}</section>)}</main></div>;
+  const recent = list.filter(p => p.recentVisible).flatMap(project => project.recent.map((episode:any) => ({episode, project})))
+    .sort((a,b) => b.episode.created_at - a.episode.created_at).slice(0,5);
   const statusOf = (name: string) => exec.data?.[name]?.status === "available";
   return (
     <div className="app">
-      <SideNav active={tab === "projects" ? "projects" : "idea"} />
       <main className="main home">
         <div className="row" style={{ justifyContent: "flex-end", paddingTop: 16 }}>
           {["claude", "codex"].map((n) => <span key={n} className="chip"><span className="dot" style={{ background: statusOf(n) ? "var(--green)" : "var(--muted)" }} />{n === "claude" ? "Claude Code" : "Codex"}</span>)}
-          <a className="chip" href="#/sys/storage">本地交付包</a>
-          <span style={{ width: 26, height: 26, borderRadius: "50%", background: "linear-gradient(135deg,#22d3ee,#3b82f6)" }} />
+          <a className="chip" href="#/deliveries">本地交付包</a>
+
         </div>
         <div className="hero">
           <h1>和导演助手聊聊这一集</h1>
-          <div className="bigbox" style={{ position: "relative" }}>
-            <div className="tabs5">{TABS.map(([k, label]) => (
-              <button key={k} className={mode === k ? "on" : ""} onClick={() => setMode(k)}>{label}{k === "delivery" && <span className="tag blue" style={{ marginLeft: 6 }}>New</span>}</button>))}</div>
+          <div className="bigbox" style={{ position: "relative" }}
+            onDragOver={e=>{if(e.dataTransfer.types.includes("Files")) e.preventDefault();}}
+            onDrop={e=>{
+              if(!e.dataTransfer.files.length) return;
+              e.preventDefault();
+              const files = e.dataTransfer.files;
+              if(files.length !== 1) { act.run(async()=>{throw new Error("每次请选择一份稿件或参考片");}); return; }
+              const file = files[0];
+              if(mode==="reference" && file.type.startsWith("video/")) { setReferenceFile(file); return; }
+              if(!/\.(md|txt|docx|pdf)$/i.test(file.name)) { act.run(async()=>{throw new Error("稿件支持 MD、TXT、DOCX 或 PDF");}); return; }
+              selectMode("import"); setImportFile(file);
+            }}>
+            <div className="tabs5">{TABS.map(([k, label, Icon]) => (
+              <button key={k} className={mode === k ? "on" : ""} onClick={() => selectMode(k)}><Icon size={14} aria-hidden="true"/>{label}</button>))}</div>
             <div className="row" style={{ padding: 14, alignItems: "flex-start", flexWrap: "nowrap" }}>
-              {(mode === "import" || mode === "reference") ? (
-                <label className="drop" style={{ cursor: "pointer" }}>
-                  <input type="file" style={{ display: "none" }} accept={mode === "reference" ? "video/*" : ".md,.txt"} onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-                  <div>＋<br />{file ? file.name : mode === "reference" ? "本地参考片" : "故事稿 / 剧本 / 参考图"}<br /><span className="tiny">{mode === "reference" ? "默认研究全片" : "或从选题池拖入卡片"}</span></div>
+              {(mode === "import" || mode === "reference") && (
+                <label key={mode} className="drop" style={{ cursor: "pointer" }}>
+                  <input type="file" style={{ display: "none" }} accept={mode === "reference" ? "video/*" : ".md,.txt,.docx,.pdf"} onChange={(e) => (mode === "reference" ? setReferenceFile : setImportFile)(e.target.files?.[0] ?? null)} />
+                  <div>＋<br />{mode === "reference" ? referenceFile?.name ?? "选择本地参考片" : importFile?.name ?? "选择故事稿 / 剧本"}<br /><span className="tiny">{mode === "reference" ? "默认研究全片" : "可拖入 MD、TXT、DOCX 或 PDF"}</span></div>
                 </label>
-              ) : <div className="drop">＋<br />故事稿 / 剧本 / 参考图<br /><span className="tiny">或从选题池拖入卡片</span></div>}
+              )}
+              {mode === "delivery" ? <label>选择交付的集　<select value={destination?.id ?? ""} onChange={e => setTargetEpisode(e.target.value)}>
+                {!opened.length && <option value="">本项目尚无已开工集</option>}{opened.map((e: any) => <option key={e.id} value={e.id}>{e.display_code} · {e.title || e.label}</option>)}</select></label> :
               <textarea style={{ border: 0, background: "transparent", minHeight: 120 }} value={text} onChange={(e) => setText(e.target.value)}
-                placeholder={mode === "reference" ? "希望借鉴什么？例：借检票亭里认人的节奏，把故事放到末班渡轮上" :
-                  `${nextCode()}：MILO 在车道上开了家洗车店，第一位客户是女主人的红色汽车……`} />
+                placeholder={mode === "import" || (topic && ["idea","episode"].includes(mode)) ? "补充本集要求（选填）" : mode === "reference" ? "希望借鉴什么？例：借检票亭里认人的节奏，把故事放到末班渡轮上" :
+                  `${nextCode()}：谁想做什么，遇到了什么意外？`} />}
             </div>
+            {["idea","episode"].includes(mode) && (topic || previous) && <div className="row" style={{padding:"0 14px 10px"}}>
+              {topic && <button className="chip" onClick={() => setTopic(null)}>选题 {topic.code} · {topic.premise} ×</button>}
+              {previous && <button className="chip" onClick={() => setPrevious("")}>承接 {opened.find((e: any) => e.id === previous)?.display_code} ×</button>}</div>}
             {mode === "import" && (
               <div className="row" style={{ padding: "0 14px 10px" }}>
                 <select value={purpose} onChange={(e) => setPurpose(e.target.value)}>
@@ -145,103 +174,150 @@ export default function Home({ tab }: { tab?: string }) {
                 <span className="muted small">导入的故事稿、剧本只作故事来源，开工后先写故事稿并过独审。</span>
               </div>
             )}
-            <div className="row" style={{ padding: "10px 14px", borderTop: "1px solid var(--line)" }}>
-              <button className="btn ghost" onClick={() => setPop(pop === "project" ? "" : "project")}>☺ {list.find((p) => p.id === projectId)?.name ?? (projectId.startsWith("__new:") ? `新项目（${CONFIGS.find((c) => "__new:" + c.configId === projectId)?.name}）` : "新项目")} ▾</button>
-              <button className="btn ghost" onClick={() => setPop(pop === "style" ? "" : "style")}>◐ 风格</button>
-              <button className="btn ghost" onClick={() => setPop(pop === "topic" ? "" : "topic")}>✦ 选题</button>
-              <span className="chip">▯ {project.data?.project?.spec_preset?.aspectRatio ?? "9:16"}</span>
-              <button className="btn ghost" onClick={() => setPop(pop === "settings" ? "" : "settings")}>⇄ 规格预设：{project.data?.project?.spec_preset?.targetDuration === "over_60" ? "竖屏短片" : "通用"} · Claude 写 / Codex 审 · 手工</button>
-              <span className="muted small" style={{ marginLeft: "auto" }}>选题池 {(topics.data ?? []).filter((t) => t.status === "已成稿").length} 张已成稿</span>
-              <button className="btn primary" style={{ borderRadius: "50%", width: 34, height: 34, padding: 0 }} disabled={act.busy} onClick={send}>↑</button>
+            <div className="row home-controls">
+              <button className="btn ghost" onClick={() => setPop(pop === "project" ? "" : "project")}>{projectLabel}<ChevronDown size={14} aria-hidden="true"/></button>
+              {kickoffMode && <button className="btn ghost" onClick={() => setPop(pop === "style" ? "" : "style")}><Palette size={14} aria-hidden="true"/>风格{styleNote && " · " + styleNote.slice(0,12)}</button>}
+              {["idea","episode"].includes(mode) && <button className="btn ghost" onClick={() => setPop(pop === "topic" ? "" : "topic")}><NotebookPen size={14} aria-hidden="true"/>选题{topic && " · " + topic.code}</button>}
+              {kickoffMode && <><button className="chip" onClick={() => setPop("settings")}><Ratio size={14} aria-hidden="true"/>{ratio || project.data?.project?.spec_preset?.aspectRatio || "9:16"}</button>
+                <button className="btn ghost" onClick={() => setPop(pop === "settings" ? "" : "settings")}>规格预设 · {PROVIDER_LABEL[creator]} 写 / {PROVIDER_LABEL[reviewer]} 审 · {runMode === "manual" ? "手工" : "专家"}</button></>}
+              <button className="btn primary" style={{ borderRadius: "50%", width: 34, height: 34, padding: 0 }} aria-label="继续" disabled={act.busy || !projectReady || (mode === "delivery" && !destination)} onClick={send}><ArrowUp size={17} aria-hidden="true"/></button>
             </div>
-            {pop && <Popover kind={pop} close={() => setPop("")} projects={list} projectId={projectId} setProjectId={setProjectId}
-              project={project.data} topics={topics.data ?? []} pickTopic={(t: any) => { setText(`${t.code}：${t.premise}`); setPop(""); }} />}
+            {pop && <Popover kind={pop} close={() => setPop("")} projects={list} projectId={projectId} setProjectId={selectProject}
+              configs={configs} listNotice={listNotice} sourceCards={sourceCards} takeCard={async (c:any) => {const r=await cmd("take_source_topic",{project_id:projectId,code:c.code,sha256:c.sha256}); setTopic({id:r.topicId,code:c.code,premise:c.premise}); await topics.reload(); setPop("");}}
+              key={pop + projectId} project={project.data} topics={(topics.data ?? []).filter(t => t.project_id === projectId)} pickTopic={(t: any) => { if (t.episode_id) { go(`#/e/${t.episode_id}/story`); return; } setTopic(t); setPop(""); }}
+              addTopic={async (code: string, premise: string) => {
+                const pid = await ensureProject(projectId, premise.slice(0,12));
+                if (pid !== projectId) setProjectId(pid);
+                const r = await cmd("add_topic",{project_id:pid,code,premise});
+                setTopic({id:r.topicId,code,premise}); if (pid === projectId) await topics.reload(); setPop("");
+              }} styleNote={styleNote} saveStyle={(v: string) => {setStyleNote(v); setPop("");}}
+              settings={{ratio,creator,reviewer,runMode,setRatio,setCreator,setReviewer,setRunMode}} />}
           </div>
+          {existing && project.error && <p role="alert" className="error">当前项目读取失败 · {project.error} <button className="btn" onClick={project.reload}>重试当前项目</button></p>}
           <ErrorLine error={act.error} />
-          {recognized.length > 0 && (
-            <div className="card line" style={{ width: 900, margin: "14px auto", textAlign: "left" }}>
+          {mode === "import" && recognized.some(r => r.projectId === projectId) && (
+            <div className="card line" style={{ maxWidth: 900, margin: "14px auto", textAlign: "left" }}>
               <h3>识别与归位</h3>
-              {recognized.map((r) => (
+              {recognized.filter(r => r.projectId === projectId).map((r) => (
                 <div key={r.importId} className="spread">
-                  <span>{r.name} → {r.episode} · {r.purpose === "script_source" ? "剧本（故事来源）" : "故事稿（故事来源）"} · {r.parseStatus === "parsed" ? <span className="ok">已解析</span> : <span className="error">{r.diagnostic}</span>}</span>
-                  <button className="btn primary" onClick={() => { sessionStorage.setItem("kickoff-prefill", JSON.stringify({ episodeId: r.episodeId, importId: r.importId })); go(`#/p/${r.projectId}`); }}>去开工 {r.episode}</button>
+                  <div>{r.name} → {r.episode} · {r.purpose === "script_source" ? "剧本（故事来源）" : "故事稿（故事来源）"} · {r.extractionMethod && r.extractionMethod+" · "}{r.parseStatus === "parsed" ? <><span className="ok">已解析</span>{r.diagnostic && <span> · {r.diagnostic}</span>}</> : <span className="error">{r.diagnostic}</span>}{r.preview && <details><summary>查看提取正文（前 800 字符）</summary><pre style={{whiteSpace:"pre-wrap"}}>{r.preview}</pre></details>}</div>
+                  <button className="btn primary" disabled={r.parseStatus !== "parsed"} onClick={() => { sessionStorage.setItem("kickoff-prefill:"+r.projectId, JSON.stringify({ ...prefill, goal:text, displayCode:r.episode, projectId:r.projectId, importId: r.importId })); go(`#/p/${r.projectId}`); }}>去开工 {r.episode}</button>
                 </div>))}
             </div>
           )}
           <div className="row" style={{ justifyContent: "center", marginTop: 22 }}>
-            {CHIPS.map((c) => <button key={c} className="btn ghost" style={{ borderRadius: 20 }} onClick={() => setText(c.slice(2))}>{c}</button>)}
+            {CHIPS.map((c,i) => <button key={c} className="btn ghost" style={{ borderRadius: 20 }} onClick={() => shortcut(i)}>{c}</button>)}
           </div>
         </div>
-        <h2 style={{ marginTop: 40 }}>亮点功能</h2>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12 }}>
-          {FEATURES.map(([t, d, bg]) => <div key={t} className="feature"><div className="art" style={{ background: bg }} /><div><b>{t}</b><div className="muted tiny">{d}</div></div></div>)}
+        <div className="spread" style={{ marginTop: 30 }}><h2>最近项目</h2><a className="muted small" href="#/projects">全部 ›</a></div>
+        {listNotice}
+        <div className="home-project-grid">
+          {list.filter(p => p.recentVisible).sort((a,b)=>b.recentAt-a.recentAt).map((p) => <ProjectCard key={p.id} p={p} />)}
         </div>
-        <div className="spread" style={{ marginTop: 30 }}><h2>我的项目</h2><span className="muted small">全部 ›</span></div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14 }}>
-          {list.map((p) => <ProjectCard key={p.id} p={p} />)}
-        </div>
+        {recent.length > 0 && <section aria-label="最近剧集"><h2>最近剧集</h2><div className="home-project-grid">{recent.map(({episode, project}) =>
+          <a key={episode.id} className="epcard col" href={`#/e/${episode.id}/${episode.state === "delivered" ? "delivery" : "story"}`}>
+            <strong>{episode.display_code}{episode.title && " · " + episode.title}</strong><span className="muted small">{project.name} · {episode.state === "delivered" ? "查看交付" : "打开故事稿"}</span>
+          </a>)}</div></section>}
       </main>
     </div>
   );
 }
 
 function ProjectCard({ p }: { p: any }) {
-  const o = useQuery<any>("project_overview", { project_id: p.id });
-  const ep = o.data?.episodes.find((e: any) => e.label !== "待开工");
-  const [cover, setCover] = useState<string | undefined>();
+  const [menu, setMenu] = useState(false);
+  const [savingFolder,setSavingFolder] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(p.name);
+  const [original, setOriginal] = useState(p.name);
+  const wrapper = useRef<HTMLDivElement>(null);
+  const act = useAction();
   useEffect(() => {
-    if (!ep) return;
-    q("episode_assets", { episode_id: ep.id }).then((a: any[]) => setCover(blob(a.find((x) => !x.grid)?.sha256)));
-  }, [ep?.id]);
+    if (!menu) return;
+    const outside = (e: PointerEvent) => { if (!wrapper.current?.contains(e.target as Node)) setMenu(false); };
+    const escape = (e: KeyboardEvent) => { if (e.key === "Escape") setMenu(false); };
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", escape);
+    return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", escape); };
+  }, [menu]);
+  const changed = () => dispatchEvent(new Event("projects-changed"));
+  const ep=p.recent?.[0];
+  const cover=blob(p.cover);
   return (
+    <div className="project-card-wrap" ref={wrapper} onContextMenu={e=>{if (!editing) { e.preventDefault(); setMenu(true); }}}>
     <a className="projcard" href={`#/p/${p.id}`}>
       <div className="cover" style={{ backgroundImage: cover ? `linear-gradient(transparent 50%, rgba(0,0,0,.7)), url(${cover})` : undefined }}>
-        {ep && <span className="tag" style={{ position: "absolute", left: 10, top: 10 }}>{ep.label}</span>}
+        {ep && <span className="tag" style={{ position: "absolute", left: 10, top: 10 }}>{ep.state==="delivered"?"已交付":"制作中"}</span>}
         <div className="t">{p.name}</div>
       </div>
-      <div style={{ marginTop: 8, fontWeight: 600 }}>{p.name}</div>
-      <div className="muted small">{p.episodes} 集 · 设定 {o.data?.settings.total ?? 0} 条 · {ep ? `${ep.display_code} ${ep.label}` : "尚未开工"}</div>
+      <div className="muted small">{p.episodes} 集 · 设定 {p.settingsCount} 条 · {ep ? `${ep.display_code} ${ep.state==="delivered"?"已交付":"制作中"}` : "尚未开工"}</div>
     </a>
+    <button className="btn card-actions" aria-label={`管理项目 ${p.name}`} aria-expanded={menu}
+      onClick={()=>setMenu(!menu)}>⋯</button>
+    {menu && <div className="card-menu">
+      <button className="btn" onClick={()=>{setOriginal(p.name);setName(p.name);setMenu(false);setEditing(true);act.clear();}}>重命名</button>
+      <button className="btn" onClick={()=>{setMenu(false);setSavingFolder(true);}}>另存独立项目</button>
+      <button className="btn" disabled={act.busy} onClick={()=>act.run(async()=>{
+        await cmd("set_recent_visibility", {project_id:p.id, visible:!p.recentVisible}); setMenu(false); changed();
+      })}>{p.recentVisible ? "从最近项目移除" : "恢复到最近项目"}</button>
+    </div>}
+    {savingFolder && <SaveProjectFolder pid={p.id} name={p.name} close={()=>setSavingFolder(false)}/>}
+    {editing && <Modal width={380} onClose={()=>setEditing(false)}><form onSubmit={e=>{e.preventDefault();act.run(async()=>{
+      await cmd("rename_project",{project_id:p.id, name, expected_name:original});setEditing(false);changed();
+    });}}>
+      <label className="col">项目名称<input autoFocus value={name} onChange={e=>setName(e.target.value)}/></label>
+      <div className="row"><button type="submit" className="btn primary" disabled={act.busy || !name.trim()}>保存名称</button>
+      <button type="button" className="btn" onClick={()=>setEditing(false)}>取消</button></div>
+      <ErrorLine error={act.error}/>
+    </form></Modal>}
+    {!editing && <ErrorLine error={act.error}/>}
+    </div>
   );
 }
 
-function Popover({ kind, close, projects, projectId, setProjectId, project, topics, pickTopic }: any) {
-  const configs = CONFIGS;
-  const style = { left: 14, bottom: 60, width: 520 } as const;
+function Popover({ configs, listNotice, kind, close, projects, projectId, setProjectId, topics, sourceCards, takeCard, pickTopic, addTopic, styleNote, saveStyle, settings }: any) {
+
+  const style = { position: "static", width: "auto", margin: "0 14px 14px" } as const;
+  const [draft, setDraft] = useState<string>(styleNote);
+  const [sourceCode,setSourceCode] = useState("");
+  const [topicCode, setTopicCode] = useState("");
+  const [premise, setPremise] = useState("");
+  const act = useAction();
   if (kind === "project") return (
     <div className="pop" style={style}>
-      <h3>选择项目</h3>
-      {projects.map((p: any) => <div key={p.id} className={`pill ${p.id === projectId ? "on" : ""}`} style={{ margin: 4, display: "inline-block" }} onClick={() => { setProjectId(p.id); close(); }}>{p.name}</div>)}
-      <div className={`pill ${projectId === "__new" ? "on" : ""}`} style={{ margin: 4, display: "inline-block" }} onClick={() => { setProjectId("__new"); close(); }}>＋ 新项目（设定为空）</div>
-      {configs.filter((c: any) => c.configId !== "_template").map((c: any) => <div key={c.configId} className={`pill ${projectId === "__new:" + c.configId ? "on" : ""}`} style={{ margin: 4, display: "inline-block" }} onClick={() => { setProjectId("__new:" + c.configId); close(); }}>＋ 新项目（{c.name} 配置）</div>)}
+      <h3>选择项目</h3>{listNotice}
+      <div className="row">{projects.map((p: any) => <button key={p.id} className={`pill ${p.id === projectId ? "on" : ""}`} onClick={() => { setProjectId(p.id); close(); }}>{p.name}</button>)}
+        <button className={`pill ${projectId === "__new" ? "on" : ""}`} onClick={() => { setProjectId("__new"); close(); }}>＋ 新项目（设定为空）</button>
+        {configs.data?.filter((c: any) => c.configId !== "_template").map((c: any) => <button key={c.configId} className={`pill ${projectId === "__new:" + c.configId ? "on" : ""}`} onClick={() => { setProjectId("__new:" + c.configId); close(); }}>＋ 新项目（{c.name} 配置）</button>)}
+      </div>
+      {configs.error ? <p role="alert" className="error">项目配置读取失败 · {configs.error} <button className="btn" onClick={configs.reload}>重试项目配置</button></p>
+        : !configs.data && <p role="status">正在读取项目配置…</p>}
     </div>);
   if (kind === "style") return (
     <div className="pop" style={style}>
-      <div className="spread"><h3>风格</h3><span className="muted tiny">本项目已验证的画面基准优先，色卡只作灵感</span></div>
-      <div className="label">本项目已确认</div>
-      <div className="row">{(project?.project?.settings ?? []).filter((s: any) => s.category === "space" || s.category === "rule").slice(0, 3).map((s: any) => (
-        <div key={s.key} className="card line small" style={{ width: 150 }}>{s.content.slice(0, 40)}…</div>))}
-        {!(project?.project?.settings ?? []).length && <span className="muted small">项目设定为空：首集确认后才有已验证风格。</span>}</div>
-      <div className="label">灵感色卡（不等于已采用的图）</div>
-      <div className="row">{["#2b3a55", "#c9a227", "#1f5f4a", "#e07a5f"].map((c) => <span key={c} style={{ width: 40, height: 40, borderRadius: 8, background: c }} />)}</div>
+      <h3>本集画面风格</h3>
+      <a className="btn" href={"#/palette"+(projectId&&!projectId.startsWith("__new")?"?project="+encodeURIComponent(projectId):"")}>浏览导演色卡并设置项目风格</a>
+      <div className="label">色彩灵感</div><div className="row">{[["#2b3a55","深蓝灰"],["#c9a227","金黄"],["#1f5f4a","墨绿"],["#e07a5f","珊瑚橙"]].map(([c,label]) =>
+        <button key={c} className="pill" onClick={() => setDraft(`主色调：${label}（${c}）`)}><i style={{display:"inline-block",width:12,height:12,background:c}} /> {label}</button>)}</div>
+      <label className="col">本集风格说明<input value={draft} onChange={e => setDraft(e.target.value)} placeholder="例如：清晨冷光，纸船保留暖红色" /></label>
+      <div className="row"><button className="btn primary" onClick={() => saveStyle(draft.trim())}>应用到本集</button><button className="btn" onClick={() => saveStyle("")}>使用项目默认</button></div>
     </div>);
   if (kind === "topic") return (
-    <div className="pop" style={style}>
-      <h3>从选题池取卡</h3>
-      {topics.length === 0 && <div className="muted small">选题池为空。可在项目的选题池里加入候选。</div>}
-      {topics.map((t: any) => (
-        <div key={t.id} className="spread card line" style={{ margin: "6px 0", cursor: "pointer" }} onClick={() => pickTopic(t)}>
-          <span><b>{t.code}</b> {t.premise}</span><span className={`tag ${t.status === "已成稿" ? "green" : t.status === "候选" ? "" : "blue"}`}>{t.status}</span>
-        </div>))}
+    <div className="pop col" style={style}><h3>从选题池取卡</h3>
+      {sourceCards.error && <span className="error">{sourceCards.error}</span>}
+      {!!sourceCards.data?.length && <><label>项目原始选题池<select value={sourceCode} onChange={e=>setSourceCode(e.target.value)}><option value="">选择原卡（保留原文与来源）</option>{sourceCards.data.filter((c:any)=>!topics.some((t:any)=>t.code===c.code)).map((c:any)=><option key={c.code} value={c.code}>{c.code} · {c.status} · {c.premise}</option>)}</select></label><button className="btn" disabled={!sourceCode || act.busy} onClick={()=>act.run(()=>takeCard(sourceCards.data.find((c:any)=>c.code===sourceCode)))}>选用原卡</button></>}
+      {topics.filter((t: any) => ["候选","已成稿"].includes(t.status)).map((t: any) =>
+        <button key={t.id} className="btn ghost" onClick={() => pickTopic(t)}>{t.code} · {t.premise} · {t.episode_id ? "打开对应集" : "选用"}</button>)}
+      {!topics.some((t: any) => ["候选","已成稿"].includes(t.status)) && <span className="muted small">当前没有可选卡片，可直接新建。</span>}
+      <div className="row"><input placeholder="选题编号" value={topicCode} onChange={e => setTopicCode(e.target.value)} /><input placeholder="故事前提" value={premise} onChange={e => setPremise(e.target.value)} /></div>
+      <div className="row"><button className="btn primary" disabled={!projectId || !topicCode.trim() || !premise.trim() || act.busy} onClick={() => act.run(() => {
+        if (topics.some((t: any) => t.code === topicCode.trim())) throw new Error("该选题编号已存在，请选择原卡或换一个编号");
+        return addTopic(topicCode.trim(),premise.trim());
+      })}>新建并选用</button>{projectId && !projectId.startsWith("__new") && <a className="btn" href={`#/p/${projectId}/topics`}>管理选题池</a>}</div><ErrorLine error={act.error} />
     </div>);
-  return (
-    <div className="pop" style={style}>
-      <h3>生成设置</h3>
-      <div className="col small">
-        <div className="spread"><span className="muted">作品线</span><b>{project?.project?.name ?? "新项目"}</b></div>
-        <div className="spread"><span className="muted">双模型分工</span><span>故事 Claude 写 · Codex 审；提示词 Codex 写 · Claude 两遍独审</span></div>
-        <div className="spread"><span className="muted">运行模式</span><span>手工（专家模式在开工页授权）</span></div>
-        <div className="spread"><span className="muted">预估段数</span><span>{project?.project?.spec_preset?.targetDuration === "over_60" ? "60–120 秒 ≈ 5–9 段" : "按故事长度"}</span></div>
-      </div>
-    </div>);
+  return <div className="pop col" style={style}><h3>本集生成设置</h3>
+    <label>画幅　<select value={settings.ratio} onChange={e => settings.setRatio(e.target.value)}><option value="">沿用项目预设</option>{["9:16","16:9","1:1","2:3","3:2","3:4","4:3","21:9"].map(v => <option key={v}>{v}</option>)}</select></label>
+    {([["起草",settings.creator,settings.setCreator],["独审",settings.reviewer,settings.setReviewer]] as const).map(([label,value,set]) =>
+      <label key={label}>{label}　<select aria-label={label} value={value} onChange={e => set(e.target.value)}>{Object.entries(PROVIDER_LABEL).map(([k,l]) => <option key={k} value={k}>{l}</option>)}</select></label>)}
+    <label>运行模式　<select value={settings.runMode} onChange={e => settings.setRunMode(e.target.value)}><option value="manual">手工</option><option value="expert">专家</option></select></label>
+    <button className="btn primary" onClick={close}>完成</button></div>;
 }

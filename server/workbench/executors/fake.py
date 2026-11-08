@@ -121,6 +121,8 @@ def directed(req: ExecRequest, name: str):
     request = sec.get("request", "")
     if MARK_QUOTA in request and name == "codex":
         return quota_exhausted(req)
+    if req.kind == "free_chat":
+        return {"reply":"已按本轮资料回应。"+request.strip()}
     if req.kind == "cut_explanation":
         ctx = context(p)
         at = int(re.search(r"atMs 填 (\d+)", p).group(1))
@@ -153,7 +155,13 @@ def directed(req: ExecRequest, name: str):
     kick = next((l for l in sec.get("kickoff", "").splitlines() if "【测试" in l), "")
     marked = request.strip() if "【测试" in request else kick.strip()
     if "synopsis" in writable:
-        return draft(req, **dict(STORY, synopsis=STORY["synopsis"] + (("\n" + marked) if marked else "")))
+        fields = dict(STORY, synopsis=STORY["synopsis"] + (("\n" + marked) if marked else ""))
+        if "adaptation_source" in sec and "base_version" not in sec:
+            source = _json.loads(sec["adaptation_source"].splitlines()[0])
+            unit = source["units"][0]
+            fields["adaptation"] = _json.dumps([dict(pack=source["pack"],unit=unit["code"],original=unit["original"],
+                adapted="值班员从未关的抽屉发现交接问题",reason="保留发现线索的顺序，更换人物与场景")],ensure_ascii=False)
+        return draft(req, **fields)
     base = sec.get("base_version")
     if "scenes" in writable:
         story = sec.get("adopted_story", "")
@@ -162,6 +170,11 @@ def directed(req: ExecRequest, name: str):
         if request.strip():
             scenes[-1]["action"] += f"（按要求：{request.strip()[:40]}）"
         return draft(req, scenes=_json.dumps(scenes, ensure_ascii=False))
+    if "shots" in writable and not base:
+        shots = [dict(id="K01",segment="G01",order=1,duration_ms=8000,camera="固定中景",action="测试角色推开店门。",
+                      origin=dict(scene="场01",line="测试分场"))]
+        segments = [dict(id="G01",order=1,strategy="flex")]
+        return draft(req, shots=_json.dumps(shots, ensure_ascii=False), segments=_json.dumps(segments))
     if "shots" in writable and base:
         plan = _json.loads(base)
         sel = re.search(r"（选区：(\{.*\})）", request)
@@ -172,7 +185,9 @@ def directed(req: ExecRequest, name: str):
                 if "俯拍" in request:
                     s["camera"] = "正俯拍 近景"
         return draft(req, shots=_json.dumps(plan["shots"], ensure_ascii=False))
+    if "prompt_scaffold" in sec and "segments" in writable:
+        return draft(req, segments=sec["prompt_scaffold"].strip())
     if "title" in writable:
         return draft(req, title="First Night Shift", body="Afu takes his first night shift.", suno_title="Night Shift",
-                     suno_style="lofi, quiet", suno_exclude="vocals")
+                     suno_style="lofi, quiet, 90 BPM", suno_exclude="vocals")
     return draft(req)

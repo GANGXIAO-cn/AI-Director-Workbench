@@ -158,7 +158,7 @@ def main():
             for p in ("cold_read", "comparison"):
                 drain(wb.start_prompt_review(pv, seg, p, f"pr-{code}-{seg}-{p}")["runId"])
         save_adopt(eid, "publish", dict(title="Backyard Rocket", body="MILO builds a cardboard rocket. LEO times it.",
-                                        tags=["rocket"], suno_title="Cardboard Countdown", suno_style="playful lofi, ukulele",
+                                        tags=["rocket"], suno_title="Cardboard Countdown", suno_style="playful lofi, ukulele, 92 BPM",
                                         suno_exclude="vocals, heavy drums",
                                         cues=[dict(at="00:26.000", action="压低"), dict(at="00:39.000", action="停"),
                                               dict(at="00:47.000", action="重新进入")]), code)

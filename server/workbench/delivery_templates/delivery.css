@@ -1,0 +1,43 @@
+/* Fixed light delivery theme, selected by the user on 2026-10-19. */
+*{box-sizing:border-box}
+body{margin:0;background:#f3f0e8;color:#202721;font:16px/1.65 system-ui,-apple-system,"PingFang SC",sans-serif}
+main{max-width:1120px;margin:auto;padding:32px 20px 60px}
+h1{font-size:clamp(30px,5vw,56px);line-height:1.1;letter-spacing:-.025em}
+h2{color:#295b45;font-size:26px;line-height:1.25}
+h1,h2,p,li{overflow-wrap:anywhere}
+a{color:#295b45;overflow-wrap:anywhere}
+section{margin:32px 0;padding:24px;background:#ffffff;border:1px solid #d5d9cf;border-radius:18px;scroll-margin-top:16px;min-width:0}
+ol.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:18px;list-style:none;padding:0;margin:20px 0;align-items:start}
+.card{background:#f4f4ee;padding:14px;border:1px solid #e0e3d9;border-radius:12px;min-width:0}
+.card img{display:block;max-width:100%;max-height:420px;object-fit:contain;margin:12px auto 0}
+.card a{display:block}
+.card p{margin:9px 0;font-size:14px}
+.card audio,.card video{width:100%;max-height:420px}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f4f5f1;color:#202721;border:1px solid #e0e3d9;padding:20px;border-radius:12px;max-width:100%;font:15px/1.8 system-ui,sans-serif}
+button{padding:12px 20px;background:#1b4937;color:#ffffff;border:0;border-radius:8px;font:inherit;font-weight:700;cursor:pointer}
+button:focus-visible,a:focus-visible{outline:3px solid #b67d25;outline-offset:3px}
+.meta{color:#566252}
+.pill{display:inline-block;background:#e2e9dc;color:#295b45;border-radius:30px;padding:3px 12px}
+.status{border-left:4px solid #68845c;padding:12px 18px;background:#e7eddf;border-radius:4px}
+nav{display:flex;flex-wrap:wrap;gap:10px 18px;margin:20px 0}
+nav.segments-nav a{padding:5px 12px;background:#ffffff;border:1px solid #d5d9cf;border-radius:8px;text-decoration:none}
+@media(max-width:500px){main{padding:18px 12px 40px}section{padding:15px}ol.cards{grid-template-columns:1fr}pre{padding:12px;font-size:14px}h2{font-size:23px}}
+
+/* Publish copy and music notes use the same light card theme. */
+article.publish-pack{margin:32px 0;padding:24px;background:#fff;border:1px solid #d5d9cf;border-radius:18px;scroll-margin-top:16px;min-width:0}
+.publish-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:0}
+.publish-card{margin:16px 0;min-width:0}
+.publish-card h3{margin:0 0 12px;color:#295b45;overflow-wrap:anywhere}
+.publish-card pre{margin-bottom:0}
+.publish-table-scroll{max-width:100%;overflow-x:auto}
+.publish-pack table{border-collapse:collapse;width:100%;font-size:14px}
+.publish-pack th,.publish-pack td{border:1px solid #d5d9cf;padding:10px;text-align:left;vertical-align:top;overflow-wrap:anywhere}
+.publish-pack th{background:#e7eddf}
+@media(max-width:600px){article.publish-pack{padding:15px}.publish-grid{grid-template-columns:1fr}}
+
+/* Inline closing selection reuses the existing inventory and controls. */
+.image-selection{margin:32px 0;scroll-margin-top:16px;min-width:0}
+.image-selection textarea{width:100%;min-height:140px;font:inherit}
+.image-selection input[type=text]{width:100%;font:inherit}
+.image-selection button{margin:8px 0}
+.image-selection .selection-tools{padding:20px;background:#fff;border-radius:16px}
