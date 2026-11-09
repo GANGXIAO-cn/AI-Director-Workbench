@@ -1,3 +1,4 @@
+import { KickoffCheck } from "./KickoffCheck";
 import { CooperationSelect } from "./Cooperation";
 import { Wrench } from "lucide-react";
 import { DirectorFiles, useDirectorCommand } from "./DirectorFiles";
@@ -179,6 +180,7 @@ export function Kickoff({ projectId, prefill, onClose, pictures=[] }: { projectI
   const [reviewer, setReviewer] = useState(prefill.reviewer ?? "codex");
   const [cm, setCm] = useState<{ model: string | null; effort: string | null }>({ model: null, effort: null });
   const [rm, setRm] = useState<{ model: string | null; effort: string | null }>({ model: null, effort: null });
+  const [conflictBlocked,setConflictBlocked]=useState(false);
   const [managePresets,setManagePresets]=useState(false);
   const [ratioOverride,setRatioOverride]=useState(prefill.ratio || "");
   const [presetName,setPresetName]=useState("default");
@@ -196,6 +198,10 @@ export function Kickoff({ projectId, prefill, onClose, pictures=[] }: { projectI
   const duration=Number(effectiveSpec.segmentMaxSeconds ?? 15);
   const validDuration=Number.isInteger(duration)&&duration>=5&&duration<=15;
   const required = p.settings.filter((s: any) => s.strength === "required").length;
+  const checkSource={project_id:projectId,display_code:p.episode.display_code,episode_id:prefill.episodeId ?? null,
+    source_type:source,idea_text:source==="idea"?idea:"",goal:source==="idea"?"":goal,
+    source_import_id:source==="import"?importId:null,topic_id:source==="topic"?topicId:null};
+  const hasSource=Boolean(source==="idea"?idea.trim():source==="topic"?topicId:importId);
   const start = () => act.run(async () => {
     const started=await submit("start_episode", {
       episode_id: prefill.episodeId ?? null, project_id:projectId, display_code:prefill.displayCode, leftover_facts:prefill.leftoverFacts, source_type: source, executor_plan: { create: { provider: creator, ...cm }, review: { provider: reviewer, ...rm } },
@@ -260,14 +266,16 @@ export function Kickoff({ projectId, prefill, onClose, pictures=[] }: { projectI
           <li>规格：{Object.entries(effectiveSpec).map(([k,v])=>(specLabels[k] ?? k)+" "+(specChoices[k]?.[String(v)] ?? String(v))).join(" · ")}</li>
         </ul>
       </div>
-      <div className="card"><Tag tone={validRatio && validDuration?"green":"red"}>{validRatio && validDuration?"画幅与段长符合 H3 规格":"请修正规格"}</Tag><p className="small">{!validRatio && "画幅不受支持。"}{!validDuration && "每段上限须为 5–15 之间的整数秒。"}本集必守设定在故事独审时逐条核对。</p></div>
+      <div className="card"><Tag tone={validRatio && validDuration?"green":"red"}>{validRatio && validDuration?"画幅与段长符合 H3 规格":"请修正规格"}</Tag><p className="small">{!validRatio && "画幅不受支持。"}{!validDuration && "每段上限须为 5–15 之间的整数秒。"}</p></div>
+      {required>0 && hasSource && <KickoffCheck key={JSON.stringify([checkSource,p.settingsRevision])} source={checkSource}
+        provider={creator} model={cm.model} effort={cm.effort} onBlock={setConflictBlocked}/>}
       {managePresets&&<Modal width={1040} onClose={()=>{setManagePresets(false);preview.reload();}}>
         <button className="btn" onClick={()=>{setManagePresets(false);preview.reload();}}>返回开工设置</button>
         <ProjectPresets pid={projectId}/></Modal>}
       <ErrorLine error={act.error} />{act.error&&<button className="btn" onClick={()=>preview.reload()}>刷新开工预览</button>}
       <div className="row" style={{ justifyContent: "flex-end", marginTop: 16 }}>
         <button className="btn" disabled={act.busy} onClick={onClose}>取消</button>
-        <button className="btn primary" disabled={act.busy || !validRatio || !validDuration || (source === "idea" ? !idea.trim() : source === "topic" ? !topicId : !importId)} onClick={start}>开工，进入故事稿</button>
+        <button className="btn primary" disabled={act.busy || conflictBlocked || !validRatio || !validDuration || !hasSource} onClick={start}>开工，进入故事稿</button>
       </div>
     </Modal>
   );

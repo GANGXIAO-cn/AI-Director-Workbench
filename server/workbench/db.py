@@ -14,6 +14,11 @@ CREATE TABLE IF NOT EXISTS api_provider(
   binding TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, probe_seq INTEGER NOT NULL DEFAULT 0,
   models TEXT NOT NULL DEFAULT '[]', labels TEXT NOT NULL DEFAULT '{}',
   checked_at REAL, synced_at REAL, diagnostic TEXT);
+CREATE TABLE IF NOT EXISTS kickoff_check(
+ basis TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES project(id), display_code TEXT NOT NULL,
+ state TEXT NOT NULL DEFAULT 'local', token TEXT, provider TEXT, model TEXT,
+ checks TEXT NOT NULL DEFAULT '[]', decisions TEXT NOT NULL DEFAULT '{}', error TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS kickoff_check_episode ON kickoff_check(project_id,display_code);
 CREATE TABLE IF NOT EXISTS app_setting(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS command(
   command_id TEXT PRIMARY KEY, kind TEXT NOT NULL, payload_hash TEXT NOT NULL,

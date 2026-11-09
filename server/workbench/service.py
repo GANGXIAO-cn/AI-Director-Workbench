@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import time
 
-from . import contracts, prompts, acting, shotrefs, imagechoices, attachments
+from . import kickoffchecks, contracts, prompts, acting, shotrefs, imagechoices, attachments
 from .db import dumps, initialize, new_id, transaction, connect
 from .executors.base import ExecRequest
 from .executors.cli import redact
@@ -35,7 +35,7 @@ COOPERATION = {
 }
 
 
-class Core:
+class Core(kickoffchecks.KickoffChecks):
     def __init__(self, data_dir: Path, executors: dict, clock=time.time, image_providers=None):
         self.store = Store(data_dir)
         self.db_path = self.store.db_path
@@ -48,6 +48,7 @@ class Core:
         with transaction(self.db_path) as db:   # text runs left running by a previous process: retryable, no paid side effect
             db.execute("UPDATE expert_auth SET state='stopped', stop_reason=? WHERE state='running'",
                        (dumps(dict(reason="interrupted", token=new_id(), detail="服务重启，请核对进度后恢复")),))
+            db.execute("UPDATE kickoff_check SET state='failed',error='服务重启时中断，可手动重试' WHERE state='running'")
             db.execute("UPDATE free_turn SET status='failed',reason='服务重启时中断，可核对后重试' WHERE status IN ('running','queued')")
             for run in db.execute("SELECT * FROM run WHERE status='running'").fetchall():
                 reason, detail = self._interrupted_result(db, run)
@@ -374,6 +375,15 @@ class Core:
                     raise Conflict("开工预览使用的预设已更新，请刷新后重新核对")
                 spec = validate_spec(dict(preset["values"], **(spec_overrides or {})))
                 revision, settings = self._settings(db, ep["project_id"])
+                if db.execute("SELECT 1 FROM kickoff_check WHERE project_id=? AND display_code=? LIMIT 1",
+                              (ep["project_id"], ep["display_code"])).fetchone():
+                    item = kickoffchecks.material(self, db, ep["project_id"], ep["display_code"], episode_id,
+                                                  source_type, idea_text, goal, source_import_id, topic_id)
+                    check = kickoffchecks.snapshot(db, item)
+                    if check["state"] == "running":
+                        raise Conflict("本集开工资料正在核对，请等待结果")
+                    if check["blocked"]:
+                        raise Conflict("必守设定与本集要求存在冲突，请修改要求或核对引文")
                 self._freeze_sources(db, episode_id, ep["project_id"])
                 kid = new_id()
                 db.execute("INSERT INTO kickoff VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",

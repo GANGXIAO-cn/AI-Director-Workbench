@@ -70,6 +70,7 @@ def default_image_providers():
 
 
 COMMANDS = {
+    "kickoff_check_view", "kickoff_check_run", "kickoff_check_decide",
     "revise_baseline", "follow_baseline",
     "start_topic_research", "accept_research_topic",
     "add_reply_to_canvas","send_free_chat","stop_free_chat","retry_free_chat",
