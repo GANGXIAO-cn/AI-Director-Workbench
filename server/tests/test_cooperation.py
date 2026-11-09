@@ -96,3 +96,98 @@ def test_trial_methods_at_every_stage_before_adoption(tmp_path,profile):
         if profile=="_template":
             assert not any(word in prompt.upper() for word in ("PUGGY","MILO","FOURTHWALL"))
     assert all(not a["versions"] for a in wb.episode_view(eid)["artifacts"])
+
+
+@pytest.mark.parametrize("mode", ["beginner","advanced","expert"])
+def test_adoption_protects_a_and_records_only_real_story_dependents(tmp_path,mode):
+    from workbench.executors.fake import draft
+    from workbench.service import EDITOR_GUARD
+    env = Env(tmp_path)
+    wb = env.wb
+    _, eid = env.new_episode()
+    wb.set_cooperation_mode(eid,mode,"advanced")
+    a = env.adopt_story(eid)
+    story = lambda: env.art(eid,"story")
+    art = story()
+    original = art["versions"][0]["content"]
+    # Only the first scene declares a source. The second is independently written.
+    script, _ = env.save_adopt(eid,"script",dict(scenes=[
+        dict(id="场01",action="看钟",source=dict(storyVersion=a)),dict(id="场02",action="推门")]))
+    assert art["editState"] == ("open" if mode=="expert" else "protected")
+    request = "请把最后的动作改成拨快分针"
+    b_text = original["synopsis"]+"\n他把钟楼的分针拨快一格。"
+    if mode != "expert":
+        wb.save_step_config(eid,"story",enhancements=["00-A"])
+        ask=wb.create_task(eid,"story","为什么留这个结尾？",workspace_revision=art["revision"])
+        env.drain(ask["runId"])
+        after=story()
+        assert len(after["versions"])==1 and after["editState"]=="protected"
+        assert after["tasks"][-1]["messages"][-1]["text"]=="本次只讨论当前稿件。"
+        env.codex.script.append(lambda req:dict(draft(req,synopsis=b_text),reply="",directorRequest=request))
+        queued=wb.post_message(ask["taskId"],request,"modify",base_version_id=a,workspace_revision=art["revision"])
+        env.drain(queued["runId"])
+        assert "00-A" in env.codex.calls[-1].prompt
+        assert not any(w in env.codex.calls[-1].prompt.upper() for w in ("PUGGY","MILO","FOURTHWALL"))
+        assert story()["editState"]=="editing"
+        stamp=story()["revision"]
+        wb.set_stage_edit(art["id"],False,stamp,"finish")
+        assert story()["editState"]=="protected"
+        token=EDITOR_GUARD.set([art["id"],stamp])
+        try:
+            with pytest.raises(Conflict):
+                wb.save_manual(art["id"],a,{"synopsis":"另一窗口已结束改稿"},"stale")
+        finally:
+            EDITOR_GUARD.reset(token)
+    else:
+        env.codex.script.append(lambda req:draft(req,synopsis=b_text))
+        env.drain(wb.create_task(eid,"story",request,workspace_revision=art["revision"])["runId"])
+    b = story()["versions"][-1]["id"]
+    assert story()["adopted_version_id"]==a and story()["versions"][0]["content"]==original
+    assert b!=a and wb.compare(a,b)["fields"].keys()=={"synopsis"}
+    assert not wb.impacts(eid)
+    preview = wb.adoption_preview(b)
+    assert [i["target"] for i in preview["items"]]==["剧本场次 场01"]
+    env.drain(wb.submit_review(b,"review-b")["runId"])
+    wb.adopt(art["id"],b,a,"adopt-b",False)
+    assert story()["editState"]==("open" if mode=="expert" else "protected")
+    assert env.art(eid,"script")["adopted_version_id"]==script
+    assert [i["target_ref"] for i in wb.impacts(eid)]==["剧本场次 场01"]
+    restore=wb.restore_version(a,b,"restore")["versionId"]
+    assert not wb.compare(a,restore)["fields"] and story()["adopted_version_id"]==b
+
+
+def test_late_edit_reply_cannot_reopen_closed_session(tmp_path):
+    from workbench.executors.fake import draft
+    env=Env(tmp_path)
+    wb=env.wb
+    _,eid=env.new_episode()
+    a=env.adopt_story(eid)
+    art=env.art(eid,"story")
+    req="给这版结尾加一场雨"
+    queued=wb.create_task(eid,"story",req,workspace_revision=art["revision"])
+    editing=wb.set_stage_edit(art["id"],True,art["revision"])
+    wb.set_stage_edit(art["id"],False,editing["revision"])
+    env.codex.script.append(lambda r:dict(draft(r,notes="加一场雨"),directorRequest=req,reply=""))
+    env.drain(queued["runId"])
+    after=env.art(eid,"story")
+    assert after["adopted_version_id"]==a and len(after["versions"])==2 and after["editState"]=="protected"
+
+
+@pytest.mark.parametrize("profile",["_template","puggy"])
+def test_protected_conversation_uses_stage_methods_and_keeps_all_five_versions(tmp_path,profile):
+    from workbench.enhancements import entries
+    env=Env(tmp_path)
+    wb=env.wb
+    eid=env.full_episode(config=profile,segments={"G01":[8000]},deliver=False)["eid"]
+    for stage,code in [("story","01-B"),("script","05-A"),("plan","00-A"),("prompts","05-C"),("publish","04-D")]:
+        wb.save_step_config(eid,stage,enhancements=[code])
+        art=env.art(eid,stage)
+        assert art["editState"]=="protected"
+        run=wb.create_task(eid,stage,"讨论这个阶段的写法",workspace_revision=art["revision"])
+        env.drain(run["runId"])
+        prompt=env.codex.calls[-1].prompt
+        assert all(part["text"] in prompt for part in entries([code]))
+        if profile=="_template":
+            assert not any(name in prompt.upper() for name in ("PUGGY","MILO","FOURTHWALL"))
+        after=env.art(eid,stage)
+        assert len(art["versions"])==len(after["versions"]) and after["editState"]=="protected"

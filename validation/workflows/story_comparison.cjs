@@ -5,7 +5,7 @@ const { chromium } = require("playwright");
 
 async function main() {
   const base = "http://127.0.0.1:"+process.env.ADW_TEST_PORT;
-  const output = path.join(__dirname,"../../修复验证_20261108");
+  const output = process.env.ADW_EVIDENCE_DIR || path.join(__dirname,"../../修复验证_20261108");
   const browser = await chromium.launch({executablePath:process.env.CHROME_PATH,headless:true});
   try {
     const page=await browser.newPage({viewport:{width:1440,height:960}});
@@ -21,12 +21,12 @@ async function main() {
     const original=before.adopted_version_id;
     const button = name=>page.getByRole("button",{name,exact:true});
     await page.goto(base+"/#/e/"+eid+"/story");
+    await button("修改本阶段").click();
     await button("✎ 编辑").click();
     await page.locator(".center textarea").first().fill("夜班收银台的伞丢了。阿福翻查记录，发现伞留在门后。故事结束。");
     await button("保存为手稿").click();
     const option=page.getByText("按本集分工并排出稿",{exact:true});
     await option.click();
-    await button("提交").click();
     await button("提交两份候选稿").waitFor();
     const source=new URLSearchParams(new URL(page.url()).hash.split("?")[1]).get("compare");
     assert.ok(source && source!==original);

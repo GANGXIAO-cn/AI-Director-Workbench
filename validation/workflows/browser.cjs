@@ -98,7 +98,7 @@ async function main() {
       if(eid) await check("inspect the adopted prompt rhythm and edit a plan table in a new draft",async()=>{
         await go("e/"+eid+"/prompts");await page.getByText("镜头充分性与节奏核对",{exact:true}).click();
         await page.getByRole("columnheader",{name:"实际镜头"}).waitFor();
-        await go("e/"+eid+"/plan");await page.getByText("镜头充分性与节奏核对",{exact:true}).click();
+        await go("e/"+eid+"/plan");await btn("修改本阶段").click();await page.getByText("镜头充分性与节奏核对",{exact:true}).click();
         const table=page.getByRole("textbox",{name:"镜头充分性联合表"});
         const original=await table.inputValue();assert.match(original,/TXT定位短句/);
         await table.fill("# 保存后的方案表\n"+original);
@@ -170,7 +170,7 @@ async function main() {
         await page.locator(".canvas-board").waitFor();await left.waitFor({state:"detached"});
       });
       await check("preview dialogue timing, correct overflow, save a version and keep the adopted plan",async()=>{
-        await go("e/"+seed.id+"/plan"); await btn("表演与台词读秒").click();
+        await go("e/"+seed.id+"/plan"); await btn("修改本阶段").click(); await btn("表演与台词读秒").click();
         const before=(await view(seed.id)).artifacts.find(a=>a.stage==="plan").adopted_version_id;
         await page.getByLabel("表情、姿势与动作").fill("指尖压住票根，回头看门。");
         await btn("添加一句台词").click(); await page.getByLabel("说话者").fill("站务员");

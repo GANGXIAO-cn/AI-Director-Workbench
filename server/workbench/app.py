@@ -18,7 +18,7 @@ from .executors import AntigravityExecutor, ClaudeExecutor, CodexExecutor
 from .executors.cli import CliExecutor
 from .images import OpenAIImageMCPProvider
 from .methodpack import REPO, list_configs
-from .service import Conflict, NotFound, Rejected, Workbench
+from .service import EDITOR_GUARD, Conflict, NotFound, Rejected, Workbench
 
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]"}
 
@@ -76,7 +76,7 @@ COMMANDS = {
     "start_story_comparison", "preview_acting",
     "add_script_document", "refresh_script_index", "restore_step_revision",
     "use_fixed_role", "import_historical_episode", "episode_contact_sheet", "save_contact_options", "export_episode_contact_sheet", "historical_contact_sheet", "export_historical_contact_sheet", "save_product_placement", "set_project_sections", "use_project_product", "mount_resource", "restore_version", "set_stage_methods", "set_custom_methods", "save_palettes", "add_palette", "set_episode_palettes", "save_step_config",
-    "set_cooperation_mode", "set_optional_stage", "export_project_folder", "create_project", "rename_project", "set_recent_visibility", "visit_project", "create_episode", "record_leftovers", "start_episode", "create_task", "post_message", "retry_run",
+    "set_cooperation_mode", "set_stage_edit", "set_optional_stage", "export_project_folder", "create_project", "rename_project", "set_recent_visibility", "visit_project", "create_episode", "record_leftovers", "start_episode", "create_task", "post_message", "retry_run",
     "save_manual", "submit_review", "waive", "adopt", "answer_clarification", "abandon_task", "stop_run", "open_stage", "save_canvas", "combine", "split_segment",
     "resolve_impact", "create_pack", "edit_cuts", "add_beat", "bookmark", "save_pack", "adapt_from_pack",
     "add_space_item", "confirm_space_item", "set_cast", "set_role_baseline", "save_shot_observation", "reorder_refs", "edit_prompt_reference", "set_sound", "submit_reuse", "review_library",
@@ -315,8 +315,13 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
             args = dict(args, command_id=secrets.token_hex(12))
         if "command_id" not in params:
             args = {k: v for k, v in args.items() if k != "command_id"}   # the UI always sends one
+        guard = args.pop("editor_guard", None)
         check_call_args(signature, args)
-        result = fn(**args)
+        token = EDITOR_GUARD.set(guard)
+        try:
+            result = fn(**args)
+        finally:
+            EDITOR_GUARD.reset(token)
         if isinstance(result, dict):
             if result.get("runId"):
                 worker.submit(result["runId"])

@@ -22,6 +22,7 @@ async function main() {
     const initial=await artifact();
     const original=initial.adopted_version_id;
     await page.goto(base+"/#/e/"+eid+"/prompts?v="+original);
+    await page.getByRole("button",{name:"修改本阶段",exact:true}).click();
     const field=page.getByLabel("G01 提示词正文");
     const source=await field.inputValue();
     const marker="non_diegetic_music: N/A";

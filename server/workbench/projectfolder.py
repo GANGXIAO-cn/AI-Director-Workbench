@@ -16,6 +16,7 @@ from .storage import canonical, file_sha256, sha256_bytes
 MARKER = "导演工作台项目.json"
 # Tables without a direct project_id or episode_id have one owning parent.
 PARENTS = {
+    "stage_edit_session": ("artifact_id","artifact"),
     "free_turn": ("thread_id","free_thread"),
     "import_extraction": ("import_id", "import_record"), "topic_source": ("topic_id","topic"),
     "version": ("artifact_id","artifact"), "thread": ("task_id","task"), "message": ("thread_id","thread"),

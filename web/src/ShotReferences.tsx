@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { blob, cmd } from "./api";
+import { blob } from "./api";
 import { ErrorLine, useAction, useQuery } from "./ui";
 
 const rolesField="实际可见角色ID", propsField="关键道具状态";
@@ -49,7 +49,7 @@ function Observation({ctx,version,sid,asset,refItem,packet,save,draft}:any) {
   const [other,setOther]=useState(serialize(reviewed?.other_uses));
   const act=useAction();
   async function submit() {
-    const result=await cmd("save_shot_observation",{version_id:version,segment:sid,asset_version_id:asset.id,expected_sha256:asset.sha256,
+    const result=await ctx.write("save_shot_observation",{version_id:version,segment:sid,asset_version_id:asset.id,expected_sha256:asset.sha256,
       draft,shots,observed:note,prominent_props:pairs(props,"显眼道具"),conflicts:conflicts.split("\n").map((s:string)=>s.trim()).filter(Boolean),
       combined,other_uses:combined?pairs(other,"附加用途"):{}});
     save(result.versionId);ctx.reload();
@@ -80,7 +80,7 @@ function MediaScope({ctx, version, sid, entry, refItem, packet, save, draft}:any
       const artifact=ctx.view.artifacts.find((a:any)=>a.stage==="prompts");
       const base=artifact.versions.find((v:any)=>v.id===version);
       const refs=entry.refs.map((ref:any)=>ref.assetVersionId===refItem.assetVersionId?{...ref,shots}:ref);
-      const r=await cmd("save_manual",{artifact_id:artifact.id,base_version_id:version,
+      const r=await ctx.write("save_manual",{artifact_id:artifact.id,base_version_id:version,
         content:{...base.content,segments:{...base.content.segments,[sid]:{...entry,refs,txt:draft.txt,
           sound:{...entry.sound,ambience:draft.ambience,dialogue:draft.dialogue}}}},note:"登记媒体作用镜头"});
       save(r.versionId);ctx.reload();

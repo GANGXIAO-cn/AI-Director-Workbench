@@ -31,6 +31,7 @@ async function main() {
       }
     }
     await page.goto(base+"/#/e/"+eid+"/prompts?v="+version);
+    await page.getByRole("button",{name:"修改本阶段",exact:true}).click();
     const oldText = page.getByLabel("G01 提示词正文");
     const draft = (await oldText.inputValue())+"\n编辑中的句子";
     await oldText.fill(draft);

@@ -394,3 +394,6 @@ kbd { border-radius: 4px; background: var(--card2); padding: 2px 5px; }
 .stage-views { display: flex; flex: none; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--line); }
 .stage-views [aria-pressed="true"] { color: var(--ink); background: var(--card2); }
 .episode-workspace > .ws { min-height: 0; }
+
+.edit-fields{border:0;padding:0;margin:0;min-width:0}
+.revision-bar{margin-block:10px;gap:12px;flex-wrap:wrap}

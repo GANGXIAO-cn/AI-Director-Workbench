@@ -45,6 +45,7 @@ async function main() {
     }
     await page.setViewportSize({width:1440,height:900});
     await page.goto(base+"/"+preview+"/story");
+    await page.getByRole("button",{name:"修改本阶段",exact:true}).click();
     await btn("阶段技能").click();
     await page.getByLabel("显示全部阶段的方法").check();
     assert.equal(await page.locator("fieldset").getByRole("checkbox").count(),72);
@@ -103,6 +104,7 @@ async function main() {
     assert.ok(!(await q("canvas_view",{episode_id:episode})).doc.nodes.some(n=>n.id===nodeId));
     await page.goto(base+"/"+preview+"/plan");
     const plan = async ()=>(await q("episode_view",{episode_id:episode})).artifacts.find(a=>a.stage==="plan");
+    await page.getByRole("button",{name:"修改本阶段",exact:true}).click();
     const originalPlan = await plan();
     await page.locator(".shotcard").first().click();
     await btn("删除镜头").click();

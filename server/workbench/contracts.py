@@ -35,3 +35,14 @@ def wrapped_schema() -> dict:
     """{result: draft | clarification} for runs where the assistant may ask first."""
     return {"type": "object", "properties": {"result": {"anyOf": [branch_schema("draft"), branch_schema("clarification")]}},
             "required": ["result"], "additionalProperties": False}
+
+
+def stage_dialogue_schema():
+    schema = branch_schema("draft")
+    fields = schema["properties"]
+    fields["kind"] = {"enum":["discussion","draft"]}
+    fields["changes"]["minItems"] = 0
+    fields["reply"] = {"type":"string"}
+    fields["directorRequest"] = {"type":"string"}
+    schema["required"].extend(["reply","directorRequest"])
+    return schema

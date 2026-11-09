@@ -197,6 +197,41 @@ class ProductionMixin:
             out.append(dict(item, id=iid))
         return out
 
+    def _story_dependents(self, db, episode_id, old, new):
+        if not old or stages.render("story", old) == stages.render("story", new):
+            return []
+        script = db.execute("SELECT v.* FROM artifact a JOIN version v ON v.id=a.adopted_version_id "
+                            "WHERE a.episode_id=? AND a.stage='script'", (episode_id,)).fetchone()
+        if not script:
+            return []
+        script = dict(script)
+        scenes = json.loads(script["content"]).get("scenes", [])
+        sources = {r["id"]: stages.render("story", json.loads(r["content"])) for r in db.execute(
+            "SELECT v.id,v.content FROM artifact a JOIN version v ON v.artifact_id=a.id "
+            "WHERE a.episode_id=? AND a.stage='story'", (episode_id,))}
+        target = stages.render("story", new)
+        items = []
+        missing_source = not scenes
+        for scene in scenes:
+            source = scene.get("source")
+            reference = source.get("storyVersion") if isinstance(source, dict) else None
+            if not isinstance(reference, str) or reference not in sources:
+                missing_source = True
+                continue
+            if sources[reference] != target:
+                items.append(dict(target="剧本场次 "+scene["id"], reason="本场引用的故事版本与新采用稿内容不同"))
+        if missing_source:
+            for item in self._version_materials(db, script, {"adopted_story"}):
+                header, _, body = item["text"].partition("\n\n")
+                if header.startswith("工作台采用版本："):
+                    body = sources.get(header.splitlines()[0].removeprefix("工作台采用版本："), body)
+                else:
+                    body = item["text"]
+                if body.strip() != target.strip():
+                    items.append(dict(target="分场剧本", reason="剧本起草时引用的故事正文与新采用稿不同"))
+                    break
+        return items
+
     def _after_adopt(self, db, art, version_id, previous_id):
         content = json.loads(db.execute("SELECT content FROM version WHERE id=?", (version_id,)).fetchone()[0])
         old = json.loads(db.execute("SELECT content FROM version WHERE id=?", (previous_id,)).fetchone()[0]) \
@@ -205,7 +240,8 @@ class ProductionMixin:
         if art["stage"] == "story":
             db.execute("UPDATE topic SET status='已成稿' WHERE episode_id=? AND status IN ('开发中','待审稿')",
                        (art["episode_id"],))
-            return []
+            return self._record_impacts(db, art, self._story_dependents(db, art["episode_id"], old, content),
+                                        "story_change", ref)
         if art["stage"] == "script" and old:
             changed = {s["id"] for s in content.get("scenes", [])} ^ {s["id"] for s in old.get("scenes", [])}
             olds = {s["id"]: s for s in old.get("scenes", [])}
@@ -1090,8 +1126,9 @@ class ProductionMixin:
             old = self._adopted_content(db, art["episode_id"], art["stage"])
             plan = self._adopted_content(db, art["episode_id"], "plan") or {}
             prompts_ = self._adopted_content(db, art["episode_id"], "prompts") or {}
-            downstream_adopted = {s: bool(self._adopted_content(db, art["episode_id"], s))
-                                  for s in ("script", "plan", "prompts", "publish")}
+            if art["stage"] == "story":
+                items = self._story_dependents(db, art["episode_id"], old, v["content"])
+                return dict(stage="story", items=[dict(item,kind="recheck") for item in items], unaffected=[])
         items, kept = [], []
         if art["stage"] == "plan":
             pre = timeline.preview(old, v["content"])
@@ -1118,8 +1155,6 @@ class ProductionMixin:
             for seg, e in (v["content"].get("segments") or {}).items():
                 if (old.get("segments") or {}).get(seg) != e:
                     items.append(dict(target=f"两遍独审 {seg}", reason="TXT 或参考变化，需重审该段及接点", kind="recheck"))
-        elif art["stage"] == "story" and downstream_adopted["script"]:
-            items.append(dict(target="分场剧本", reason="故事变化，按实际依赖复核", kind="recheck"))
         dedup = []
         for it in items:
             if it not in dedup:

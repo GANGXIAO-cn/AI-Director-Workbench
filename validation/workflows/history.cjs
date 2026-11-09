@@ -72,6 +72,7 @@ async function main() {
     assert.equal((await episodeView(eid)).artifacts.find(a=>a.stage==="story").adopted_version_id,old);
     assert.ok(!(await episodeView(episode("E02"))).storyManuscript);
     const composer = page.getByPlaceholder("输入你的想法，继续完善这一集");
+    await page.getByRole("button",{name:"修改本阶段",exact:true}).click();
     await composer.fill("参考刚导入的夜班补充稿");
     await composer.press("Control+Enter");
     await page.waitForFunction(()=>document.querySelector(".composer textarea")?.value==="");

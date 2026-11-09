@@ -121,6 +121,8 @@ def directed(req: ExecRequest, name: str):
     request = sec.get("request", "")
     if MARK_QUOTA in request and name == "codex":
         return quota_exhausted(req)
+    if "directorRequest" in req.schema.get("properties", {}):
+        return dict(draft(req), kind="discussion", changes=[], directorRequest="", reply="本次只讨论当前稿件。")
     if req.kind == "free_chat":
         return {"reply":"已按本轮资料回应。"+request.strip()}
     if req.kind == "cut_explanation":

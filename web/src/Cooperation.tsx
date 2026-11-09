@@ -35,3 +35,18 @@ export function OptionalStage({eid, stage, skippedReason, reload}: {
     <button type="button" className="btn ghost" disabled={act.busy} onClick={()=>{setEditing(false);setReason("");act.clear();}}>取消</button>
   </form> : <button className="btn ghost" onClick={()=>setEditing(true)}>跳过这一步</button>}<ErrorLine error={act.error}/></section>;
 }
+
+type StageEdit = {id:string; revision:number;editState:"open"|"protected"|"editing"};
+export async function changeStageEdit(art:StageEdit, editing:boolean) {
+  return cmd("set_stage_edit",{artifact_id:art.id,expected_revision:art.revision,editing});
+}
+
+export function RevisionBar({art,reload}: {art:StageEdit;reload:()=>Promise<void>}) {
+  const act=useAction();
+  if (art.editState==="open") return null;
+  const locked=art.editState==="protected";
+  return <section className="row revision-bar" aria-label="阶段改稿状态"><span>{locked?"已采用稿受保护":"改稿中 · 新稿另存"}</span>
+    <button className="btn" disabled={act.busy} onClick={()=>act.run(async()=>{
+      await changeStageEdit(art,locked);await reload();
+    })}>{locked?"修改本阶段":"结束修改"}</button><ErrorLine error={act.error}/></section>;
+}

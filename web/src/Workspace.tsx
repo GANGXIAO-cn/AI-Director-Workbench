@@ -1,5 +1,6 @@
 import { StageTrial } from "./StageTrial";
-import { EpisodeCooperation, OptionalStage } from "./Cooperation";
+import { VersionCompare } from "./VersionCompare";
+import { EpisodeCooperation, OptionalStage, RevisionBar } from "./Cooperation";
 import { budgetAmount, budgetCents } from "./budget";
 import { PublishCues } from "./PublishCues";
 import { MediaPreview, PromptMedia } from "./PromptMedia";
@@ -26,7 +27,7 @@ import { ColumnDivider, savedWidths, type Widths } from "./WorkspaceColumns";
 import { frameOrientation } from "./specs";
 
 type Ctx = {
-  openTrial:()=>void; view: any; eid: string; reload: () => Promise<void>; sel: Selection; setSel: (s: Selection) => void; assets: any[];
+  write:(name:string,args:Record<string,any>)=>Promise<any>; locked:boolean; openTrial:()=>void; view: any; eid: string; reload: () => Promise<void>; sel: Selection; setSel: (s: Selection) => void; assets: any[];
   batches: any[]; focus: string | null; setFocus: (v: string | null) => void; openBatch: (b: any) => void;
 };
 
@@ -108,7 +109,9 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
     return <div className="page">当前阶段的版本列表中没有此稿。
       <button className="btn" onClick={view.reload}>刷新版本列表</button><button className="btn" onClick={()=>setFocus(null)}>返回当前稿</button></div>;
   }
-  const ctx: Ctx = { view: v, eid: id, reload, sel, setSel, assets: assets.data ?? [], batches: batches.data ?? [], focus, setFocus,
+  const stageArtifact = artifactFor(v,stage);
+  const ctx: Ctx = { locked:stageArtifact?.editState==="protected", view: v, eid: id, reload, sel, setSel, assets: assets.data ?? [], batches: batches.data ?? [], focus, setFocus,
+    write:(name,args)=>cmd(name,{...args,editor_guard:[stageArtifact.id,stageArtifact.revision]}),
     openBatch: setBatch, openTrial:()=>setTrialRoute(id+":"+stage) };
   const adopted = (s: string) => !!v.artifacts.find((a: any) => a.stage === s)?.adopted_version_id;
   const status = (s: string) => {
@@ -149,8 +152,9 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
             <span className="chip">▯ {v.kickoff.spec.aspectRatio}</span>
             <a className="chip" href={`#/p/${v.episode.project_id}/expert${expertParam ? "/" + expertParam : ""}?episode=${id}`}>⇄ 手工 · 专家模式</a>
           </div>
+          {stageArtifact && <RevisionBar art={stageArtifact} reload={view.reload}/>}
           {["space","cast"].includes(stage) && <OptionalStage key={id+stage} eid={id} stage={stage} skippedReason={v.skippedStages[stage] || ""} reload={view.reload}/>}
-          {stage==="package"?<PackageView ctx={ctx} panel={packagePanel}/>:!v.skippedStages[stage] && <StageView stage={stage} ctx={ctx} />}
+          {stage==="package"?<PackageView ctx={ctx} panel={packagePanel}/>:!v.skippedStages[stage] && <StageView key={id+stage+String(ctx.locked)} stage={stage} ctx={ctx} />}
         </div>
         {stage==="package" && <aside className="assistant package-aside" aria-label="出包设置" ref={setPackagePanel}/>}
         {!canvasMode && stage!=="package" && <Assistant key={id + ":" + stage} composeRef={composeRef} openTrial={ctx.openTrial} openRequirements={()=>setRequirements(true)} view={v} stage={stage} sel={sel} setSel={setSel} reload={reload} focus={focus} batches={ctx.batches} onOpenBatch={setBatch} />}
@@ -221,15 +225,19 @@ function useVersion(ctx: Ctx, stage: string) {
 
 function VersionTabs({ ctx, art, current }: { ctx: Ctx; art: any; current: any }) {
   const [show, setShow] = useState(false);
+  const [compare,setCompare] = useState(false);
   const { go } = useProjectRoute();
   const act=useAction();
   const refs=useQuery<any>(show && current ? "version_sources":null,{version_id:current?.id});
   return <div className="row">{art.versions.map((v: any) => (
-    <button key={v.id} className={`pill ${v.id === current?.id ? "on" : ""}`} onClick={() => ctx.setFocus(v.id)}>
+    <button key={v.id} title={rno(v.display_no)+" · "+new Date(v.created_at*1000).toLocaleString()} className={`pill ${v.id === current?.id ? "on" : ""}`} onClick={() => ctx.setFocus(v.id)}>
       {rno(v.display_no)}{v.origin === "manual" ? " 手稿" : v.origin === "combined" ? " 组合" : ""}{art.adopted_version_id === v.id ? " ✓" : ""}</button>))}
+    {current && <time className="muted small" dateTime={new Date(current.created_at*1000).toISOString()}>{new Date(current.created_at*1000).toLocaleString()}</time>}
+    {art.versions.length>1 && <button className="btn" onClick={()=>setCompare(true)}>比较版本</button>}
+    {compare && <VersionCompare versions={art.versions} current={current.id} adopted={art.adopted_version_id} close={()=>setCompare(false)}/>}
     <button className="btn" onClick={()=>setShow(true)}>版本来源</button>
-    {current && current.id!==art.versions[art.versions.length-1]?.id && <button className="btn" disabled={act.busy} onClick={()=>act.run(async()=>{
-      const r=await cmd("restore_version",{version_id:current.id,expected_adopted_version_id:art.adopted_version_id});
+    {current && current.id!==art.versions[art.versions.length-1]?.id && <button className="btn" disabled={act.busy || ctx.locked} onClick={()=>act.run(async()=>{
+      const r=await ctx.write("restore_version",{version_id:current.id,expected_adopted_version_id:art.adopted_version_id});
       await ctx.reload(); ctx.setFocus(r.versionId);})}>恢复此完整稿为新版本</button>}<ErrorLine error={act.error}/>
     {show && <Modal width={760} onClose={()=>setShow(false)}><h2>{rno(current.display_no)} 的来源</h2>
       {refs.error && <p className="error">{refs.error}</p>}
@@ -308,7 +316,7 @@ function StoryView({ ctx }: { ctx: Ctx }) {
   const act = useAction();
   useEffect(() => { setDraft(current?.content ?? {}); setEdit(false); }, [current?.id]);
   const editId=params.get("edit")==="1" ? params.get("v") : null;
-  useEffect(()=>{if (editId && current?.id===editId) {setEdit(true);setTab("synopsis");}},[hash,editId,current?.id]);
+  useEffect(()=>{if (!ctx.locked && editId && current?.id===editId) {setEdit(true);setTab("synopsis");}},[hash,editId,current?.id,ctx.locked]);
   const k = ctx.view.kickoff;
   const manuscript = ctx.view.storyManuscript;
   const pictures = ctx.assets.filter(a=>a.origin==="kickoff_reference" && a.version_no===1);
@@ -340,8 +348,8 @@ function StoryView({ ctx }: { ctx: Ctx }) {
       <div className="spread"><div className="tabs">{[["synopsis", "故事梗概"], ["cast", "角色表"], ["handoff", "交接说明"], ["notes", "开发辅助"], ["review", "独立审查"], ["compare","并排出稿"], ...(ctx.view.sourceImport ? [["source", "来源原文"]] : [])].map(([t, l]) => (
         <button key={t} className={`tab ${tab === t ? "on" : ""}`} onClick={() => {if(t==="compare") setPairSource(art.comparisons?.find((c:any)=>c.version_id===current.id)?.source_version_id || current.id);setTab(t);}}>{l}</button>))}</div>
         {tab!=="compare" && <div className="row">{edit ? <><button className="btn" onClick={() => setEdit(false)}>取消</button>
-          <button className="btn primary" onClick={() => act.run(async () => { const r = await cmd("save_manual", { artifact_id: art.id, base_version_id: current.id, content: draft }); await ctx.reload(); ctx.setFocus(r.versionId); })}>保存为手稿</button></>
-          : <button className="btn" onClick={() => {setDraft(current.content);setEdit(true);}}>✎ 编辑</button>}</div>}</div>
+          <button className="btn primary" onClick={() => act.run(async () => { const r = await ctx.write("save_manual", { artifact_id: art.id, base_version_id: current.id, content: draft }); await ctx.reload(); ctx.setFocus(r.versionId); })}>保存为手稿</button></>
+          : <button className="btn" disabled={ctx.locked} onClick={() => {setDraft(current.content);setEdit(true);}}>✎ 编辑</button>}</div>}</div>
       {sourcePanel}
       {tab === "synopsis" && (edit ? <textarea style={{ minHeight: 260, marginTop: 12 }} value={storyText(draft.synopsis)} onChange={(e) => setDraft({ ...draft, synopsis: e.target.value })} /> : (
         <div className="field" style={{ marginTop: 12, border: "1px solid #2b5fb8" }}>{paras.map((p: string, i: number) => (
@@ -358,7 +366,7 @@ function StoryView({ ctx }: { ctx: Ctx }) {
           update={edit ? (adaptation:any)=>setDraft({...draft,adaptation}) : undefined}/>}
         {!edit && !["spine","timeline","props","causes","notes","adaptation"].some(k => current.content[k]) && <p className="muted">本稿未使用开发辅助表。</p>}
       </div>}
-      {tab==="compare" && <StoryComparison key={pairSource || current.id} sourceId={pairSource || current.id} select={setPairSource}
+      {tab==="compare" && <StoryComparison write={ctx.write} locked={ctx.locked} key={pairSource || current.id} sourceId={pairSource || current.id} select={setPairSource}
         plan={k.executor_plan} art={art} reload={ctx.reload} open={(vid:string)=>{setTab("synopsis");go("#/e/"+ctx.eid+"/story?v="+vid);}}/>}
       {current.gate.formatErrors.length > 0 && <div className="card red" style={{ marginTop: 12 }}><b className="error">结构错误（不能放行）</b><ul className="small">{current.gate.formatErrors.map((e: string) => <li key={e}>{e}</li>)}</ul></div>}
       {tab!=="compare" && (tab === "review" || review) && <StoryReview ctx={ctx} version={current} review={review} />}
@@ -501,8 +509,8 @@ function ScriptView({ ctx }: { ctx: Ctx }) {
       <div className="spread"><div className="tabs">{[["full", "全文"], ["outline", "阶段大纲"], ["budget", "分段与时长预算"], ["diff", "差异"], ["side", "并排比较"]].map(([t, l]) => (
         <button key={t} className={`tab ${tab === t ? "on" : ""}`} onClick={() => t === "side" ? openSide() : setTab(t)}>{l}</button>))}</div>
         <div className="row">{editScenes ? <><button className="btn" onClick={() => setEditScenes(null)}>取消</button>
-          <button className="btn primary" onClick={() => act.run(async () => { const r = await cmd("save_manual", { artifact_id: art.id, base_version_id: current.id, content: { ...current.content, scenes: editScenes } }); setEditScenes(null); await ctx.reload(); ctx.setFocus(r.versionId); })}>保存为手稿</button></>
-          : <button className="btn" onClick={() => setEditScenes(JSON.parse(JSON.stringify(scenes)))}>✎ 编辑</button>}</div></div>
+          <button className="btn primary" onClick={() => act.run(async () => { const r = await ctx.write("save_manual", { artifact_id: art.id, base_version_id: current.id, content: { ...current.content, scenes: editScenes } }); setEditScenes(null); await ctx.reload(); ctx.setFocus(r.versionId); })}>保存为手稿</button></>
+          : <button className="btn" disabled={ctx.locked} onClick={() => setEditScenes(JSON.parse(JSON.stringify(scenes)))}>✎ 编辑</button>}</div></div>
       {editScenes && editScenes.map((sc: any, i: number) => (
         <div key={i} style={{ marginTop: 12 }}><div className="row"><input value={sc.id} onChange={(e) => { const x = [...editScenes]; x[i] = { ...sc, id: e.target.value }; setEditScenes(x); }} style={{ width: 90 }} />
           <input value={sc.heading ?? ""} onChange={(e) => { const x = [...editScenes]; x[i] = { ...sc, heading: e.target.value }; setEditScenes(x); }} placeholder="内外景 · 时段" /></div>
@@ -535,8 +543,8 @@ function ScriptView({ ctx }: { ctx: Ctx }) {
               <div className="row">{["scenes", "notes"].map((f) => <button key={f} className={`pill ${picks[f] === v.id ? "on" : ""}`} onClick={() => setPicks({ ...picks, [f]: v.id })}>取{f === "scenes" ? "场次" : "说明"}</button>)}</div></div>
               {(v.content.scenes ?? []).map((s: any) => <div key={s.id} className="small" style={{ margin: "6px 0" }}><b>{s.id}</b> {s.action}</div>)}
               {v.content.notes && <div className="muted small">说明：{v.content.notes}</div>}</div>))}</div>
-          <div className="row" style={{ marginTop: 10 }}><button className="btn primary" disabled={Object.keys(picks).length === 0} onClick={() => act.run(async () => {
-            const r = await cmd("combine", { artifact_id: art.id, picks }); await ctx.reload(); ctx.setFocus(r.versionId); setTab("full"); })}>组合成新的待审稿</button>
+          <div className="row" style={{ marginTop: 10 }}><button className="btn primary" disabled={ctx.locked || Object.keys(picks).length === 0} onClick={() => act.run(async () => {
+            const r = await ctx.write("combine", { artifact_id: art.id, picks }); await ctx.reload(); ctx.setFocus(r.versionId); setTab("full"); })}>组合成新的待审稿</button>
             <button className="btn" onClick={closeSide}>关闭比较</button></div>
         </div>)}
       <ErrorLine error={act.error} />
@@ -606,14 +614,14 @@ function PlanView({ ctx }: { ctx: Ctx }) {
         <div key={s.id} className="card amber" style={{ marginTop: 10 }}>
           <b>{s.id} 共 {s.duration / 1000} 秒，超过 15 秒</b><span className="muted small"> · 须在动作完成处拆段，修复前阻断交付</span>
           <div className="row" style={{ marginTop: 8 }}>{s.shots.slice(1).map((sid: string) => (
-            <button key={sid} className="btn" onClick={() => act.run(async () => { const r = await cmd("split_segment", { version_id: current.id, segment_id: s.id, first_shot_of_second: sid }); await ctx.reload(); ctx.setFocus(r.versionId); })}>在 {sid} 前拆开</button>))}</div>
+            <button key={sid} className="btn" disabled={ctx.locked} onClick={() => act.run(async () => { const r = await ctx.write("split_segment", { version_id: current.id, segment_id: s.id, first_shot_of_second: sid }); await ctx.reload(); ctx.setFocus(r.versionId); })}>在 {sid} 前拆开</button>))}</div>
         </div>))}
-      <RhythmReview version={current.id} save={async rhythmTable=>{
-        const r=await cmd("save_manual",{artifact_id:art.id,base_version_id:current.id,content:{rhythmTable},note:"编辑镜头充分性联合表"});
+      <fieldset className="edit-fields" disabled={ctx.locked}><RhythmReview version={current.id} save={async rhythmTable=>{
+        const r=await ctx.write("save_manual",{artifact_id:art.id,base_version_id:current.id,content:{rhythmTable},note:"编辑镜头充分性联合表"});
         await ctx.reload(); ctx.setFocus(r.versionId);
-      }}/>
-      {tab === "acting" && <PlanActing key={current.id} version={current} episodeId={ctx.eid} assets={ctx.assets} onSave={async shots=>{
-        const r = await cmd("save_manual", {artifact_id:art.id, base_version_id:current.id, content:{shots}, note:"更新表演与台词时长"});
+      }}/></fieldset>
+      {tab === "acting" && <PlanActing locked={ctx.locked} key={current.id} version={current} episodeId={ctx.eid} assets={ctx.assets} onSave={async shots=>{
+        const r = await ctx.write("save_manual", {artifact_id:art.id, base_version_id:current.id, content:{shots}, note:"更新表演与台词时长"});
         await ctx.reload(); ctx.setFocus(r.versionId);
       }}/>}
       {tab === "shots" && scenes.map((sc) => (
@@ -633,8 +641,8 @@ function PlanView({ ctx }: { ctx: Ctx }) {
           </div>
         </div>))}
       {tab === "segments" && <table className="table" style={{ marginTop: 12 }}><thead><tr><th>段</th><th>策略</th><th>全片时间</th><th>段长</th><th>镜头</th></tr></thead>
-        <tbody>{lay.segments.map((s: any) => <tr key={s.id}><td>{s.id}</td><td><select value={s.strategy} onChange={(e) => act.run(async () => {
-          const r = await cmd("save_manual", { artifact_id: art.id, base_version_id: current.id, note: `${s.id} 改为 ${e.target.value}`,
+        <tbody>{lay.segments.map((s: any) => <tr key={s.id}><td>{s.id}</td><td><select disabled={ctx.locked} value={s.strategy} onChange={(e) => act.run(async () => {
+          const r = await ctx.write("save_manual", { artifact_id: art.id, base_version_id: current.id, note: `${s.id} 改为 ${e.target.value}`,
             content: { ...current.content, segments: current.content.segments.map((g: any) => g.id === s.id ? { ...g, strategy: e.target.value } : g) } });
           await ctx.reload(); ctx.setFocus(r.versionId); })}><option value="flex">flex</option><option value="grid">grid</option></select></td><td>{fmtMs(s.start)}–{fmtMs(s.end)}</td><td>{s.duration / 1000}s</td><td>{s.shots.join("、")}</td></tr>)}</tbody></table>}
       {tab === "table" && <table className="table" style={{ marginTop: 12 }}><thead><tr><th>镜</th><th>段</th><th>段内</th><th>机位</th><th>动作</th><th>出处</th></tr></thead>
@@ -642,7 +650,7 @@ function PlanView({ ctx }: { ctx: Ctx }) {
           return <tr key={s.id}><td>{s.id}</td><td>{s.segment}</td><td>{((t.start - seg.start) / 1000).toFixed(1)}–{((t.end - seg.start) / 1000).toFixed(1)}s</td><td>{s.camera}</td><td>{s.action}</td><td className="muted">{s.refs?.length ? "参考镜头" : s.origin?.scene}</td></tr>; })}</tbody></table>}
       <div className="segstrip">{lay.segments.map((s: any) => (
         <div key={s.id} className={s.shots.includes(shot) ? "on" : ""} style={{ flex: s.duration }}>{s.id} · {Math.round(s.duration / 100) / 10}s</div>))}</div>
-      {shot && <ShotEditor ctx={ctx} art={art} version={current} shotId={shot} onSaved={(vid: string) => ctx.setFocus(vid)} />}
+      {shot && <fieldset className="edit-fields" disabled={ctx.locked}><ShotEditor ctx={ctx} art={art} version={current} shotId={shot} onSaved={(vid: string) => ctx.setFocus(vid)} /></fieldset>}
       {trace && (
         <div className="card line" style={{ marginTop: 14 }}>
           <b>{trace.shot.id} 出处</b>
@@ -1173,27 +1181,27 @@ function PromptsView({ ctx }: { ctx: Ctx }) {
   });
   const programDraft = () => act.run(async () => {
     const content = await q("draft_prompts", {episode_id:ctx.eid});
-    const r = await cmd("save_manual", {artifact_id:art.id, base_version_id:current?.id ?? null, content});
+    const r = await ctx.write("save_manual", {artifact_id:art.id, base_version_id:current?.id ?? null, content});
     await ctx.reload(); ctx.setFocus(r.versionId);
   });
   const segInfo = lay.segments.find((s: any) => s.id === seg);
   const errors = (current?.gate.formatErrors ?? []).filter((e: string) => e.startsWith(seg + "："));
-  const save = (content: any) => act.run(async () => { const r = await cmd("save_manual", { artifact_id: art.id, base_version_id: current?.id ?? null, content }); await ctx.reload(); ctx.setFocus(r.versionId); });
+  const save = (content: any) => act.run(async () => { const r = await ctx.write("save_manual", { artifact_id: art.id, base_version_id: current?.id ?? null, content }); await ctx.reload(); ctx.setFocus(r.versionId); });
   const draft = {txt, ambience:amb.split(/[,，、]/).map(x=>x.trim()).filter(Boolean),
     dialogue:dia.split(/[；;\n]/).map(x=>x.trim()).filter(Boolean)};
   const editReference = (action:string, asset_id?:string, previous_id?:string, purpose?:string) => act.run(async()=>{
-    const r = await cmd("edit_prompt_reference",{version_id:current.id, segment_id:seg, action, asset_id, previous_id, purpose, draft});
+    const r = await ctx.write("edit_prompt_reference",{version_id:current.id, segment_id:seg, action, asset_id, previous_id, purpose, draft});
     await ctx.reload(); ctx.setFocus(r.versionId); return r;
   });
   const applySound = (change:{silent:boolean;retained_notes?:string}|{bgm:boolean;music_description:string}, confirm=false) => act.run(async () => {
-    const r = await cmd("set_sound", {version_id:current.id, segment_id:seg, change, confirm, draft});
+    const r = await ctx.write("set_sound", {version_id:current.id, segment_id:seg, change, confirm, draft});
     if (r.needsConfirm) setSound(r);
     else {setSound(null); await ctx.reload(); ctx.setFocus(r.versionId);}
   });
   const move = (i: number, d: number) => act.run(async () => {
     const order = entry.refs.map((r: any) => r.assetVersionId);
     [order[i], order[i + d]] = [order[i + d], order[i]];
-    setPreview({ order, ...(await cmd("reorder_refs", { version_id: current.id, segment_id: seg, new_order: order, draft })) });
+    setPreview({ order, ...(await ctx.write("reorder_refs", { version_id: current.id, segment_id: seg, new_order: order, draft })) });
   });
   return (
     <div>
@@ -1204,58 +1212,58 @@ function PromptsView({ ctx }: { ctx: Ctx }) {
       {entry ? <>
         <RhythmReview key={current.id} version={current.id}/>
         {palette.error&&<p className="error">{palette.error}</p>}
-        <ReferenceReview ctx={ctx} version={current.id} sid={seg} entry={entry} draft={draft} save={ctx.setFocus}/>
+        <fieldset className="edit-fields" disabled={ctx.locked}><ReferenceReview ctx={ctx} version={current.id} sid={seg} entry={entry} draft={draft} save={ctx.setFocus}/></fieldset>
         {palette.data&&<PaletteTrace cards={palette.data.cards} label={palette.data.direct?`${seg} 所在稿起草时参考`:`${seg} 上游稿 R${palette.data.displayNo} 起草时参考`}/>}
         <div className="row" style={{ margin: "14px 0", alignItems: "stretch" }}>
           {entry.refs.map((r: any, i: number) => { const a = ctx.assets.find((x) => x.id === r.assetVersionId); return (
             <div key={r.assetVersionId} className="card line" style={{ width: 150, padding: 8 }}>
               {a && (a.kind === "image" ? <img src={blob(a.sha256)} alt={a.name} style={{width:"100%",borderRadius:6}}/>
                 : <MediaPreview episode={ctx.eid} asset={a} label={r.label}/>)}
-              <div className="spread"><b>{r.label}</b><span className="row">{i > 0 && <button className="btn ghost" aria-label={r.label+"前移"} disabled={act.busy} onClick={() => move(i, -1)}>←</button>}{i < entry.refs.length - 1 && <button className="btn ghost" aria-label={r.label+"后移"} disabled={act.busy} onClick={() => move(i, 1)}>→</button>}</span></div>
+              <div className="spread"><b>{r.label}</b><span className="row">{i > 0 && <button className="btn ghost" aria-label={r.label+"前移"} disabled={act.busy || ctx.locked} onClick={() => move(i, -1)}>←</button>}{i < entry.refs.length - 1 && <button className="btn ghost" aria-label={r.label+"后移"} disabled={act.busy || ctx.locked} onClick={() => move(i, 1)}>→</button>}</span></div>
               <div className="muted tiny">{r.role || "用途未写"}{r.grid ? " · 九宫格" : ""}</div>
-              <select aria-label={"替换"+r.label} disabled={act.busy} style={{width:"100%",marginTop:4}} value="" onChange={e=>editReference("replace",e.target.value,r.assetVersionId)}>
+              <select aria-label={"替换"+r.label} disabled={act.busy || ctx.locked} style={{width:"100%",marginTop:4}} value="" onChange={e=>editReference("replace",e.target.value,r.assetVersionId)}>
                 <option value="">{segInfo?.strategy === "grid" ? "替换本段九宫格…" : "替换此参考…"}</option>
                 {ctx.assets.filter(x=>x.kind===r.kind && (segInfo?.strategy!=="grid" || x.grid) && !entry.refs.some((ref:any)=>ref.assetVersionId===x.id)).map(x=><option key={x.id} value={x.id}>{x.name} v{x.version_no}{x.marks.includes("required") ? "（必用）" : ""}</option>)}
               </select>
               {segInfo?.strategy!=="grid" && (r.kind!=="image" || entry.refs.filter((ref:any)=>ref.kind==="image").length>1) &&
-                <button className="btn ghost" aria-label={"移出"+r.label} disabled={act.busy} onClick={()=>editReference("remove",undefined,r.assetVersionId)}>移出本段</button>}
+                <button className="btn ghost" aria-label={"移出"+r.label} disabled={act.busy || ctx.locked} onClick={()=>editReference("remove",undefined,r.assetVersionId)}>移出本段</button>}
             </div>); })}
-          {segInfo?.strategy !== "grid" && <select aria-label="添加图片参考" disabled={act.busy} style={{alignSelf:"center",width:130}} value="" onChange={e=>{
+          {segInfo?.strategy !== "grid" && <select aria-label="添加图片参考" disabled={act.busy || ctx.locked} style={{alignSelf:"center",width:130}} value="" onChange={e=>{
             const v=ctx.assets.find(x=>x.id===e.target.value);
             if (v) void editReference("add",v.id,undefined,v.name.replace(/\.png$/i,""));
           }}><option value="">＋ 添加图片…</option>{ctx.assets.filter(x=>x.kind==="image" && !entry.refs.some((r:any)=>r.assetVersionId===x.id)).map(x=><option key={x.id} value={x.id}>{x.name} v{x.version_no}</option>)}</select>}
         </div>
-        {segInfo?.strategy!=="grid" && <PromptMedia key={ctx.eid+"/"+seg+"/"+current.id} episode={ctx.eid} reload={ctx.reload} busy={act.busy}
+        {segInfo?.strategy!=="grid" && <PromptMedia key={ctx.eid+"/"+seg+"/"+current.id} episode={ctx.eid} reload={ctx.reload} busy={act.busy || ctx.locked}
           assets={ctx.assets.filter(x=>(x.kind==="audio" || x.kind==="video") && !entry.refs.some((r:any)=>r.assetVersionId===x.id))}
           attach={(id,purpose)=>editReference("add",id,undefined,purpose)}/>}
         {preview && <div className="card amber" style={{ marginBottom: 10 }}><b>重排预览</b> <span className="small">{Object.entries(preview.preview.mapping).map(([a, b]) => `${a}→${b}`).join("，")}</span>
           {preview.preview.unclearRoles.length > 0 && <div className="small">用途不明确，请核对：{preview.preview.unclearRoles.join("、")}</div>}
           <div className="field small" style={{ marginTop: 6 }}>{preview.preview.txtDiff.map((d: any, i: number) => d.op === "same" ? <span key={i}>{d.text}</span> : d.op === "del" ? <del key={i} className="d">{d.text}</del> : <ins key={i} className="d">{d.text}</ins>)}</div>
-          <div className="row" style={{ marginTop: 6 }}><button className="btn primary" onClick={() => act.run(async () => { const r = await cmd("reorder_refs", { version_id: current.id, segment_id: seg, new_order: preview.order, draft, confirm: true }); await ctx.reload(); ctx.setFocus(r.versionId); setPreview(null); })}>确认重排</button><button className="btn" onClick={() => setPreview(null)}>取消</button></div></div>}
-        <textarea ref={editor} data-version={current.id} aria-label={seg+" 提示词正文"} style={{ minHeight: 260, fontSize: "1rem" }} value={txt} onChange={(e) => {setTxt(e.target.value);setSound(null);setPreview(null);}} />
+          <div className="row" style={{ marginTop: 6 }}><button className="btn primary" onClick={() => act.run(async () => { const r = await ctx.write("reorder_refs", { version_id: current.id, segment_id: seg, new_order: preview.order, draft, confirm: true }); await ctx.reload(); ctx.setFocus(r.versionId); setPreview(null); })}>确认重排</button><button className="btn" onClick={() => setPreview(null)}>取消</button></div></div>}
+        <textarea readOnly={ctx.locked} ref={editor} data-version={current.id} aria-label={seg+" 提示词正文"} style={{ minHeight: 260, fontSize: "1rem" }} value={txt} onChange={(e) => {setTxt(e.target.value);setSound(null);setPreview(null);}} />
         {errors.length > 0 && <div className="error">{errors.join("；")}</div>}
         <div className="grid2" style={{ marginTop: 8 }}>
-          <input placeholder="环境声（逗号分隔）" value={amb} onChange={(e) => {setAmb(e.target.value);setSound(null);setPreview(null);}} />
-          <input placeholder="对白（多条用；分隔，英语）" value={dia} onChange={(e) => {setDia(e.target.value);setSound(null);setPreview(null);}} /></div>
+          <input readOnly={ctx.locked} placeholder="环境声（逗号分隔）" value={amb} onChange={(e) => {setAmb(e.target.value);setSound(null);setPreview(null);}} />
+          <input readOnly={ctx.locked} placeholder="对白（多条用；分隔，英语）" value={dia} onChange={(e) => {setDia(e.target.value);setSound(null);setPreview(null);}} /></div>
         <div className="spread" style={{ marginTop: 10 }}>
           <div className="row small">声音：<Tag tone={entry.sound?.bgm ? "green" : ""}>{entry.sound?.bgm ? "有背景音乐" : "无背景音乐"}</Tag>
             {(entry.sound?.ambience ?? []).map((x: string) => <Tag key={x}>{x}</Tag>)}{(entry.sound?.dialogue ?? []).map((x: string) => <Tag key={x} tone="blue">{x}</Tag>)}
             {entry.sound?.silent && <Tag tone="amber">全静音</Tag>}</div>
           <div className="row">
-            {entry.prompt_format === "readable_v3" && !entry.sound?.bgm && <input aria-label="本段配乐描述" placeholder="具体配乐描述" value={music} onChange={e=>setMusic(e.target.value)}/>}
-            <button className="btn" disabled={act.busy} onClick={() => applySound({bgm:!entry.sound?.bgm,music_description:music})}>{entry.sound?.bgm ? "去掉背景音乐" : "加背景音乐"}</button>
-            <button className="btn" disabled={act.busy} onClick={() => applySound({silent:!entry.sound?.silent})}>{entry.sound?.silent ? "解除全静音" : "全静音"}</button>
-            <button className="btn primary" onClick={() => save({ ...current.content, segments: { ...current.content.segments, [seg]: { ...entry, txt,
+            {entry.prompt_format === "readable_v3" && !entry.sound?.bgm && <input readOnly={ctx.locked} aria-label="本段配乐描述" placeholder="具体配乐描述" value={music} onChange={e=>setMusic(e.target.value)}/>}
+            <button className="btn" disabled={act.busy || ctx.locked} onClick={() => applySound({bgm:!entry.sound?.bgm,music_description:music})}>{entry.sound?.bgm ? "去掉背景音乐" : "加背景音乐"}</button>
+            <button className="btn" disabled={act.busy || ctx.locked} onClick={() => applySound({silent:!entry.sound?.silent})}>{entry.sound?.silent ? "解除全静音" : "全静音"}</button>
+            <button className="btn primary" disabled={ctx.locked} onClick={() => save({ ...current.content, segments: { ...current.content.segments, [seg]: { ...entry, txt,
               sound: { ...(entry.sound ?? {}), ambience: amb.split(/[,，、]/).map((x) => x.trim()).filter(Boolean), dialogue: dia.split(/[；;\n]/).map((x) => x.trim()).filter(Boolean) } } } })}>保存本段</button>
           </div>
         </div>
         {sound && <div className="card amber" style={{ marginTop: 10 }}><b>全静音会与以下内容冲突</b>{sound.conflicts.map((c: any) => <div key={c.item} className="small">{c.item}：{Array.isArray(c.detail) ? c.detail.join("、") : c.detail}</div>)}
           {typeof sound.retainedNotes==="string" && <label>静音后保留的画面文字及固定说明<textarea value={sound.retainedNotes} onChange={e=>setSound({...sound,retainedNotes:e.target.value})}/></label>}
-          <div className="row" style={{ marginTop: 6 }}><button className="btn danger" disabled={act.busy} onClick={() => applySound({silent:true,retained_notes:sound.retainedNotes??undefined},true)}>仍然全静音</button><button className="btn" onClick={() => setSound(null)}>保留</button></div></div>}
+          <div className="row" style={{ marginTop: 6 }}><button className="btn danger" disabled={act.busy || ctx.locked} onClick={() => applySound({silent:true,retained_notes:sound.retainedNotes??undefined},true)}>仍然全静音</button><button className="btn" onClick={() => setSound(null)}>保留</button></div></div>}
       </> : <div style={{ marginTop: 14 }}><p className="muted">该段还没有提示词。创作执行器为 {PROVIDER_LABEL[create.provider] ?? create.provider} · {create.model ?? "默认型号"}。</p>
-        <div className="row"><button className="btn primary" disabled={act.busy} onClick={modelDraft}>从方案起草提示词</button>
+        <div className="row"><button className="btn primary" disabled={act.busy || ctx.locked} onClick={modelDraft}>从方案起草提示词</button>
           <label><input type="checkbox" checked={includeImages} onChange={e => setIncludeImages(e.target.checked)}/>同时发送本集已绑定的参考原图</label>
-          <button className="btn" disabled={act.busy} onClick={programDraft}>生成本地时间与参考骨架</button></div></div>}
+          <button className="btn" disabled={act.busy || ctx.locked} onClick={programDraft}>生成本地时间与参考骨架</button></div></div>}
       <ErrorLine error={act.error} />
       {current && <AdoptBar ctx={ctx} art={art} version={current} next="publish" hint="冻结实际送审 TXT 与引用文件后进入两遍独审" />}
     </div>
@@ -1357,7 +1365,7 @@ function PublishView({ ctx }: { ctx: Ctx }) {
       <div className="stagehead"><div><h1>发布包</h1><div className="muted small">发布文案按项目字段分别复制；保存版本时记录当时的发布设置</div></div>
         {current && <VersionTabs ctx={ctx} art={art} current={current} />}</div>
       <div className="grid2">
-        <div className="col">
+        <fieldset disabled={ctx.locked} className="col edit-fields">
           {[["title", "发布标题"], ["body", settings.data?.body_fixed_lines?.length ? "正文第一行" : "正文"],
             ...(settings.data?.additional_fields ?? []).map((v: any) => [v.key, v.label])].map(([k, l]) => {
               const nested = !["title","body","suno_title","suno_style","suno_exclude"].includes(k);
@@ -1367,8 +1375,8 @@ function PublishView({ ctx }: { ctx: Ctx }) {
             })}
           <label className="col" style={{ gap: 4 }}><span className="muted small">本集话题标签（逗号分隔）</span><input value={(form.tags ?? []).join(",")} onChange={(e) => setForm({ ...form, tags: e.target.value.split(/[,，]/).map((x) => x.trim()).filter(Boolean) })} /></label>
           <PublishCues form={form} segments={segments} bgm={bgm} change={patch=>setForm({...form,...patch})}/>
-          <button className="btn primary" onClick={() => act.run(async () => { const r = await cmd("save_manual", { artifact_id: art.id, base_version_id: current?.id ?? null, content: form }); await ctx.reload(); ctx.setFocus(r.versionId); })}>保存为新版本</button>
-        </div>
+          <button className="btn primary" onClick={() => act.run(async () => { const r = await ctx.write("save_manual", { artifact_id: art.id, base_version_id: current?.id ?? null, content: form }); await ctx.reload(); ctx.setFocus(r.versionId); })}>保存为新版本</button>
+        </fieldset>
         <div className="col">
           {f ? Object.entries(f).map(([k, v]) => (
             <div key={k} className="card"><div className="spread"><span className="muted small">{composed.data.fieldLabels[k]}</span><button className="btn ghost" onClick={() => copy(v as string)}>复制</button></div><div className="small" style={{ whiteSpace: "pre-wrap", userSelect: "all" }}>{v as string}</div></div>))
@@ -1590,7 +1598,7 @@ function ShotEditor({ ctx, art, version, shotId, onSaved }: any) {
   const act = useAction();
   useEffect(() => { setSh(orig); setConfirmDelete(false); }, [shotId, version.id]);
   if (!sh) return null;
-  const save = (content: any, note: string) => act.run(async () => { const r = await cmd("save_manual", { artifact_id: art.id, base_version_id: version.id, content, note }); await ctx.reload(); onSaved(r.versionId); });
+  const save = (content: any, note: string) => act.run(async () => { const r = await ctx.write("save_manual", { artifact_id: art.id, base_version_id: version.id, content, note }); await ctx.reload(); onSaved(r.versionId); });
   const ref = sh.refs?.[0];
   const first = shots.filter((s: any) => s.segment === sh.segment).sort((a: any,b: any) => a.order - b.order)[0]?.id === sh.id;
   return (

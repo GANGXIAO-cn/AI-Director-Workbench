@@ -78,6 +78,8 @@ CREATE TABLE IF NOT EXISTS artifact(
   episode_id TEXT NOT NULL REFERENCES episode(id), stage TEXT NOT NULL CHECK(stage IN ('story','script','plan','prompts','publish')),
   adopted_version_id TEXT REFERENCES version(id), revision INTEGER NOT NULL DEFAULT 0,
   UNIQUE(episode_id, stage));
+CREATE TABLE IF NOT EXISTS stage_edit_session(
+  artifact_id TEXT PRIMARY KEY REFERENCES artifact(id), revision INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS version(
   id TEXT PRIMARY KEY, artifact_id TEXT NOT NULL REFERENCES artifact(id), display_no INTEGER NOT NULL,
   base_id TEXT REFERENCES version(id), origin TEXT NOT NULL CHECK(origin IN ('ai','manual','combined')),

@@ -3,7 +3,7 @@ import { blob, cmd } from "./api";
 import { ErrorLine, useAction, useQuery } from "./ui";
 
 type Props = {
-  version: any; episodeId: string; assets: any[];
+  locked:boolean; version: any; episodeId: string; assets: any[];
   onSave: (shots: any[]) => Promise<void>;
 };
 const seconds = (ms: number) => (ms / 1000).toLocaleString("zh-CN", {maximumFractionDigits: 3});
@@ -13,7 +13,7 @@ function SecondsInput({title, value, onChange}: {title: string; value?: number; 
     onChange={e => onChange(e.target.value === "" ? undefined : Math.round(Number(e.target.value) * 1000))} /></label>;
 }
 
-export function PlanActing({version, episodeId, assets, onSave}: Props) {
+export function PlanActing({locked,version, episodeId, assets, onSave}: Props) {
   const shots: any[] = version.content.shots ?? [];
   const [id, setId] = useState(shots[0]?.id ?? "");
   const [changes, setChanges] = useState<Record<string, any>>({});
@@ -41,7 +41,7 @@ export function PlanActing({version, episodeId, assets, onSave}: Props) {
       const asset = assets.find(a => a.id === binding.assetVersionId);
       return <span className="small" key={role}>{role} · 本集当前绑定 {asset ? <a href={blob(asset.sha256)} target="_blank" rel="noreferrer">{asset.name} v{asset.version_no}</a> : binding.assetVersionId || "已确认"}</span>;
     })}
-    <div className="grid2">{Object.entries({performance:"表情、姿势与动作",reaction:"对手反应",sound:"环境与动作音效"}).map(([key,title]) =>
+    <fieldset disabled={locked} className="edit-fields"><div className="grid2">{Object.entries({performance:"表情、姿势与动作",reaction:"对手反应",sound:"环境与动作音效"}).map(([key,title]) =>
       <label className="col small" key={key}>{title}<input value={shot[key] ?? ""} onChange={e => update({[key]:e.target.value})}/></label>)}</div>
     {cues.map((cue, i) => <fieldset key={i} style={{marginTop:12}}><legend>第 {i + 1} 句</legend>
       <div className="grid2">{Object.entries({speaker:"说话者",text:"台词原文",direction:"语气、重音与呼吸"}).map(([key,title]) =>
@@ -64,6 +64,7 @@ export function PlanActing({version, episodeId, assets, onSave}: Props) {
       })}>核算本次调整</button>
       <button className="btn primary" disabled={!dirty || act.busy} onClick={() => act.run(() => onSave(shots.map(s => ({...s,...changes[s.id]}))))}>保存表演方案新版</button>
     </div>
+    </fieldset>
     {dirty && !report && <p className="muted small">调整后可重新核算各句时长。</p>}
     {report && <><h3>台词时长表</h3>{report.rows.length > 0 ? <div style={{overflowX:"auto"}}><table className="table"><thead><tr><th>生成段 / 镜头</th><th>台词</th><th>计时依据</th><th>段内起声</th><th>发声 + 停顿</th><th>可用</th><th>余量</th></tr></thead>
       <tbody>{report.rows.map((r: any) => <tr key={r.shot+"-"+r.number}><td>{r.segment} · {r.shot}{r.throughShot !== r.shot && " → "+r.throughShot}</td>

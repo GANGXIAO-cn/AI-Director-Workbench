@@ -55,6 +55,7 @@ async function main() {
     assert.equal((await story()).adopted_version_id,original);
     const header = screen.locator(".center .stagehead").first();
     await header.getByText(/改编自参考包 ticket.mp4 v1/).waitFor();
+    await button("修改本阶段").click();
     await button("开发辅助").click();
     const card = screen.locator("section").filter({has:page.getByRole("heading",{name:"改编对照"})});
     await screen.getByText(originalEvent,{exact:false}).first().waitFor();

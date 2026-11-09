@@ -20,6 +20,7 @@ async function main() {
     const button=name=>page.getByRole("button",{name,exact:true});
     const fixture=path.join(__dirname,"../../修复验证_20261108");
     await page.goto(base+"/#/e/"+eid+"/plan");
+    await page.getByRole("button",{name:"修改本阶段",exact:true}).click();
     await page.getByText("镜头充分性与节奏核对",{exact:true}).click();
     await page.getByText("逐镜出镜与关键道具",{exact:true}).click();
     for (let i=0;i<3;i++) {
@@ -31,6 +32,7 @@ async function main() {
     await button("只采用").click();
     await page.locator(".actionbar").getByText(/已采用/).waitFor();
     await page.goto(base+"/#/e/"+eid+"/prompts");
+    await page.getByRole("button",{name:"修改本阶段",exact:true}).click();
     await page.getByText("阿福 的身份图作用镜头 · S03",{exact:true}).waitFor();
     const open=()=>page.getByText(/图片1 · 阿福身份图 · 看图与作用镜头/).click();
     await open();

@@ -1,3 +1,4 @@
+import { changeStageEdit } from "./Cooperation";
 import { budgetAmount } from "./budget";
 import { useDisplay } from "./DisplayPreferences";
 import { useProjectRoute } from "./projectNavigation";
@@ -26,7 +27,8 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
   const art = artifactFor(view, stage);
   const tasks = art?.tasks?.filter((t:any)=>t.goal!=="两遍独审") || [];
   const focused = art?.versions?.find((v:any)=>v.id===focus);
-  const task = tasks.find((t:any)=>t.runs.some((r:any)=>r.id===focused?.source_run_id)) || tasks.at(-1);
+  const [sentTask,setSentTask]=useState<{id:string;focus?:string|null}|null>(null);
+  const task = (sentTask && sentTask.focus===focus && tasks.find((t:any)=>t.id===sentTask.id)) || tasks.find((t:any)=>t.runs.some((r:any)=>r.id===focused?.source_run_id)) || tasks.at(-1);
   const [text, setText] = useState(() => sessionStorage.getItem(`draft:${view.episode.id}:${stage}`) ?? "");
   const submit = useDirectorCommand();
   const [files,setFiles] = useState<File[]>([]);
@@ -46,7 +48,6 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
   const models = catalog.data?.text?.[provider]?.models ?? [];
   const efforts = models.find((m:any) => m.id === (selected.model ?? null))?.efforts ?? [null];
   const [history, setHistory] = useState(false);
-  const [choice, setChoice] = useState<string | null>(null);
   const [impact, setImpact] = useState<any>(null);
   const act = useAction();
   useEffect(() => { try { sessionStorage.setItem(`draft:${view.episode.id}:${stage}`, text); } catch { /* ignore */ } }, [text]);
@@ -58,11 +59,28 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
   }, [focusV?.id, art?.adopted_version_id]);
   const send = () => act.run(async () => {
     if (!text.trim()) { if (files.length) throw new Error("请写明希望助手怎样使用附件"); return; }
-    if (!art) throw new Error("本阶段还没有成果，请先采用上一步");
+    const instruction=text.trim().replace(/[。！]$/,"");
+    const step=instruction.match(/^修改第(\d{1,2})步$/);
+    if (!files.length && (step || ["修改这里","修改本阶段","结束修改"].includes(instruction))) {
+      const targetStage=step ? STAGES[Number(step[1])-1]?.[0] : stage;
+      if (!targetStage || !STAGE_ART[targetStage]) throw new Error("请选择目录中有稿件的写作阶段");
+      const target=artifactFor(view,targetStage);
+      const editing=instruction!=="结束修改";
+      if (target && ((editing && target.editState==="protected") || (!editing && target.editState==="editing"))) {
+        await changeStageEdit(target,editing);
+      }
+      setText("");setSel(null);reload();
+      if (targetStage!==stage) go(`#/e/${view.episode.id}/${targetStage}`);
+      return;
+    }
+    if (!art) throw new Error("本阶段还没有成果，请先试写");
+    const basis = focused?.id ?? art.adopted_version_id ?? focusV?.id;
+    const options = {workspace_revision:art.revision,base_version_id:basis ?? undefined,selection:sel?.data ?? null};
     if (open) {
-      await submit("post_message", { task_id: task.id, text, create_executor: selected, selection: sel?.data ?? null, base_version_id: focusV?.id ?? art.adopted_version_id ?? undefined },files);
+      await submit("post_message", {task_id:task.id, text, create_executor:selected, ...options},files);
     } else {
-      await submit("create_task", { episode_id: view.episode.id, stage: art.stage, goal: text, executor: {create:selected}, selection: sel?.data ?? null },files);
+      const result=await submit("create_task", {episode_id:view.episode.id, stage:art.stage, goal:text, executor:{create:selected}, ...options},files);
+      setSentTask({id:result.taskId,focus});
     }
     setText(""); setFiles([]); setSel(null); reload();
   });
@@ -97,18 +115,19 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
         {art?.stage === "story" && draftV && !draftV.gate.review && !live.length && (
           <div className="mcard">
             <div className="small muted">故事稿 {rno(draftV.display_no)} 已完成</div>
-            <b>下一步？</b>
-            {[["review", "发起独立审查（推荐）", `${PROVIDER_LABEL[view.kickoff?.executor_plan?.review?.provider] ?? ""} 另开会话，只拿故事稿和项目设定冷读`],
-              ["self", "我先自己改几处", "改完再送审"], ["both", "按本集分工并排出稿", "查看两份候选稿的型号和共同基稿"]].map(([k, t, d]) => (
-              <div key={k} className={`opt ${choice === k ? "on" : ""}`} onClick={() => setChoice(k)}><span className="radio" /><div><div>{t}</div><div className="muted tiny">{d}</div></div></div>))}
-            <button className="btn primary" disabled={!choice || act.busy} onClick={() => act.run(async () => {
-              if (choice === "review") await cmd("submit_review", { version_id: draftV.id, task_id: task?.id });
-              if (choice === "both" || choice === "self") {
-                setFocusChat(false);
-                go("#/e/"+view.episode.id+"/story?v="+draftV.id+(choice==="both" ? "&compare="+draftV.id : "&edit=1"));
-              }
-              reload();
-            })}>提交</button>
+            <div className="row wrap">
+              <button className="btn primary" disabled={act.busy} onClick={()=>act.run(async()=>{
+                await cmd("submit_review",{version_id:draftV.id,task_id:task?.id});
+                reload();
+              })}>{view.cooperationMode==="beginner" ? "下一步 · 送故事独审" : "送故事独审"}</button>
+              {view.cooperationMode!=="beginner" && [["edit","我先自己改几处"],["compare","按本集分工并排出稿"]].map(([action,label])=>
+                <button key={action} className="btn" disabled={act.busy} onClick={()=>act.run(async()=>{
+                  if (art.editState==="protected") await changeStageEdit(art,true);
+                  setFocusChat(false);
+                  go(`#/e/${view.episode.id}/story?v=${draftV.id}&${action}=${action==="compare" ? draftV.id : "1"}`);
+                  reload();
+                })}>{label}</button>)}
+            </div>
           </div>)}
         {impact && focusV && impact.items.length > 0 && (
           <div className="mcard focus">
@@ -129,7 +148,7 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
         <textarea ref={input} disabled={act.busy} onPaste={e=>{
           const pasted = clipboardFiles(e.clipboardData);
           if (pasted.length) {e.preventDefault();act.run(async()=>setFiles(addDirectorFiles(files,pasted)));}
-        }} maxLength={500} placeholder="输入你的想法，继续完善这一集" value={text} onChange={(e) => setText(e.target.value)}
+        }} maxLength={500} placeholder={art?.editState==="protected"?"讨论本版，或说明要修改的内容":"输入你的想法，继续完善这一集"} value={text} onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => { if (!act.busy && !e.nativeEvent.isComposing && e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault();send(); } }} />
         <div className="row small" style={{flexWrap:"wrap"}}>
           <label className="btn ghost">添加附件<input type="file" aria-label="添加阶段附件" multiple hidden accept=".md,.txt,.docx,.pdf,image/jpeg,image/png" disabled={act.busy}

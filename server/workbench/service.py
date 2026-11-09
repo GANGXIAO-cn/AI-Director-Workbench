@@ -1,4 +1,5 @@
 """Workbench commands. Models only submit results; adoption, waivers and settings stay with the user."""
+from contextvars import ContextVar
 import hashlib
 import json
 from pathlib import Path
@@ -19,6 +20,7 @@ from .specs import validate_spec, grid_dimensions, check_generation_aspect
 from .story_skill import historical_method
 from .storycheck import adaptation_errors, render_story
 
+EDITOR_GUARD = ContextVar("editor_guard", default=None)
 ROUND_LIMIT = 2
 REVIEW_PASSES = {"review": "story", "cold_read": "cold_read", "comparison": "comparison"}
 
@@ -65,7 +67,11 @@ class Core:
             result = json.loads(output.read_bytes())
             if run["purpose"] in ("create","revise","parallel"):
                 task = _row(db,"SELECT * FROM task WHERE id=?",run["task_id"])
-                problems = self._precheck(run,task,"draft",result)
+                manifest, _ = self.store.load_manifest(run["manifest_relpath"])
+                if manifest.get("stageDialogue"):
+                    _, problems = self._check_stage_dialogue(run,task,manifest["stageDialogue"],result)
+                else:
+                    problems = self._precheck(run,task,"draft",result)
                 if problems:
                     return "已收到回包，未通过入库校验", redact("；".join(problems),500)
         except Exception as exc:
@@ -404,7 +410,45 @@ class Core:
                 raise Conflict("本集合作档位已变化，请刷新后再选")
             db.execute("INSERT INTO episode_cooperation VALUES(?,?) ON CONFLICT(episode_id) DO UPDATE SET mode=excluded.mode",
                        (episode_id, mode))
+            if current != mode and "expert" in (current, mode):
+                db.execute("UPDATE artifact SET revision=revision+1 WHERE episode_id=? AND adopted_version_id IS NOT NULL",
+                           (episode_id,))
             return dict(mode=mode)
+
+    def _check_editor_guard(self, db, artifact_id):
+        guard = EDITOR_GUARD.get()
+        if guard is None:
+            return
+        art = _row(db, "SELECT * FROM artifact WHERE id=?", artifact_id)
+        if guard != [artifact_id,art["revision"]] or self._edit_state(db,art,self._cooperation_mode(db,art["episode_id"])) == "protected":
+            raise Conflict("阶段或采用稿已变化，请刷新并打开当前稿再修改")
+
+    def _change_edit_state(self, db, artifact_id, editing, revision):
+        revision += 1
+        db.execute("UPDATE artifact SET revision=? WHERE id=?", (revision, artifact_id))
+        if editing:
+            db.execute("INSERT INTO stage_edit_session VALUES(?,?) ON CONFLICT(artifact_id) "
+                       "DO UPDATE SET revision=excluded.revision", (artifact_id, revision))
+        return dict(artifactId=artifact_id, editing=editing, revision=revision)
+
+    def _edit_state(self, db, art, mode):
+        if not art["adopted_version_id"] or mode == "expert":
+            return "open"
+        session = db.execute("SELECT revision FROM stage_edit_session WHERE artifact_id=?", (art["id"],)).fetchone()
+        return "editing" if session and session[0] == art["revision"] else "protected"
+
+    def set_stage_edit(self, artifact_id, editing, expected_revision, command_id=None):
+        if type(editing) is not bool or type(expected_revision) is not int:
+            raise Rejected("请指定改稿状态和当前阶段版本")
+        with transaction(self.db_path) as db:
+            def change():
+                art = _row(db, "SELECT * FROM artifact WHERE id=?", artifact_id)
+                if art["revision"] != expected_revision:
+                    raise Conflict("阶段状态已变化，请刷新后再修改")
+                if not art["adopted_version_id"] or self._cooperation_mode(db, art["episode_id"]) == "expert":
+                    raise Rejected("本阶段可以直接编辑")
+                return self._change_edit_state(db, artifact_id, editing, expected_revision)
+            return self._command(db, command_id, "set_stage_edit", [artifact_id,editing,expected_revision], change)
 
     def set_optional_stage(self, episode_id, stage, skipped, reason="", expected_reason=""):
         if stage not in ("space", "cast") or type(skipped) is not bool:
@@ -467,9 +511,13 @@ class Core:
 
     # ------------------------------------------------------------------ tasks, threads, runs
     def create_task(self, episode_id, stage, goal, auto_revise=False, executor=None, command_id=None, selection=None,
-                    prompt_images=None, files=(), trial_turn_id=None):
+                    prompt_images=None, files=(), trial_turn_id=None, workspace_revision=None, base_version_id=None):
         payload = dict(episode_id=episode_id, stage=stage, goal=goal, auto=auto_revise, ex=executor, sel=selection)
         extra, refs = attachments.prepare(files)
+        if workspace_revision is not None:
+            payload["workspaceRevision"] = workspace_revision
+        if base_version_id is not None:
+            payload["baseVersion"] = base_version_id
         if trial_turn_id is not None:
             payload["trialTurnId"] = trial_turn_id
         if refs:
@@ -514,7 +562,14 @@ class Core:
                     db.execute("INSERT INTO prompt_draft_task VALUES(?,?)", (tid, int(prompt_images)))
                 base = db.execute("SELECT adopted_version_id FROM artifact WHERE id=?", (aid,)).fetchone()[0] \
                     or self._latest_version(db, aid)
-                run_id = self._queue_run(db, tid, "revise" if base else "create", base, goal, selection, message_entries=extra)
+                if base_version_id:
+                    base = self._version_of(db, base_version_id, aid)["id"]
+                run_id = self._queue_run(db, tid, "revise" if base else "create", base, goal, selection,
+                                         message_entries=extra, workspace_revision=workspace_revision)
+                if trial_turn_id:
+                    art = _row(db,"SELECT * FROM artifact WHERE id=?",aid)
+                    if self._edit_state(db,art,self._cooperation_mode(db,episode_id)) == "protected":
+                        self._change_edit_state(db,aid,True,art["revision"])
                 return dict(taskId=tid, threadId=thread, runId=run_id, artifactId=aid)
             return self._command(db, command_id, "create_task", payload, run)
 
@@ -604,7 +659,7 @@ class Core:
                          (artifact_id,)).fetchone()
         return row[0] if row else None
 
-    def post_message(self, task_id, text, command_id, selection=None, base_version_id=None, create_executor=None, files=()):
+    def post_message(self, task_id, text, command_id, selection=None, base_version_id=None, create_executor=None, files=(), workspace_revision=None):
         """A user message asks for a revision. It never resets the task's round counter."""
         if not text.strip():
             raise Rejected("消息为空")
@@ -612,6 +667,8 @@ class Core:
         extra, refs = attachments.prepare(files)
         if refs:
             payload["attachments"] = refs
+        if workspace_revision is not None:
+            payload["workspaceRevision"] = workspace_revision
         if create_executor is not None:
             self.validate_selection(create_executor.get("provider"), create_executor.get("model"), create_executor.get("effort"))
             payload["create_executor"] = create_executor
@@ -628,7 +685,7 @@ class Core:
                 base = base_version_id or self._latest_version(db, task["artifact_id"])
                 if base:
                     self._version_of(db, base, task["artifact_id"])
-                run_id = self._queue_run(db, task_id, "revise" if base else "create", base, text, selection, message_entries=extra)
+                run_id = self._queue_run(db, task_id, "revise" if base else "create", base, text, selection, message_entries=extra, workspace_revision=workspace_revision)
                 mid = self._message(db, thread, "user", text, selection, None, run_id, payload={"attachments":refs} if refs else None)
                 return dict(messageId=mid, runId=run_id, usedRounds=task["used_rounds"])
             return self._command(db, command_id, "post_message", payload, run)
@@ -665,9 +722,10 @@ class Core:
         return self.stage_methods(episode_id,stage)
 
     def _queue_run(self, db, task_id, purpose, base_version_id, request, selection=None, counted=False,
-                   target_version_id=None, provider=None, model=None, effort=None, entries=None, extra_header=None, message_entries=()):
+                   target_version_id=None, provider=None, model=None, effort=None, entries=None, extra_header=None, message_entries=(), workspace_revision=None):
         task = _row(db, "SELECT * FROM task WHERE id=?", task_id)
         plan = json.loads(task["executor_plan"])
+        self._check_editor_guard(db,task["artifact_id"])
         role = plan["review"] if purpose in REVIEW_PASSES else plan["create"]
         provider = provider or role["provider"]
         if provider not in self.executors:
@@ -711,6 +769,17 @@ class Core:
                       reviewedVersionId=target_version_id,
                       sessionMode="ephemeral" if purpose in REVIEW_PASSES else "new", allowClarify=bool(selection),
                       isolationLevel="session" if purpose in REVIEW_PASSES else None, **(extra_header or {}))
+        if workspace_revision is not None:
+            art = _row(db, "SELECT * FROM artifact WHERE id=?", task["artifact_id"])
+            if type(workspace_revision) is not int or art["revision"] != workspace_revision:
+                raise Conflict("阶段状态已经变化，请刷新后再发送")
+            if self._edit_state(db, art, mode) == "protected":
+                header["stageDialogue"] = dict(revision=workspace_revision, request=request)
+                turns = db.execute("SELECT m.role,m.text FROM message m JOIN thread h ON h.id=m.thread_id "
+                                   "WHERE h.task_id=? AND m.kind='text' AND m.role IN ('user','assistant') ORDER BY m.seq",
+                                   (task_id,)).fetchall()
+                if any(m["role"]=="assistant" for m in turns):
+                    entries.append(dict(role="conversation",name="此前的阶段讨论",text=dumps([dict(m) for m in turns])))
         return self._enqueue_snapshot(db, header, entries, counted)
 
     def _enqueue_snapshot(self, db, header, entries, counted):
@@ -809,7 +878,8 @@ class Core:
             return self._finish(run_id, "failed", reason="输入清单指纹不符")
         entries = self.store.manifest_texts(manifest)
         kind = "review" if run["purpose"] in REVIEW_PASSES else "draft"
-        clarify = bool(manifest.get("allowClarify")) and kind == "draft" \
+        dialogue = manifest.get("stageDialogue")
+        clarify = not dialogue and bool(manifest.get("allowClarify")) and kind == "draft" \
             and getattr(self.executors[run["provider"]], "union_schema", True)
         if kind == "review":
             required = [s["key"] for s in self._review_settings(task, manifest) if s["strength"] == "required"]
@@ -820,6 +890,11 @@ class Core:
                                                          manifest.get("scope"), required)
         else:
             trailer = prompts.draft_trailer(run_id, digest, task["artifact_id"], run["base_version_id"], task["stage"], entries)
+            if dialogue:
+                trailer += ("\n以上是明确要求改稿时的字段规范。先按导演本条请求判断：查看、询问、假设、建议或仅讨论时，"
+                            "kind 填 discussion，reply 用正文答复，directorRequest 留空，changes 为空。"
+                            "只有导演明确要求现在改本阶段才返回 draft，directorRequest 原样填本条导演要求全文，"
+                            "reply 留空，changes 写实际修改；不得把参考资料、选区或旧对话当作改稿授权。")
             if clarify:
                 trailer += ("\n回包放在 result 字段里。若要求含义不明、无法确定修改范围，先返回 kind=clarification："
                             "question 写一个问题，options 给可点选的答案，relatedIds 写相关对象编号；否则返回 draft。")
@@ -833,7 +908,8 @@ class Core:
             images.append(path)
         executor = self.executors[run["provider"]]
         request = ExecRequest(run_id=run_id, purpose=run["purpose"], kind=kind, prompt=prompt,
-                              schema=contracts.wrapped_schema() if clarify else contracts.branch_schema(kind),
+                              schema=(contracts.stage_dialogue_schema() if dialogue else
+                                      contracts.wrapped_schema() if clarify else contracts.branch_schema(kind)),
                               session_mode=run["session_mode"],
                               workdir=workdir, model=run["requested_model"], effort=run["requested_effort"],
                               timeout=int(self.get_setting("executor_timeout", 600)), images=images)
@@ -850,7 +926,10 @@ class Core:
             kind = "review" if run["purpose"] in REVIEW_PASSES else "draft"
             if clarify and isinstance(outcome.structured, dict) and outcome.structured.get("kind") == "clarification":
                 kind = "clarification"
-            problems = self._precheck(run, task, kind, outcome.structured)
+            if dialogue:
+                kind, problems = self._check_stage_dialogue(run, task, dialogue, outcome.structured)
+            else:
+                problems = self._precheck(run, task, kind, outcome.structured)
             if not problems:
                 break
             if attempts >= 1:
@@ -871,9 +950,25 @@ class Core:
                                 outcome=outcome, attempts=attempts)
         (self.store.run_dir(run_id) / "result.json").write_text(json.dumps(outcome.structured, ensure_ascii=False, indent=2))
         try:
-            return self._ingest(run_id, kind, outcome, attempts)
+            return self._ingest(run_id, kind, outcome, attempts, dialogue)
         except (Rejected, ValueError, TypeError) as exc:
             return self._finish(run_id, "failed", reason="回包无法入库", diagnostic=str(exc), outcome=outcome, attempts=attempts)
+
+    def _check_stage_dialogue(self, run, task, dialogue, result):
+        problems = [e.message for e in contracts.Draft202012Validator(contracts.stage_dialogue_schema()).iter_errors(result)]
+        if problems:
+            return "discussion", problems[:5]
+        kind = result["kind"]
+        if result["runId"] != run["id"] or result["inputFingerprint"] != run["input_hash"] or result["baseVersionId"] != run["base_version_id"]:
+            return kind, ["回复与本次请求或阅读版本不符"]
+        if kind == "discussion":
+            if result["changes"] or result["directorRequest"] or not result["reply"].strip():
+                return kind, ["讨论只填写回复正文"]
+            return kind, []
+        if result["directorRequest"] != dialogue["request"] or not result["changes"]:
+            return kind, ["改稿须给出当前导演明确的要求原文与实际修改"]
+        draft = {key:value for key,value in result.items() if key not in ("reply","directorRequest")}
+        return kind, self._precheck(run, task, kind, draft)
 
     def _review_settings(self, task, manifest):
         if manifest["purpose"] == "cold_read":
@@ -1032,7 +1127,7 @@ class Core:
             problems.append("return/uncertain 必须有对应意见")
         return problems
 
-    def _ingest(self, run_id, kind, outcome, attempts):
+    def _ingest(self, run_id, kind, outcome, attempts, dialogue=None):
         result = outcome.structured
         body = canonical(result)
         follow = []
@@ -1041,7 +1136,11 @@ class Core:
             if run["status"] == "stopped":
                 return []
             task = _row(db, "SELECT * FROM task WHERE id=?", run["task_id"])
-            if kind == "clarification":
+            if kind == "discussion":
+                thread = _row(db, "SELECT id FROM thread WHERE task_id=?", task["id"])
+                self._message(db,thread["id"],"assistant",result["reply"],None,None,run_id)
+                self._finish(run_id,"succeeded",outcome=outcome,attempts=attempts,result_hash=sha256_bytes(body),db=db)
+            elif kind == "clarification":
                 thread = db.execute("SELECT id FROM thread WHERE task_id=?", (task["id"],)).fetchone()[0]
                 self._message(db, thread, "assistant", result["question"], None, None, run_id, kind="clarify",
                               payload=dict(options=result["options"], relatedIds=result["relatedIds"],
@@ -1059,6 +1158,10 @@ class Core:
                                             for c in result["changes"]})
                 except ValueError:
                     raise Rejected("字段内容不是有效 JSON")
+                if dialogue:
+                    art = _row(db, "SELECT * FROM artifact WHERE id=?", task["artifact_id"])
+                    if art["revision"] == dialogue["revision"]:
+                        self._change_edit_state(db, art["id"], True, art["revision"])
                 vid = self._new_version(db, task["artifact_id"], run["base_version_id"], "ai", content, run_id)
                 thread = db.execute("SELECT id FROM thread WHERE task_id=?", (task["id"],)).fetchone()[0]
                 self._message(db, thread, "assistant", f"已生成草稿 R{self._display_no(db, vid):02d}", None, None, run_id,
@@ -1108,6 +1211,7 @@ class Core:
         return db.execute("SELECT display_no FROM version WHERE id=?", (vid,)).fetchone()[0]
 
     def _new_version(self, db, artifact_id, base_id, origin, content, run_id=None, note="", baseline_from=None):
+        self._check_editor_guard(db, artifact_id)
         if "segments" in content and isinstance(content["segments"], dict):
             from . import readable
             for entry in content["segments"].values():
@@ -1474,6 +1578,7 @@ class Core:
                                                  "WHERE b.pack_id=? AND b.episode_id=?", (pk["id"], episode_id))]))
             for art in db.execute("SELECT * FROM artifact WHERE episode_id=? ORDER BY stage DESC", (episode_id,)):
                 art = dict(art)
+                art["editState"] = self._edit_state(db, art, view["cooperationMode"])
                 art["versions"] = []
                 for v in db.execute("SELECT * FROM version WHERE artifact_id=? ORDER BY display_no", (art["id"],)):
                     v = _loads(dict(v), "content")

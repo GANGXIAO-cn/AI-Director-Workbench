@@ -109,7 +109,7 @@ class Env:
         pv, _ = self.save_adopt(eid, "prompts", self.prompts_for(plan, img["versionId"]))
         self.review_segments(pv, list(segments))
         self.save_adopt(eid, "publish", dict(title="First Night Shift", body="Afu takes his first night shift.",
-                                             tags=["shiba"], suno_title="Night Shift", suno_style="lofi, quiet",
+                                             tags=["shiba"], suno_title="Night Shift", suno_style="lofi, quiet, 90 BPM",
                                              suno_exclude="vocals", cues=[dict(at="00:10.000", action="压低")]))
         result = dict(pid=pid, eid=eid, plan=plan, img=img, prompts=pv)
         if deliver:

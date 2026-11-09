@@ -24,6 +24,7 @@ async function main(){
     const artifact=async()=>(await query("episode_view",{episode_id:eid})).artifacts.find(a=>a.stage==="prompts");
     const original=await artifact(), vid=original.adopted_version_id;
     await page.goto(base+"/#/e/"+eid+"/prompts?v="+vid);
+    await page.getByRole("button",{name:"修改本阶段",exact:true}).click();
     const field=page.getByLabel("G01 提示词正文"), before=await field.inputValue();
     const originalCount=(await query("episode_assets",{episode_id:eid})).length;
     const pick=page.getByLabel("本集可选音视频"), upload=page.getByLabel("上传本集音视频参考");
