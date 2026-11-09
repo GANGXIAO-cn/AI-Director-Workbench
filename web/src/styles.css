@@ -386,3 +386,6 @@ kbd { border-radius: 4px; background: var(--card2); padding: 2px 5px; }
 .baseline-compose aside { border-inline-start: 1px solid var(--line); padding-inline-start: 14px; }
 .baseline-compose aside label { display: grid; gap: 5px; margin: 6px 0; }
 @media(max-width:760px) { .baseline-compose.with-assistant { grid-template-columns: 1fr; } .baseline-compose aside { padding-inline-start: 0; border-inline-start: 0; } }
+
+.director-files { list-style: none; padding: 0; margin: 8px 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.director-files li { display: flex; gap: 5px; align-items: center; overflow-wrap: anywhere; }

@@ -4,6 +4,7 @@ import { useProjectRoute } from "./projectNavigation";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { Ref } from "react";
+import { addDirectorFiles, clipboardFiles, DirectorFiles, useDirectorCommand } from "./DirectorFiles";
 import { cmd, q } from "./api";
 import { Avatars, ErrorLine, Modal, PROVIDER_LABEL, STAGES, Tag, rno, useAction, useQuery } from "./ui";
 
@@ -27,6 +28,8 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
   const focused = art?.versions?.find((v:any)=>v.id===focus);
   const task = tasks.find((t:any)=>t.runs.some((r:any)=>r.id===focused?.source_run_id)) || tasks.at(-1);
   const [text, setText] = useState(() => sessionStorage.getItem(`draft:${view.episode.id}:${stage}`) ?? "");
+  const submit = useDirectorCommand();
+  const [files,setFiles] = useState<File[]>([]);
   const input = useRef<HTMLTextAreaElement>(null);
   useImperativeHandle(composeRef,()=>message=>{
     const draft = [text.trimEnd(),message].filter(Boolean).join("\n");
@@ -54,14 +57,14 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
     else setImpact(null);
   }, [focusV?.id, art?.adopted_version_id]);
   const send = () => act.run(async () => {
-    if (!text.trim()) return;
+    if (!text.trim()) { if (files.length) throw new Error("请写明希望助手怎样使用附件"); return; }
     if (!art) throw new Error("本阶段还没有成果，请先采用上一步");
     if (open) {
-      await cmd("post_message", { task_id: task.id, text, create_executor: selected, selection: sel?.data ?? null, base_version_id: focusV?.id ?? art.adopted_version_id ?? undefined });
+      await submit("post_message", { task_id: task.id, text, create_executor: selected, selection: sel?.data ?? null, base_version_id: focusV?.id ?? art.adopted_version_id ?? undefined },files);
     } else {
-      await cmd("create_task", { episode_id: view.episode.id, stage: art.stage, goal: text, executor: {create:selected}, selection: sel?.data ?? null });
+      await submit("create_task", { episode_id: view.episode.id, stage: art.stage, goal: text, executor: {create:selected}, selection: sel?.data ?? null },files);
     }
-    setText(""); setSel(null); reload();
+    setText(""); setFiles([]); setSel(null); reload();
   });
   const runs = task?.runs ?? [];
   const live = runs.filter((r: any) => ["queued", "running"].includes(r.status));
@@ -121,9 +124,15 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
       </div>
       {STAGE_ART[stage] ? <div className="composer">
         {sel && <div className="selchip">选区：{sel.label} <span style={{ cursor: "pointer" }} onClick={() => setSel(null)}>×</span></div>}
-        <textarea ref={input} maxLength={500} placeholder="输入你的想法，继续完善这一集" value={text} onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send(); }} />
+        <DirectorFiles files={files} remove={act.busy ? undefined : i=>setFiles(files.filter((_,n)=>n!==i))}/>
+        <textarea ref={input} disabled={act.busy} onPaste={e=>{
+          const pasted = clipboardFiles(e.clipboardData);
+          if (pasted.length) {e.preventDefault();act.run(async()=>setFiles(addDirectorFiles(files,pasted)));}
+        }} maxLength={500} placeholder="输入你的想法，继续完善这一集" value={text} onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => { if (!act.busy && !e.nativeEvent.isComposing && e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault();send(); } }} />
         <div className="row small" style={{flexWrap:"wrap"}}>
+          <label className="btn ghost">添加附件<input type="file" aria-label="添加阶段附件" multiple hidden accept=".md,.txt,.docx,.pdf,image/jpeg,image/png" disabled={act.busy}
+            onChange={e=>{const picked=Array.from(e.target.files ?? []);e.target.value="";act.run(async()=>setFiles(addDirectorFiles(files,picked)));}}/></label>
           <button className="btn ghost" onClick={openRequirements}>阶段技能</button>
           <span className="muted tiny">⌘ / Ctrl + 回车发送</span>
           <select aria-label="创作执行器" value={provider} onChange={e => setSelected({provider:e.target.value})}>
@@ -172,7 +181,7 @@ function Message({ m, task, reload, art, closeHistory }: { m:any; task:any; relo
   const {focusChat, setFocusChat} = useDisplay();
   const act = useAction();
   const payload = m.payload ? JSON.parse(m.payload) : null;
-  if (m.role === "user") return <div className="msg user">{m.text}{m.selection && <div className="muted tiny">选区 {Object.values(JSON.parse(m.selection)).join(" · ")}</div>}</div>;
+  if (m.role === "user") return <div className="msg user">{m.text}{payload?.attachments?.map((f:any,i:number)=><div className="tiny" key={i}>附件 · {f.name}</div>)}{m.selection && <div className="muted tiny">选区 {Object.values(JSON.parse(m.selection)).join(" · ")}</div>}</div>;
   if (m.kind === "clarify") return (
     <div className="mcard focus">
       <div className="msg"><div className="who"><i className="codex" />澄清</div></div>

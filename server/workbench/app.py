@@ -330,8 +330,32 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
                     worker.submit(rid)
         return result
 
+    @app.post("/api/with-files/{name}")
+    async def with_files(name: str, args: str = Form(...), files: list[UploadFile] = File(...)):
+        from .attachments import LIMIT
+        from starlette.concurrency import run_in_threadpool
+        if name not in ("start_episode", "create_task", "post_message"):
+            raise NotFound("该操作不支持附件")
+        try:
+            body = json.loads(args)
+        except ValueError as exc:
+            raise Rejected("附件请求参数无效") from exc
+        if not isinstance(body, dict) or "files" in body or len(files) > 6:
+            raise Rejected("请核对附件参数，每次最多 6 份")
+        remaining = LIMIT
+        body["files"] = []
+        for file in files:
+            raw = await file.read(remaining+1)
+            remaining -= len(raw)
+            if remaining < 0:
+                raise Rejected("本次附件合计超过 30 MiB")
+            body["files"].append((file.filename or "图片", raw))
+        return await run_in_threadpool(call, name, body)
+
     @app.post("/api/cmd/{name}")
     def command(name: str, body: dict = Body(default={})):
+        if name in ("start_episode","create_task","post_message") and "files" in body:
+            raise Rejected("含附件的请求须使用文件上传入口")
         if name == "expert_run":
             check_call_args(inspect.signature(wb.claim_expert), body)
             claimed = wb.claim_expert(**body)

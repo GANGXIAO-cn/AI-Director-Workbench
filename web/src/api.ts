@@ -54,3 +54,11 @@ export const setProviderKey = (id: string, revision: number, key: string) =>
 export const openProjectFolder = (folder:string,expected?:string) => send<{url:string;projectId:string}>("POST","/project-folder/open",{folder,expected});
 export const projectFolders = () => send<{external:boolean;opened:{path:string;url:string;projectId:string}[];recent:{name:string;path:string;available:boolean;fingerprint:string}[]}>("GET","/project-folder");
 export const closeProjectFolder = (folder:string) => send("POST","/project-folder/close",{folder});
+
+export function commandWithFiles(name:string, args:Record<string,any>, files:File[]) {
+  if (!files.length) return cmd(name,args);
+  const form = new FormData();
+  form.append("args",JSON.stringify({...args,command_id:args.command_id ?? commandId()}));
+  for (const file of files) form.append("files",file);
+  return send("POST","/with-files/"+encodeURIComponent(name),undefined,form);
+}

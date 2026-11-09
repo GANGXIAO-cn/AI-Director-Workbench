@@ -1,4 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { Kickoff } from "./Project";
+import { addDirectorFiles, clipboardFiles, DirectorFiles, isPicture } from "./DirectorFiles";
 import { isKickoffTopic } from "./topics";
 import { FileInput, PencilLine, Plus, PackageOpen, Film, Palette, NotebookPen, Ratio, ChevronDown, ArrowUp, type LucideIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -21,6 +23,8 @@ export default function Home({ tab, projects }: { tab?: string; projects: Return
   const [text, setText] = useState("");
   const [projectId, setProjectId] = useState("");
   const [pop, setPop] = useState<"" | "style" | "topic" | "settings" | "project">("");
+  const [pictures,setPictures] = useState<File[]>([]);
+  const [imageKickoff,setImageKickoff] = useState<any>(null);
   const [importFile, setImportFile] = useState<File | null>(null);
   const [referenceFile, setReferenceFile] = useState<File | null>(null);
   const [styleNote, setStyleNote] = useState("");
@@ -65,9 +69,23 @@ export default function Home({ tab, projects }: { tab?: string; projects: Return
   const kickoffMode = ["idea","episode","import"].includes(mode);
   const prefill = { style: styleNote, ratio, creator, reviewer, mode: runMode, predecessorId: previous };
   const selectProject = (pid: string) => {
-    localStorage.setItem("lastProject",pid); setProjectId(pid); setRecognized([]); setTopic(null); setPrevious(""); setRatio(""); setStyleNote(""); setTargetEpisode("");
+    setPictures([]); localStorage.setItem("lastProject",pid); setProjectId(pid); setRecognized([]); setTopic(null); setPrevious(""); setRatio(""); setStyleNote(""); setTargetEpisode("");
   };
   const selectMode = (value: string) => { if (value !== mode) {setTopic(null); setPrevious("");} setMode(value); setPop(""); act.clear(); };
+  const openKickoff = (pid:string, values:Record<string,unknown>) => {
+    if (pictures.length) {
+      setProjectId(pid);
+      setImageKickoff({...values,projectId:pid});
+    } else {
+      sessionStorage.setItem("kickoff-prefill:"+pid,JSON.stringify({...values,projectId:pid}));
+      go(`#/p/${pid}`);
+    }
+  };
+  const attachPictures = (incoming:File[]) => act.run(async()=>{
+    const files = addDirectorFiles(pictures,incoming,true);
+    if (!kickoffMode) selectMode("idea");
+    setPictures(files);
+  });
   const shortcut = (index: number) => act.run(async () => {
     if (index === 0) { selectMode("episode"); setPop("topic"); }
     if (index === 1) {
@@ -90,8 +108,7 @@ export default function Home({ tab, projects }: { tab?: string; projects: Return
       if (mode === "idea" && !topic && !text.trim()) throw new Error("请输入一句话想法或选择一张选题卡");
       const pid = await ensureProject(projectId, text.slice(0, 12) || "新项目");
       const displayCode=code || (pid === projectId ? nextCode() : "E01");
-      sessionStorage.setItem("kickoff-prefill:"+pid, JSON.stringify({ ...prefill, projectId:pid, displayCode, idea: topic ? undefined : text, topicId: topic?.id, goal: topic ? text : "" }));
-      go(`#/p/${pid}`);
+      openKickoff(pid,{ ...prefill, displayCode, idea:topic ? undefined : text, topicId:topic?.id, goal:topic ? text : "" });
     } else if (mode === "import") {
       const file = importFile;
       if (!file) throw new Error("请先选择故事稿或剧本文件");
@@ -132,11 +149,16 @@ export default function Home({ tab, projects }: { tab?: string; projects: Return
         <div className="hero">
           <h1>和导演助手聊聊这一集</h1>
           <div className="bigbox" style={{ position: "relative" }}
+            onPaste={e=>{
+              const files = clipboardFiles(e.clipboardData);
+              if (files.length) {e.preventDefault();attachPictures(files);}
+            }}
             onDragOver={e=>{if(e.dataTransfer.types.includes("Files")) e.preventDefault();}}
             onDrop={e=>{
               if(!e.dataTransfer.files.length) return;
               e.preventDefault();
-              const files = e.dataTransfer.files;
+              const files = Array.from(e.dataTransfer.files);
+              if (files.every(isPicture)) {attachPictures(files);return;}
               if(files.length !== 1) { act.run(async()=>{throw new Error("每次请选择一份稿件或参考片");}); return; }
               const file = files[0];
               if(mode==="reference" && file.type.startsWith("video/")) { setReferenceFile(file); return; }
@@ -158,6 +180,8 @@ export default function Home({ tab, projects }: { tab?: string; projects: Return
                 placeholder={mode === "import" || (topic && ["idea","episode"].includes(mode)) ? "补充本集要求（选填）" : mode === "reference" ? "希望借鉴什么？例：借检票亭里认人的节奏，把故事放到末班渡轮上" :
                   `${nextCode()}：谁想做什么，遇到了什么意外？`} />}
             </div>
+            {kickoffMode && <span className="muted tiny" style={{marginLeft:14}}>可粘贴或拖入故事参考图（PNG、JPEG）</span>}
+            {kickoffMode && <DirectorFiles files={pictures} remove={i=>setPictures(pictures.filter((_,n)=>n!==i))}/>}
             {["idea","episode"].includes(mode) && (topic || previous) && <div className="row" style={{padding:"0 14px 10px"}}>
               {topic && <button className="chip" onClick={() => setTopic(null)}>选题 {topic.code} · {topic.premise} ×</button>}
               {previous && <button className="chip" onClick={() => setPrevious("")}>承接 {opened.find((e: any) => e.id === previous)?.display_code} ×</button>}</div>}
@@ -190,6 +214,7 @@ export default function Home({ tab, projects }: { tab?: string; projects: Return
               settings={{ratio,creator,reviewer,runMode,setRatio,setCreator,setReviewer,setRunMode}} />}
           </div>
           {existing && project.error && <p role="alert" className="error">当前项目读取失败 · {project.error} <button className="btn" onClick={project.reload}>重试当前项目</button></p>}
+          {imageKickoff && <Kickoff projectId={imageKickoff.projectId} prefill={imageKickoff} pictures={pictures} onClose={()=>setImageKickoff(null)}/>}
           <ErrorLine error={act.error} />
           {mode === "import" && recognized.some(r => r.projectId === projectId) && (
             <div className="card line" style={{ maxWidth: 900, margin: "14px auto", textAlign: "left" }}>
@@ -197,7 +222,7 @@ export default function Home({ tab, projects }: { tab?: string; projects: Return
               {recognized.filter(r => r.projectId === projectId).map((r) => (
                 <div key={r.importId} className="spread">
                   <div>{r.name} → {r.episode} · {r.purpose === "script_source" ? "剧本（故事来源）" : "故事稿（故事来源）"} · {r.extractionMethod && r.extractionMethod+" · "}{r.parseStatus === "parsed" ? <><span className="ok">已解析</span>{r.diagnostic && <span> · {r.diagnostic}</span>}</> : <span className="error">{r.diagnostic}</span>}{r.preview && <details><summary>查看提取正文（前 800 字符）</summary><pre style={{whiteSpace:"pre-wrap"}}>{r.preview}</pre></details>}</div>
-                  <button className="btn primary" disabled={r.parseStatus !== "parsed"} onClick={() => { sessionStorage.setItem("kickoff-prefill:"+r.projectId, JSON.stringify({ ...prefill, goal:text, displayCode:r.episode, projectId:r.projectId, importId: r.importId })); go(`#/p/${r.projectId}`); }}>去开工 {r.episode}</button>
+                  <button className="btn primary" disabled={r.parseStatus !== "parsed"} onClick={() => openKickoff(r.projectId,{ ...prefill,goal:text,displayCode:r.episode,importId:r.importId })}>去开工 {r.episode}</button>
                 </div>))}
             </div>
           )}

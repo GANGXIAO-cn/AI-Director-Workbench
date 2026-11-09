@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import time
 
-from . import contracts, prompts, acting, shotrefs, imagechoices
+from . import contracts, prompts, acting, shotrefs, imagechoices, attachments
 from .db import dumps, initialize, new_id, transaction, connect
 from .executors.base import ExecRequest
 from .executors.cli import redact
@@ -305,10 +305,13 @@ class Core:
 
     def start_episode(self, episode_id, source_type, executor_plan, source_import_id=None, idea_text=None,
                       topic_id=None, goal="", relation="independent", predecessor_ids=(), spec_overrides=None,
-                      command_id=None, project_id=None, display_code=None, leftover_facts=(), preset_name="default", preset_revision=None, use_story_skill=False):
+                      command_id=None, project_id=None, display_code=None, leftover_facts=(), preset_name="default", preset_revision=None, use_story_skill=False, files=()):
         payload = dict(project_id=project_id, display_code=display_code, facts=list(leftover_facts), episode_id=episode_id, source_type=source_type, plan=executor_plan, imp=source_import_id,
                        idea=idea_text, topic=topic_id, goal=goal, relation=relation, pre=list(predecessor_ids),
                        spec=spec_overrides)
+        _, pictures = attachments.prepare(files, images_only=True)
+        if pictures:
+            payload["pictures"] = pictures
         if use_story_skill:
             payload["useStorySkill"] = True  # compatibility with saved kickoff command receipts
         if preset_name!="default" or preset_revision is not None:
@@ -364,6 +367,9 @@ class Core:
                            (episode_id,preset_name,preset["rev"],dumps(preset["values"])))
                 db.execute("INSERT INTO kickoff_method VALUES(?,?)", (episode_id, project["method_pack"]))
                 pin_at_kickoff(db, ep["project_id"], episode_id)
+                for picture, (_, data) in zip(pictures, files):
+                    self.register_asset(ep["project_id"], picture["name"], data, "reference", episode_id=episode_id,
+                                        origin="kickoff_reference", db=db)
                 aid = new_id()
                 db.execute("INSERT INTO artifact(id,project_id,episode_id,stage) VALUES(?,?,?,?)",
                            (aid, ep["project_id"], episode_id, "story"))
@@ -386,8 +392,11 @@ class Core:
 
     # ------------------------------------------------------------------ tasks, threads, runs
     def create_task(self, episode_id, stage, goal, auto_revise=False, executor=None, command_id=None, selection=None,
-                    prompt_images=None):
+                    prompt_images=None, files=()):
         payload = dict(episode_id=episode_id, stage=stage, goal=goal, auto=auto_revise, ex=executor, sel=selection)
+        extra, refs = attachments.prepare(files)
+        if refs:
+            payload["attachments"] = refs
         if prompt_images is not None:
             if stage != "prompts" or type(prompt_images) is not bool:
                 raise Rejected("发送绑定参考仅适用于提示词阶段")
@@ -414,23 +423,23 @@ class Core:
                                        else f"上一步（{prev}）尚未采用")
                     self._ensure_artifact(db, ep, stage)
                 aid = db.execute("SELECT id FROM artifact WHERE episode_id=? AND stage=?", (episode_id, stage)).fetchone()[0]
-                tid, thread = self._draft_thread(db, ep["project_id"], episode_id, aid, stage, goal, plan, auto_revise, selection)
+                tid, thread = self._draft_thread(db, ep["project_id"], episode_id, aid, stage, goal, plan, auto_revise, selection, refs)
                 if prompt_images is not None:
                     db.execute("INSERT INTO prompt_draft_task VALUES(?,?)", (tid, int(prompt_images)))
                 base = db.execute("SELECT adopted_version_id FROM artifact WHERE id=?", (aid,)).fetchone()[0] \
                     or self._latest_version(db, aid)
-                run_id = self._queue_run(db, tid, "revise" if base else "create", base, goal, selection)
+                run_id = self._queue_run(db, tid, "revise" if base else "create", base, goal, selection, message_entries=extra)
                 return dict(taskId=tid, threadId=thread, runId=run_id, artifactId=aid)
             return self._command(db, command_id, "create_task", payload, run)
 
-    def _draft_thread(self, db, project_id, episode_id, artifact_id, stage, goal, plan, auto_revise=False, selection=None):
+    def _draft_thread(self, db, project_id, episode_id, artifact_id, stage, goal, plan, auto_revise=False, selection=None, refs=None):
         tid, thread = new_id(), new_id()
         db.execute("INSERT INTO task(id,project_id,episode_id,artifact_id,stage,goal,auto_revise,max_rounds,"
                    "executor_plan,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
                    (tid, project_id, episode_id, artifact_id, stage, goal, int(auto_revise), ROUND_LIMIT,
                     dumps(plan), self.clock()))
         db.execute("INSERT INTO thread VALUES(?,?,?)", (thread, tid, f"{stage}:{artifact_id}"))
-        self._message(db, thread, "user", goal, selection, None)
+        self._message(db, thread, "user", goal, selection, None, payload={"attachments":refs} if refs else None)
         return tid, thread
 
     def _snapshot_parts(self, run):
@@ -509,11 +518,14 @@ class Core:
                          (artifact_id,)).fetchone()
         return row[0] if row else None
 
-    def post_message(self, task_id, text, command_id, selection=None, base_version_id=None, create_executor=None):
+    def post_message(self, task_id, text, command_id, selection=None, base_version_id=None, create_executor=None, files=()):
         """A user message asks for a revision. It never resets the task's round counter."""
         if not text.strip():
             raise Rejected("消息为空")
         payload = dict(task_id=task_id, text=text, selection=selection, base=base_version_id)
+        extra, refs = attachments.prepare(files)
+        if refs:
+            payload["attachments"] = refs
         if create_executor is not None:
             self.validate_selection(create_executor.get("provider"), create_executor.get("model"), create_executor.get("effort"))
             payload["create_executor"] = create_executor
@@ -530,8 +542,8 @@ class Core:
                 base = base_version_id or self._latest_version(db, task["artifact_id"])
                 if base:
                     self._version_of(db, base, task["artifact_id"])
-                run_id = self._queue_run(db, task_id, "revise" if base else "create", base, text, selection)
-                mid = self._message(db, thread, "user", text, selection, None, run_id)
+                run_id = self._queue_run(db, task_id, "revise" if base else "create", base, text, selection, message_entries=extra)
+                mid = self._message(db, thread, "user", text, selection, None, run_id, payload={"attachments":refs} if refs else None)
                 return dict(messageId=mid, runId=run_id, usedRounds=task["used_rounds"])
             return self._command(db, command_id, "post_message", payload, run)
 
@@ -567,7 +579,7 @@ class Core:
         return self.stage_methods(episode_id,stage)
 
     def _queue_run(self, db, task_id, purpose, base_version_id, request, selection=None, counted=False,
-                   target_version_id=None, provider=None, model=None, effort=None, entries=None, extra_header=None):
+                   target_version_id=None, provider=None, model=None, effort=None, entries=None, extra_header=None, message_entries=()):
         task = _row(db, "SELECT * FROM task WHERE id=?", task_id)
         plan = json.loads(task["executor_plan"])
         role = plan["review"] if purpose in REVIEW_PASSES else plan["create"]
@@ -606,6 +618,7 @@ class Core:
                 frozen_names = {(e["role"],e["name"]) for e in prior}
                 entries = [e for e in entries if (e["role"],e["name"]) not in frozen_names]
                 entries.extend(dict(role=e["role"],name=e["name"],text=e["text"]) for e in prior)
+        entries.extend(message_entries)
         header = dict(schemaVersion=1, purpose=purpose, projectId=task["project_id"], episodeId=task["episode_id"],
                       taskId=task_id, artifactId=task["artifact_id"], stage=task["stage"], provider=provider,
                       requestedModel=model, requestedEffort=effort, methodPack=dict(id=pack["id"], files={e["name"]: e["methodSource"] for e in entries if "methodSource" in e}),

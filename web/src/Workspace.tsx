@@ -293,9 +293,12 @@ function StoryView({ ctx }: { ctx: Ctx }) {
   useEffect(()=>{if (editId && current?.id===editId) {setEdit(true);setTab("synopsis");}},[hash,editId,current?.id]);
   const k = ctx.view.kickoff;
   const manuscript = ctx.view.storyManuscript;
-  const sourcePanel = manuscript && <details className="card"><summary>本集补充稿件 · {manuscript.original_name}</summary>
+  const pictures = ctx.assets.filter(a=>a.origin==="kickoff_reference" && a.version_no===1);
+  const sourcePanel = <>{pictures.length>0 && <details className="card"><summary>本集开工参考图 · {pictures.length} 张</summary>
+    <div className="row">{pictures.map(a=><figure key={a.id}><img src={blob(a.sha256)} alt={a.name} width={96}/>
+      <figcaption>{a.name}</figcaption></figure>)}</div></details>}{manuscript && <details className="card"><summary>本集补充稿件 · {manuscript.original_name}</summary>
     <div className="muted tiny">用于下一次故事任务 · 文件指纹 {manuscript.sha256.slice(0,12)}</div>
-    <pre className="field">{manuscript.parsed_text}</pre></details>;
+    <pre className="field">{manuscript.parsed_text}</pre></details>}</>;
   if (requestedRun) return <div><h1>改编故事稿</h1><p role="status">{result ? "正在打开新稿…" :
     run && ["queued","running"].includes(run.status) ? "改编稿生成中…" :
     run?.reason || (run ? "本次运行尚无改编稿。" : "本集未找到这次改编任务。")}</p>

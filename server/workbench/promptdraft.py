@@ -104,7 +104,8 @@ def draft(wb, eid):
                     vid = next((bound for bound in refs if assets[bound]["sha256"] == assets[vid]["sha256"]), vid)
                 add(vid,"本段九宫格" if grid else "镜头参考",[s for s in seg["shots"] if s in shots or (wanted and grid and not shots)])
         if not refs:
-            candidates=[a for a in assets.values() if bool(a["grid"])==grid and a["category"] != "product_reference"]
+            candidates=[a for a in assets.values() if bool(a["grid"])==grid and a["category"] != "product_reference"
+                        and a["origin"] != "kickoff_reference"]
             if grid: candidates=[a for a in candidates if a["name"].split(" ")[0]==sid or a["name"].startswith(sid+"-")]
             if len(candidates)!=1: raise Rejected(f"{sid} 请先为本段镜头明确选图：在镜卡绑定起落幅，或为本段标记必用图。")
             add(candidates[0]["id"],"本段九宫格" if grid else "场面参考",seg["shots"] if grid else ())

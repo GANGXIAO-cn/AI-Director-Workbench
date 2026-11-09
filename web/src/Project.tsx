@@ -1,4 +1,5 @@
 import { Wrench } from "lucide-react";
+import { DirectorFiles, useDirectorCommand } from "./DirectorFiles";
 import { isKickoffTopic } from "./topics";
 import { ProjectPresets } from "./ProjectPresets";
 import { useProjectRoute } from "./projectNavigation";
@@ -64,7 +65,7 @@ export default function Project({ id }: { id: string }) {
           else act.run(async () => { await cmd("create_episode", { project_id: id, display_code: c, leftover_facts: f.split("\n").map((x) => x.trim()).filter(Boolean) }); o.reload(); });
         }} />}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, margin: "18px 0" }}>
-          {todos.slice(0, 2).map((t: any, i: number) => (
+          {todos.map((t: any, i: number) => (
             <div key={i} className={`card ${t.kind === "closure" ? "cyan" : "amber"}`}>
               <div className="row"><Tag tone={t.kind === "closure" ? "cyan" : "amber"}>{t.kind === "closure" ? "下一步" : "缺口"}</Tag><b>{t.title}</b></div>
               <div className="muted small" style={{ margin: "8px 0" }}>{t.kind === "closure" ? "可逐条查看出处，写进设定或只留台账。" : "只阻塞依赖它的段；其他段可以继续。"}</div>
@@ -160,8 +161,9 @@ function EpisodeManuscript({pid,episode,close}:{pid:string;episode:any;close:()=
   </Modal>;
 }
 
-export function Kickoff({ projectId, prefill, onClose }: { projectId: string; prefill: any; onClose: () => void }) {
+export function Kickoff({ projectId, prefill, onClose, pictures=[] }: { projectId: string; prefill: any; onClose: () => void; pictures?:File[] }) {
   const { go } = useProjectRoute();
+  const submit = useDirectorCommand();
   const [source, setSource] = useState<"idea" | "topic" | "import">(prefill.importId ? "import" : prefill.topicId ? "topic" : "idea");
   const [idea, setIdea] = useState(prefill.idea ?? "");
   const [goal,setGoal] = useState(prefill.goal ?? "");
@@ -193,7 +195,7 @@ export function Kickoff({ projectId, prefill, onClose }: { projectId: string; pr
   const validDuration=Number.isInteger(duration)&&duration>=5&&duration<=15;
   const required = p.settings.filter((s: any) => s.strength === "required").length;
   const start = () => act.run(async () => {
-    const started=await cmd("start_episode", {
+    const started=await submit("start_episode", {
       episode_id: prefill.episodeId ?? null, project_id:projectId, display_code:prefill.displayCode, leftover_facts:prefill.leftoverFacts, source_type: source, executor_plan: { create: { provider: creator, ...cm }, review: { provider: reviewer, ...rm } },
       preset_name:chosen.name,preset_revision:chosen.rev,
       spec_overrides: { ...(prefill.style ? { style: prefill.style } : {}), ...(ratioOverride ? {aspectRatio:ratioOverride} : {}) },
@@ -201,13 +203,13 @@ export function Kickoff({ projectId, prefill, onClose }: { projectId: string; pr
       source_import_id: source === "import" ? importId : undefined, idea_text: source === "idea" ? idea : undefined,
       topic_id: source === "topic" ? topicId : undefined, relation: relation === "continue" && pre ? "continue" : "independent",
       predecessor_ids: relation === "continue" && pre ? [pre] : [],
-    });
+    }, pictures);
     if (mode === "expert") { go(`#/p/${projectId}/expert?episode=${started.episodeId}`); return; }
     go(`#/e/${started.episodeId}/story`);
   });
   const lastPre = p.predecessorsAvailable[p.predecessorsAvailable.length - 1];
   return (
-    <Modal onClose={onClose}>
+    <Modal onClose={()=>{if (!act.busy) onClose();}}>
       <div className="spread"><h2 style={{ fontSize: "1.38rem" }}>开工 · {p.episode.display_code}</h2>{lastPre && <Tag tone="cyan">按上一集预填</Tag>}</div>
       <p className="muted small">每一集开工时决定这一集怎么做。所有集走同一条流水线，这里只定本集的做法。</p>
       <div className="formrow"><span className="muted">故事来源</span><div className="col">
@@ -219,6 +221,7 @@ export function Kickoff({ projectId, prefill, onClose }: { projectId: string; pr
           {p.imports.map((i: any) => <option key={i.id} value={i.id} disabled={i.parse_status !== "parsed"}>{i.original_name}{i.parse_status !== "parsed" ? "（解析失败）" : ""}（{i.purpose === "script_source" ? "剧本" : "故事稿"}，作为故事来源）</option>)}</select>
           : <span className="muted small">本集没有导入材料。可在首页「导入故事稿 / 剧本」归位后再开工。</span>)}
       </div></div>
+      {pictures.length>0 && <div className="formrow"><span>故事起草参考图</span><DirectorFiles files={pictures}/></div>}
       {source !== "idea" && <label className="formrow"><span className="muted">本集补充要求</span><textarea value={goal} onChange={e=>setGoal(e.target.value)}/></label>}
       <div className="formrow"><span className="muted">和前面各集的关系</span><div className="col">
         <div className="row">
@@ -260,7 +263,7 @@ export function Kickoff({ projectId, prefill, onClose }: { projectId: string; pr
         <ProjectPresets pid={projectId}/></Modal>}
       <ErrorLine error={act.error} />{act.error&&<button className="btn" onClick={()=>preview.reload()}>刷新开工预览</button>}
       <div className="row" style={{ justifyContent: "flex-end", marginTop: 16 }}>
-        <button className="btn" onClick={onClose}>取消</button>
+        <button className="btn" disabled={act.busy} onClick={onClose}>取消</button>
         <button className="btn primary" disabled={act.busy || !validRatio || !validDuration || (source === "idea" ? !idea.trim() : source === "topic" ? !topicId : !importId)} onClick={start}>开工，进入故事稿</button>
       </div>
     </Modal>

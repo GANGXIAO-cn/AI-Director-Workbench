@@ -541,6 +541,11 @@ class ProductionMixin:
                                                    sha256=p["product"]["sha256"]) for p in records if p["segment"]])))
         extra += self._stage_reference_entries(task["episode_id"], task["stage"])
         if task["stage"] == "story":
+            pictures = db.execute("SELECT v.sha256 FROM asset a JOIN asset_version v ON v.asset_id=a.id "
+                                  "WHERE a.project_id=? AND a.episode_id=? AND a.origin='kickoff_reference' "
+                                  "AND v.version_no=1 ORDER BY a.rowid", (task["project_id"], task["episode_id"]))
+            for i, picture in enumerate(pictures, 1):
+                extra.append(image_attachment(f"开工参考{i}", self.store.read_blob(picture["sha256"])))
             manuscript = self._episode_manuscript(db, task["episode_id"])
             if manuscript:
                 extra.append(dict(role="citation", name="导演导入的本集稿件 · "+manuscript["original_name"],
