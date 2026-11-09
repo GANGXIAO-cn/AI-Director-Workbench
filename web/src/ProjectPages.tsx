@@ -1,3 +1,4 @@
+import {ExecutorConnection} from "./ExecutorConnection";
 import { ProjectBaselines } from "./ProjectBaselines";
 import { TopicResearch } from "./TopicResearch";
 import { FreeChat } from "./FreeChat";
@@ -554,11 +555,11 @@ function Executors() {
   return (
     <div>
       <h1>执行与分工</h1><div className="muted small" style={{ margin: "6px 0 16px" }}>逐步配置；单模型不取消必需审核。执行器不可用或隔离未通过时明确暂停，不悄悄降级。</div>
-      <button className="btn" disabled={act.busy} onClick={() => act.run(async () => {await Promise.all([probe.reload(), cat.reload()]);})}>重新检测本机连接</button>
+      <button className="btn" disabled={act.busy} onClick={() => act.run(async () => {await Promise.all([probe.reload(), cat.reload()]);})}>重新检测本机连接</button><ErrorLine error={probe.error||cat.error?{message:probe.error||cat.error||""}:null}/>
       <div className="grid3">{Object.entries(probe.data ?? {}).map(([k, v]: any) => (
         <div key={k} className={`card ${v.status === "available" ? "line" : "amber"}`}>
           <div className="spread"><b>{PROVIDER_LABEL[k] ?? k}</b><Tag tone={v.status === "available" ? "green" : "amber"}>{states[v.status] ?? "待检测"}</Tag></div>
-          <div className="small" style={{ margin: "6px 0" }}>{v.version ?? "未检测到版本"} · 登录 {v.authenticated === true ? "是" : v.authenticated === false ? "否" : "待验证"} · 代理 {v.proxy ? "已传入" : "无"}</div>
+          <div className="small" style={{ margin: "6px 0" }}>{v.version ?? "未检测到版本"} · 登录 {v.authenticated === true ? "是" : v.authenticated === false ? "否" : "待验证"}{v.accountLabel ? " · "+v.accountLabel : ""} · 代理 {v.proxy ? "已传入" : "无"}</div>
           <div className="muted tiny mono">{v.executable ?? "未找到"}</div>
           <div className="small">独审隔离　{v.isolation === "session" ? "支持独立会话" : "待验证"}</div>
           {v.missing_flags?.length > 0 && <div className="small">缺少参数　{v.missing_flags.join("、")}</div>}
@@ -568,6 +569,8 @@ function Executors() {
             <button className="btn" disabled={act.busy} onClick={() => act.run(async () => {
               await setCliPath(k, paths[k] ?? v.configured ?? ""); await probe.reload();
             })}>保存路径</button></label>}
+          {cat.data?.text[k]?.connection && <ExecutorConnection key={cat.data.text[k].connection.revision} provider={k} settings={cat.data.text[k].connection}
+            models={cat.data.text[k].models} reload={async()=>{await Promise.all([cat.reload(),probe.reload()]);}}/>}
         </div>))}</div>
       <h2 style={{ marginTop: 20 }}>型号与强度（能力元数据）</h2>
       <table className="table"><thead><tr><th>执行器</th><th>型号</th><th>可选强度</th><th>状态</th><th>来源</th></tr></thead>

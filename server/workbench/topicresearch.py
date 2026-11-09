@@ -82,6 +82,7 @@ class TopicResearchMixin:
                 thread, turn, attempt = new_id(), new_id(), new_id()
                 header = dict(purpose="topic_research", projectId=project_id, threadId=thread,
                               methodPack=pack["id"], provider=provider, sourceCodes=catalog_codes)
+                header["executorConnection"] = self.run_connection(provider)
                 digest, rel = self.store.freeze(turn, header, entries)
                 db.execute("INSERT INTO free_thread VALUES(?,?,?)", (thread,project_id,direction.strip()[:48]))
                 db.execute("INSERT INTO topic_research VALUES(?,?)", (thread, project_id))

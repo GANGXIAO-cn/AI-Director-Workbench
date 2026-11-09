@@ -17,6 +17,7 @@ class ExecRequest:
     effort: Optional[str] = None
     timeout: int = 300
     images: list = field(default_factory=list)   # local files the reviewer must look at, in order
+    connection: dict = field(default_factory=dict)
 
 
 @dataclass

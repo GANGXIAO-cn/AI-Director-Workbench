@@ -536,7 +536,7 @@ class Core:
                         if role not in ("create", "review") or not isinstance(selected, dict):
                             raise Rejected("任务执行分工无效")
                         self.validate_selection(selected.get("provider"), selected.get("model"), selected.get("effort"))
-                    plan.update(executor)
+                    plan.update({role:self.checked_connection(slot) for role,slot in executor.items()})
                 if stage not in WRITABLE:
                     raise Rejected("未知阶段")
                 prev = next((k for k, v in NEXT.items() if v == stage), None)
@@ -679,7 +679,7 @@ class Core:
                     raise Rejected("任务已结束")
                 if create_executor is not None:
                     plan = json.loads(task["executor_plan"])
-                    plan["create"] = create_executor
+                    plan["create"] = self.checked_connection(create_executor)
                     db.execute("UPDATE task SET executor_plan=? WHERE id=?", (dumps(plan), task_id))
                 thread = db.execute("SELECT id FROM thread WHERE task_id=?", (task_id,)).fetchone()[0]
                 base = base_version_id or self._latest_version(db, task["artifact_id"])
@@ -730,8 +730,13 @@ class Core:
         provider = provider or role["provider"]
         if provider not in self.executors:
             raise Rejected(f"未配置的执行器：{provider}")
-        model = model if model is not None else role.get("model")
-        effort = effort if effort is not None else role.get("effort")
+        if role["provider"] == provider:
+            if model is None:
+                model = role.get("model")
+            if effort is None and model == role.get("model"):
+                effort = role.get("effort")
+        connection = self.run_connection(provider,model,effort)
+        model, effort = connection["model"], connection["effort"]
         kickoff = self._kickoff(db, task["episode_id"])
         pack, profile = self._episode_method(db, task["episode_id"])
         settings_text = prompts.render_settings(kickoff["settings_snapshot"])
@@ -763,7 +768,7 @@ class Core:
                                 text=COOPERATION[mode] + " 新稿另存，由导演采用。"))
         entries.extend(message_entries)
         header = dict(schemaVersion=1, purpose=purpose, projectId=task["project_id"], episodeId=task["episode_id"],
-                      taskId=task_id, artifactId=task["artifact_id"], stage=task["stage"], provider=provider,
+                      taskId=task_id, artifactId=task["artifact_id"], stage=task["stage"], provider=provider, executorConnection=connection,
                       requestedModel=model, requestedEffort=effort, methodPack=dict(id=pack["id"], files={e["name"]: e["methodSource"] for e in entries if "methodSource" in e}),
                       settingsRevision=kickoff["settings_revision"], baseVersionId=base_version_id,
                       reviewedVersionId=target_version_id,
@@ -830,7 +835,13 @@ class Core:
                     effort_for_retry = old["requested_effort"]
                 if provider is not None or model is not None or effort is not None:
                     self.validate_selection(target,model_for_retry,effort_for_retry)
-                header.update(provider=target,requestedModel=model_for_retry,requestedEffort=effort_for_retry)
+                if target == old["provider"]:
+                    original = header.get("executorConnection",dict(proxy="system"))
+                    connection = dict(original,model=model_for_retry,effort=effort_for_retry)
+                else:
+                    connection = self.run_connection(target,model_for_retry,effort_for_retry)
+                header.update(provider=target,requestedModel=connection["model"],requestedEffort=connection["effort"],
+                              executorConnection=connection)
                 new_run = self._enqueue_snapshot(db, header, entries, old["counted_round"])
                 if header.get("storyComparisonSource"):
                     db.execute("UPDATE story_candidate SET run_id=? WHERE run_id=?", (new_run,run_id))
@@ -912,7 +923,7 @@ class Core:
                                       contracts.wrapped_schema() if clarify else contracts.branch_schema(kind)),
                               session_mode=run["session_mode"],
                               workdir=workdir, model=run["requested_model"], effort=run["requested_effort"],
-                              timeout=int(self.get_setting("executor_timeout", 600)), images=images)
+                              timeout=int(self.get_setting("executor_timeout", 600)), images=images, connection=manifest.get("executorConnection",{}))
         try:
             outcome = executor.start(request)
         except Exception as exc:  # adapter crash is a failed run, never a success
@@ -1756,9 +1767,10 @@ class Core:
                     direct=origin["id"]==version_id,displayNo=origin["display_no"])
 
     def probe(self):
+        from .executors.cli import CliExecutor
         result = {}
         for name, executor in self.executors.items():
-            info = executor.probe()
+            info = executor.probe(self.run_connection(name)) if isinstance(executor,CliExecutor) else executor.probe()
             simulated = info.get("structured_result") == "simulated"
             result[name] = dict(info, status="simulated" if simulated else info.get("status", "unknown"),
                                 isolation=self._isolation_status(name), checkedAt=self.clock(),
@@ -1769,6 +1781,7 @@ class Core:
 from .delivery import DeliveryMixin          # noqa: E402
 from .images import ImagesMixin              # noqa: E402
 from .production import ProductionMixin      # noqa: E402
+from .connections import ConnectionsMixin
 from .projectops import ProjectOpsMixin      # noqa: E402
 from .reviews2 import PromptReviewMixin      # noqa: E402
 
@@ -1782,5 +1795,5 @@ from .resources import ResourcesMixin
 from .providers import ProvidersMixin
 
 
-class Workbench(FreeChatMixin, EpisodeContactMixin, CustomMethodsMixin, ProvidersMixin, ResourcesMixin, SourceFilesMixin, ProductionMixin, ImagesMixin, PromptReviewMixin, DeliveryMixin, ProjectOpsMixin, Core):
+class Workbench(ConnectionsMixin, FreeChatMixin, EpisodeContactMixin, CustomMethodsMixin, ProvidersMixin, ResourcesMixin, SourceFilesMixin, ProductionMixin, ImagesMixin, PromptReviewMixin, DeliveryMixin, ProjectOpsMixin, Core):
     """The application service: core commands plus the production, image, review, delivery and project mixins."""

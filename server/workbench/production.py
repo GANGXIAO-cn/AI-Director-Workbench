@@ -1228,8 +1228,10 @@ class ProductionMixin:
             path.write_bytes(self.store.read_blob(frames[k]["sha256"]))
             images.append(path)
         trailer = f"\n运行号：{qid}\n输入指纹：{digest}\n回包为 kind=cut_explanation，atMs 填 {at_ms}。"
+        connection = self.run_connection(provider)
         outcome = self.executors[provider].start(ExecRequest(
             run_id=qid, purpose="ask", kind="cut_explanation", prompt=text + trailer,
+            connection=connection,model=connection["model"],effort=connection["effort"],
             schema=contracts.branch_schema("cut_explanation"), session_mode="ephemeral", workdir=workdir, images=images,
             timeout=int(self.get_setting("executor_timeout", 600))))
         res = outcome.structured if outcome.ok else None

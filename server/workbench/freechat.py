@@ -142,6 +142,8 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
                 turn, attempt = new_id(), new_id()
                 header = dict(projectId=project_id,threadId=tid,purpose="free_chat",provider=provider,methodVersions=list(methods),
                               assetVersions=list(images),canvasEpisode=canvas,canvasRevision=canvas_revision, **stage_header)
+                choice = header.get("creator",{})
+                header["executorConnection"] = self.run_connection(provider,choice.get("model"),choice.get("effort"))
                 digest, rel = self.store.freeze(turn,header,entries)
                 db.execute("INSERT INTO free_turn(id,thread_id,text,provider,status,attempt,input_hash,manifest_relpath) "
                            "VALUES(?,?,?,?,'queued',?,?,?)",(turn,tid,text,provider,attempt,digest,rel))
@@ -200,8 +202,9 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
             research = purpose == "topic_research"
             guidance = topicresearch.INSTRUCTIONS if research else "根据本次选用的创作方法和资料，直接回答本条消息。将答复放入 reply 字段。"
             prompt = prompt_from(entries, guidance, purpose)
+            choice = manifest.get("executorConnection",manifest.get("creator",{}))
             request = ExecRequest(attempt,purpose,purpose,prompt,topicresearch.SCHEMA if research else REPLY_SCHEMA,"new",work,
-                                  model=manifest.get("creator",{}).get("model"), effort=manifest.get("creator",{}).get("effort"),
+                                  model=choice.get("model"), effort=choice.get("effort"),connection=choice,
                                   timeout=int(self.get_setting("executor_timeout",600)),images=images)
             out = self.executors[t["provider"]].start(request)
             if research and out.ok:

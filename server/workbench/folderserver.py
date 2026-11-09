@@ -92,12 +92,12 @@ class FolderWorkbench(Workbench):
         return dict(super().storage_status(),externalProject=True)
 
     def get_setting(self, key, default=None):
-        if key in ("codex_path","claude_path","antigravity_path","packager_path") or key.startswith("mount:"):
+        if key in ("codex_path","claude_path","antigravity_path","packager_path") or key.startswith(("mount:","connection:","cli_models:")):
             return self.parent.get_setting(key,default)
         return super().get_setting(key,default)
 
     def put_setting(self,key,value):
-        if key in ("codex_path","claude_path","antigravity_path","packager_path") or key.startswith("mount:"):
+        if key in ("codex_path","claude_path","antigravity_path","packager_path") or key.startswith(("mount:","connection:","cli_models:")):
             raise Rejected("请在主工作台设置本机工具与资料目录")
         super().put_setting(key,value)
 

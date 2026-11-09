@@ -15,6 +15,7 @@ import tempfile
 from urllib.parse import urlsplit
 from urllib.request import getproxies
 
+from ..connections import launch_env
 from .base import ExecOutcome, Executor, ExecRequest
 
 ENV_KEEP = ("PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "SHELL")
@@ -147,19 +148,20 @@ class CliExecutor(Executor):
     def binary(self) -> Path | None:
         raise NotImplementedError
 
-    def probe(self) -> dict:
+    def probe(self, connection=None) -> dict:
+        env = launch_env(self.name, connection or {})
         binary = self.binary()
         info = dict(provider=self.name, executable=str(binary) if binary else None, version=None,
-                    authenticated=None, structured_result="untested", proxy=bool(local_proxy_env()),
+                    authenticated=None, structured_result="untested", proxy=bool(env.get("HTTP_PROXY") if "HTTP_PROXY" in env else local_proxy_env()),
                     independent_review="session_isolation")
         if not binary:
             info["status"] = "unavailable"
             return info
-        rc, out, _ = invoke([str(binary), "--version"], Path.home(), "", 20)
+        rc, out, _ = invoke([str(binary), "--version"], Path.home(), "", 20, extra_env=env)
         info["version"] = out.strip() if rc == 0 else None
-        rc, help_out, help_err = invoke([str(binary), *self.help_args, "--help"], Path.home(), "", 20)
+        rc, help_out, help_err = invoke([str(binary), *self.help_args, "--help"], Path.home(), "", 20, extra_env=env)
         info["missing_flags"] = [f for f in self.required_flags if f not in help_out + help_err]
-        info["authenticated"] = self.auth_status(binary)
+        info.update(self.native_identity(binary,env))
         ready = info["version"] and not info["missing_flags"]
         if ready and info["authenticated"] is None:
             info["status"] = "auth_unknown"
@@ -169,8 +171,8 @@ class CliExecutor(Executor):
 
     help_args: tuple = ()
 
-    def auth_status(self, binary):
-        return None
+    def native_identity(self, binary, env):
+        return dict(authenticated=None, accountLabel=None)
 
     def cancel(self, run_id):
         return stop(run_id)
@@ -190,12 +192,14 @@ class CodexExecutor(CliExecutor):
         found = shutil.which("codex") or os.environ.get("ADW_CODEX_PATH")
         return Path(found) if found else None
 
-    def auth_status(self, binary):
-        rc, out, err = invoke([str(binary), "login", "status"], Path.home(), "", 20)
+    def native_identity(self, binary, env):
+        rc, out, err = invoke([str(binary), "login", "status"], Path.home(), "", 20, extra_env=env)
         status = (out + err).lower()
         if "not logged in" in status:
-            return False
-        return rc == 0 and "logged in" in status
+            return dict(authenticated=False, accountLabel=None)
+        signed_in = rc == 0 and "logged in" in status
+        method = "ChatGPT" if "chatgpt" in status else "API Key" if "api key" in status else None
+        return dict(authenticated=True if signed_in else None,accountLabel=method if signed_in else None)
 
     def start(self, req: ExecRequest) -> ExecOutcome:
         binary = self.binary()
@@ -217,7 +221,8 @@ class CodexExecutor(CliExecutor):
                 "--output-schema", str(schema_path), "-"]
         # Keep discovery outside both the operator's profile and the project checkout.
         # Only the login file is shared. Never copy its contents into a project or run receipt.
-        profile = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+        env = launch_env(self.name, req.connection)
+        profile = Path(env.get("CODEX_HOME") or Path.home() / ".codex")
         with tempfile.TemporaryDirectory(prefix="adw-codex-profile-") as temp:
             home = Path(temp)
             state = home / ".codex"
@@ -228,7 +233,7 @@ class CodexExecutor(CliExecutor):
             cwd = home / "work"
             cwd.mkdir()
             rc, out, err = invoke(args, cwd, req.prompt, req.timeout, req.run_id,
-                                  extra_env={"HOME":str(home), "CODEX_HOME":str(state)})
+                                  extra_env={**env, "HOME":str(home), "CODEX_HOME":str(state)})
         events, session, messages, failed = [], None, [], []
         for line in out.splitlines():
             try:
@@ -267,12 +272,16 @@ class ClaudeExecutor(CliExecutor):
     def binary(self):
         return find_claude(self.configured)
 
-    def auth_status(self, binary):
-        rc, out, _ = invoke([str(binary), "auth", "status", "--json"], Path.home(), "", 20)
+    def native_identity(self, binary, env):
+        rc, out, _ = invoke([str(binary), "auth", "status", "--json"], Path.home(), "", 20, extra_env=env)
         try:
-            return bool(json.loads(out)["loggedIn"])
-        except (ValueError, KeyError):
-            return None
+            info = json.loads(out)
+            logged = info["loggedIn"]
+            email = info.get("email")
+            return dict(authenticated=logged if type(logged) is bool else None,
+                        accountLabel=email if logged is True and isinstance(email,str) else None)
+        except (TypeError, ValueError, KeyError):
+            return dict(authenticated=None,accountLabel=None)
 
     def start(self, req: ExecRequest) -> ExecOutcome:
         binary = self.binary()
@@ -288,7 +297,7 @@ class ClaudeExecutor(CliExecutor):
                 "--disable-slash-commands", *isolation, "--output-format", "json",
                 "--json-schema", json.dumps(req.schema, ensure_ascii=False)]
         rc, out, err = invoke(args, req.workdir, req.prompt, req.timeout, req.run_id,
-                              extra_env={"CLAUDE_CODE_DISABLE_CLAUDE_MDS":"1", "CLAUDE_CODE_DISABLE_AUTO_MEMORY":"1"})
+                              extra_env={**launch_env(self.name,req.connection), "CLAUDE_CODE_DISABLE_CLAUDE_MDS":"1", "CLAUDE_CODE_DISABLE_AUTO_MEMORY":"1"})
         base = dict(executable=str(binary),
                     isolation=dict(session=req.session_mode, tools="none", mcp="strict-empty",
                                    settings="restricted", slash_commands="disabled", persistence=False, cwd="empty run dir"))
@@ -327,8 +336,8 @@ class AntigravityExecutor(CliExecutor):
                                         if os.access(Path.home() / ".local/bin/agy", os.X_OK) else None)
         return Path(found) if found else None
 
-    def auth_status(self, binary):
-        return None   # only a real request proves it (phase 0)
+    def native_identity(self, binary, env):
+        return dict(authenticated=None, accountLabel=None)   # only a real request proves it (phase 0)
 
     def start(self, req: ExecRequest) -> ExecOutcome:
         binary = self.binary()
@@ -341,7 +350,7 @@ class AntigravityExecutor(CliExecutor):
             opts += ["--effort", req.effort]
         args = [str(binary), *opts, "--sandbox", "--print-timeout", f"{max(30, req.timeout - 10)}s",
                 "--output-format", "json", "--json-schema", json.dumps(req.schema, ensure_ascii=False), "-p", req.prompt]
-        rc, out, err = invoke(args, req.workdir, "", req.timeout, req.run_id)
+        rc, out, err = invoke(args, req.workdir, "", req.timeout, req.run_id, extra_env=launch_env(self.name,req.connection))
         base = dict(executable=str(binary), isolation=dict(session=req.session_mode, sandbox="on"))
         try:
             receipt = json.loads(out)

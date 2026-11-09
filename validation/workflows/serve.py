@@ -40,6 +40,9 @@ if __name__ == "__main__":
         first = env.wb.create_task(eid,"script","切换前的原版任务")["runId"]
         env.drain(first)
         (fixture/"method-test.json").write_text(json.dumps(dict(impact=impact,first=first,pid=pid,eid=eid)))
+    elif os.environ.get("ADW_TEST_CLI_CONNECTIONS"):
+        from cli_connections_fixture import prepare
+        prepare(env,folder)
     elif os.environ.get("ADW_TEST_LAYOUT_CONTROLS"):
         pid,eid=env.new_episode(name="站台灯光与人物轮廓")
         env.image(pid,eid,"侧光参考")

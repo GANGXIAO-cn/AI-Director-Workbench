@@ -46,7 +46,15 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
   useEffect(() => setSelected(plan?.create ?? {provider:"codex"}), [task?.id, open, plan?.create?.provider, plan?.create?.model, plan?.create?.effort]);
   const provider = selected.provider;
   const models = catalog.data?.text?.[provider]?.models ?? [];
-  const efforts = models.find((m:any) => m.id === (selected.model ?? null))?.efforts ?? [null];
+  const connection = catalog.data?.text?.[provider]?.connection;
+  const identity = useQuery<{authenticated:boolean|null;accountLabel?:string;simulated?:boolean;unavailable?:boolean}>(art ? "executor_identity" : null,{provider});
+  const status = identity.data;
+  const accountText = identity.error || (!status ? "正在读取登录状态…" : status.simulated ? "模拟执行器" : status.unavailable ? "CLI 未找到"
+    : status.authenticated===false ? "CLI 未登录" : status.authenticated===true ? (status.accountLabel ?? "本机账号")+" · 已登录"
+    : "使用 CLI 当前账号，登录状态待确认");
+  const chosenModel = selected.model ?? connection?.model ?? null;
+  const chosenEffort = selected.effort ?? (chosenModel===connection?.model ? connection?.effort : null);
+  const efforts = models.find((m:any) => m.id === chosenModel)?.efforts ?? [null];
   const [history, setHistory] = useState(false);
   const [impact, setImpact] = useState<any>(null);
   const act = useAction();
@@ -76,13 +84,15 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
     if (!art) throw new Error("本阶段还没有成果，请先试写");
     const basis = focused?.id ?? art.adopted_version_id ?? focusV?.id;
     const options = {workspace_revision:art.revision,base_version_id:basis ?? undefined,selection:sel?.data ?? null};
+    if (!connection) throw new Error("请先刷新执行器连接");
+    const nextExecutor = {...selected,model:selected.model ?? (selected.effort ? chosenModel : null),connectionRevision:connection.revision};
     if (open) {
-      await submit("post_message", {task_id:task.id, text, create_executor:selected, ...options},files);
+      await submit("post_message", {task_id:task.id, text, create_executor:nextExecutor, ...options},files);
     } else {
-      const result=await submit("create_task", {episode_id:view.episode.id, stage:art.stage, goal:text, executor:{create:selected}, ...options},files);
+      const result=await submit("create_task", {episode_id:view.episode.id, stage:art.stage, goal:text, executor:{create:nextExecutor}, ...options},files);
       setSentTask({id:result.taskId,focus});
     }
-    setText(""); setFiles([]); setSel(null); reload();
+    setText(""); setFiles([]); setSel(null); await reload();
   });
   const runs = task?.runs ?? [];
   const live = runs.filter((r: any) => ["queued", "running"].includes(r.status));
@@ -155,12 +165,17 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
             onChange={e=>{const picked=Array.from(e.target.files ?? []);e.target.value="";act.run(async()=>setFiles(addDirectorFiles(files,picked)));}}/></label>
           <button className="btn ghost" onClick={openRequirements}>阶段技能</button>
           <span className="muted tiny">⌘ / Ctrl + 回车发送</span>
-          <select aria-label="创作执行器" value={provider} onChange={e => setSelected({provider:e.target.value})}>
+          <select aria-label="创作执行器" disabled={act.busy} value={provider} onChange={e => setSelected({provider:e.target.value})}>
             {Object.keys(catalog.data?.text ?? {[provider]:{}}).map(p => <option key={p} value={p}>{PROVIDER_LABEL[p] ?? p}</option>)}</select>
-          <select aria-label="创作型号" value={selected.model ?? ""} onChange={e => setSelected({provider, model:e.target.value || null})}>
+          <select aria-label="创作型号" disabled={act.busy} value={chosenModel ?? ""} onChange={e => setSelected({provider, model:e.target.value || null})}>
             {models.map((m:any) => <option key={m.id ?? "default"} value={m.id ?? ""}>{m.label}</option>)}</select>
-          {efforts.length > 1 && <select aria-label="推理强度" value={selected.effort ?? ""} onChange={e => setSelected({...selected, effort:e.target.value || null})}>
+          {efforts.length > 1 && <select aria-label="推理强度" disabled={act.busy} value={chosenEffort ?? ""} onChange={e => setSelected({...selected, effort:e.target.value || null})}>
             {efforts.map((v:any) => <option key={v ?? "default"} value={v ?? ""}>{v ?? "默认强度"}</option>)}</select>}
+          <span className="tiny" aria-label="当前账号连接">{accountText}</span>
+          <button className="btn ghost" disabled={act.busy} onClick={()=>act.run(async()=>{
+            try {await cmd("refresh_cli_models",{provider});}
+            finally {await Promise.all([catalog.reload(),identity.reload()]);}
+          })}>刷新连接和型号</button>
           <a className="tiny" href="#/sys/executors">连接设置</a>
           {open && <button className="btn ghost" onClick={() => act.run(async () => { await cmd("abandon_task", { task_id: task.id }); reload(); })}>新任务</button>}
           <span className="muted tiny" style={{ marginLeft: "auto" }}>{text.length}/500字</span>

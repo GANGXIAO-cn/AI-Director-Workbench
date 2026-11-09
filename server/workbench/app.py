@@ -73,7 +73,7 @@ COMMANDS = {
     "revise_baseline", "follow_baseline",
     "start_topic_research", "accept_research_topic",
     "add_reply_to_canvas","send_free_chat","stop_free_chat","retry_free_chat",
-    "set_quota_retry_policy", "save_provider", "read_provider_models", "label_provider_model",
+    "refresh_cli_models", "save_executor_connection", "set_quota_retry_policy", "save_provider", "read_provider_models", "label_provider_model",
     "start_story_comparison", "preview_acting",
     "add_script_document", "refresh_script_index", "restore_step_revision",
     "use_fixed_role", "import_historical_episode", "episode_contact_sheet", "save_contact_options", "export_episode_contact_sheet", "historical_contact_sheet", "export_historical_contact_sheet", "save_product_placement", "set_project_sections", "use_project_product", "mount_resource", "restore_version", "set_stage_methods", "set_custom_methods", "save_palettes", "add_palette", "set_episode_palettes", "save_step_config",
@@ -98,7 +98,7 @@ QUERIES = {
     "asset_version", "library", "image_providers", "batch_view", "episode_batches", "compare_cells", "image_references",
     "prompt_signals", "prompt_review_status", "publish_settings", "compose_publish", "delivery_problems", "delivery_view", "verify_delivery",
     "enhancement_catalog", "closure_view", "similar", "project_baselines", "source_styles", "source_topics", "topics", "group_view", "model_catalog", "validate_selection", "regress_pack", "pack_versions", "compare_packs", "stage_methods", "custom_methods", "custom_method_text", "project_stage_methods", "script_plan_budget", "acting_review",
-    "storage_status", "packager_status", "project_todos", "project_overview", "adoption_preview", "expert_view", "expert_history", "expert_preview", "canvas_view", "ref_questions", "activity_log", "stage_checklist", "task_records", "run_manifest", "run_methods", "version_sources", "probe",
+    "storage_status", "packager_status", "project_todos", "project_overview", "adoption_preview", "expert_view", "expert_history", "expert_preview", "canvas_view", "ref_questions", "activity_log", "stage_checklist", "task_records", "executor_identity", "run_manifest", "run_methods", "version_sources", "probe",
 }
 ASYNC = {"execute_batch", "expert_run", "ask_cut"}
 

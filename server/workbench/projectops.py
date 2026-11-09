@@ -119,7 +119,7 @@ class ProjectOpsMixin(ExpertMixin, HistoryMixin):
         request = ExecRequest(
             run_id=run_id, purpose="proposal", kind="proposal", prompt=prompts.prompt_from(entries, trailer, "proposal"),
             schema=contracts.branch_schema("proposal"), session_mode="new", workdir=workdir,
-            model=run["requested_model"], effort=run["requested_effort"])
+            model=run["requested_model"], effort=run["requested_effort"],connection=manifest.get("executorConnection",{}))
         if digest != run["input_hash"]:
             outcome = ExecOutcome(ok=False, error_class="输入清单指纹不符")
         else:
@@ -512,12 +512,67 @@ class ProjectOpsMixin(ExpertMixin, HistoryMixin):
         self.put_setting("quota_retry_policy", policy)
         return {"policy": policy}
 
+    def _text_catalog(self):
+        catalog = text_catalog()
+        for provider in ("claude","antigravity"):
+            snapshot = self.get_setting("cli_models:"+provider)
+            executor = self.executors.get(provider)
+            if snapshot and executor and hasattr(executor,"binary") and snapshot["executable"] == str(executor.binary()):
+                catalog[provider] = dict(catalog[provider],models=snapshot["models"],fetchedAt=snapshot["checkedAt"])
+        return catalog
+
     def model_catalog(self):
-        return dict(text={k:v for k,v in text_catalog().items() if k in self.executors}, image=self.image_providers(),
-                    quotaRetryPolicy=self.get_setting("quota_retry_policy", "manual_cli"))
+        return dict(text={k:dict(v,connection=self.executor_connection(k)) for k,v in self._text_catalog().items() if k in self.executors},
+                    image=self.image_providers(),quotaRetryPolicy=self.get_setting("quota_retry_policy", "manual_cli"))
+
+    def refresh_cli_models(self, provider):
+        from .executors.cli import CliExecutor, invoke
+        from .connections import launch_env
+        if provider not in self.executors:
+            raise Rejected("未配置的执行器")
+        executor = self.executors[provider]
+        if not isinstance(executor,CliExecutor):
+            return dict(message="已读取模拟执行器型号")
+        binary = executor.binary()
+        if not binary:
+            raise Rejected("未找到本机执行器，请检查路径")
+        if provider == "codex":
+            data = text_catalog()[provider]
+            if not any(m["source"]=="本机 Codex 型号清单" for m in data["models"]):
+                raise Rejected("尚未读到本机 Codex 型号清单，当前显示内置选项")
+            return dict(message="已读取本机 Codex 型号清单")
+        if getattr(self,"parent",None):
+            return self.parent.refresh_cli_models(provider)
+        args = ["models"] if provider=="antigravity" else ["--help"]
+        rc, out, err = invoke([str(binary),*args],Path.home(),"",20,extra_env=launch_env(provider,self.executor_connection(provider)))
+        if rc:
+            if "please sign in" in (err+out).lower():
+                raise Rejected("CLI 提示需要登录才能读取型号，请在原生工具中确认账号")
+            raise Rejected("CLI 型号查询失败，请检查路径和网络后重试")
+        models = [MODEL_CATALOG[provider]["models"][0]]
+        if provider=="antigravity":
+            for line in out.splitlines():
+                match = re.fullmatch(r"([a-z0-9]+(?:[-.][a-z0-9]+)+)\s+(.{1,160})",line.strip())
+                if match:
+                    slug, label = match.groups()
+                    models.append(dict(id=slug,label=label,efforts=[None],status="pending",source="本机 agy models"))
+            message = "已读取本机 Google CLI 型号清单"
+        else:
+            def option_help(flag):
+                block = re.search(r"^  "+re.escape(flag)+r"[^\n]*(?:\n {4,}[^\n]+)*",out,re.M)
+                return block[0] if block else ""
+            aliases = re.findall(r"'([a-z0-9-]+)'",option_help("--model <"))
+            efforts = re.findall(r"\b(low|medium|high|xhigh|max)\b",option_help("--effort <"))
+            for alias in dict.fromkeys(aliases):
+                models.append(dict(id=alias,label=alias,efforts=[None,*dict.fromkeys(efforts)],status="pending",source="本机 Claude CLI 帮助中的型号别名"))
+            message = "已读取本机 Claude CLI 公布的型号别名"
+        if len(models)==1:
+            raise Rejected("没有读到可识别的型号，已保留上次清单")
+        self.put_setting("cli_models:"+provider,dict(executable=str(binary),checkedAt=self.clock(),models=models))
+        return dict(message=message)
 
     def validate_selection(self, provider, model, effort):
-        cat = text_catalog().get(provider)
+        cat = self._text_catalog().get(provider)
         if provider not in self.executors:
             raise Rejected("未配置的执行器")
         if not cat:
