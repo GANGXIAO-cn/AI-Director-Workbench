@@ -430,7 +430,15 @@ class ImagesMixin:
                 reference = "\n".join(card["visual"] + "\n" + card["image"] for card in palettes)
                 spec["items"] = [dict(item, prompt=item["prompt"] + "\n" + SCOPE + "\n" + reference) for item in items]
             from .enhancements import entries as method_entries
-            methods = method_entries(self.step_config(episode_id, "assets").get("enhancements", []))
+            config = self.step_config(episode_id, "assets")
+            definition = config.get("form")
+            if definition:
+                notes = [f"{label}：{config[key]}" for key,label in definition["fields"].items() if config.get(key)]
+                if notes:
+                    spec["stepRequirements"] = dict(revision=config["revision"],form=definition,notes=notes)
+                    guidance = "\n".join(notes)
+                    spec["items"] = [dict(item,prompt=item["prompt"]+"\n本批画面要求\n"+guidance) for item in spec["items"]]
+            methods = method_entries(config.get("enhancements", []))
             if methods:
                 spec["enhancements"] = [entry["methodSource"] for entry in methods]
                 guidance = "\n".join(entry["name"] + "\n" + entry["text"] for entry in methods)

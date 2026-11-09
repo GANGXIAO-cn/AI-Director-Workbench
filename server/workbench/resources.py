@@ -20,7 +20,7 @@ from zipfile import BadZipFile, ZipFile
 
 from .db import connect, dumps, transaction
 from .errors import Conflict, Rejected
-from .methodpack import REPO
+from .methodpack import REPO, pack_dir, stage_map
 from .palette_inputs import BODY, IMAGE, snapshot_inputs
 
 
@@ -432,6 +432,27 @@ class ResourcesMixin:
         from .enhancements import catalog
         return [{k: item[k] for k in ("id","title","when","where","stages")} for item in catalog()["methods"]]
 
+    def step_form(self, episode_id, stage):
+        if stage not in ("story","script","plan","prompts","publish","assets"):
+            raise Rejected("本阶段没有可编辑的需求配置")
+        with connect(self.db_path) as db:
+            pack, _ = self._episode_method(db, episode_id)
+        path = pack_dir(pack["id"]) / "workbench-forms.json"
+        if not path.exists():
+            if pack["id"]=="short-film@v7":
+                raise Rejected("当前方法包缺少本步需求表单")
+            return dict(pack=pack["id"], fields={"goal":"本步目标","format_note":"形式与规格","keep":"必须保留的内容"})
+        definition = json.loads(path.read_text()).get(stage)
+        if not isinstance(definition,dict):
+            raise Rejected("方法包缺少本阶段的表单定义")
+        section = definition["section"]
+        fields = definition["fields"]
+        if section not in stage_map(pack).get(stage, ()) or section not in pack["files"]:
+            raise Rejected("本步需求缺少本阶段的通用方法依据")
+        if not fields or set(fields)-{"goal","format_note","keep"} or not all(isinstance(v,str) and v.strip() for v in fields.values()):
+            raise Rejected("方法包的本步需求字段无效")
+        return dict(pack=pack["id"], fields=fields, section=section, sourceHash=pack["files"][section]["sha256"])
+
     def step_config(self, episode_id, stage):
         return self.get_setting(f"step:{episode_id}:{stage}", {})
 
@@ -476,7 +497,8 @@ class ResourcesMixin:
                         raise Rejected("正文命中与选取段落不符，请重新选择")
                     entry["match"]=dict(offset=match["offset"],text=term)
                 refs.append(entry)
-        config=dict(route=route,goal=goal,keep=keep,format_note=format_note,mode=mode,references=refs)
+        config=dict(route=route,goal=goal,keep=keep,format_note=format_note,mode=mode,references=refs,
+                    form=self.step_form(episode_id,stage))
         if enhancements is not None:
             from .enhancements import entries
             entries(enhancements)

@@ -197,15 +197,9 @@ export function ResourceBrowser({kind,episodeId,stage,projectId="",onChoose,meth
   </section>;
 }
 
-type Step = {route:string;goal:string;keep:string;format_note:string;mode:string;references:Excerpt[];enhancements?:string[];revision?:number};
+type StepForm = {pack:string; section?:string; fields:Partial<Record<"goal"|"format_note"|"keep",string>>};
+type Step = {form?:StepForm;route:string;goal:string;keep:string;format_note:string;mode:string;references:Excerpt[];enhancements?:string[];revision?:number};
 const empty:Step={route:"短片",goal:"",keep:"",format_note:"",mode:"off",references:[]};
-const stageFields:Record<string,[string,string,string]>={
-  story:["本步创作目标","作品形态、题材与目标时长","必须保留的内容与结局方向"],
-  script:["本步表演与剧情目标","剧情阶段、对白与时长预算","必须承接的故事动作与角色选择"],
-  plan:["分镜与观众注意目标","画幅、机位与分段预算","必须拍清的动作、视线与接点"],
-  prompts:["本段生成目标","参考策略、开场与声音要求","必须保持的身份、空间与镜头动作"],
-  publish:["发布目标与读者","平台、文案形态与长度","必须保留的标题、固定行与标签要求"]
-};
 function SavedExcerpt({record}:{record:Excerpt}) {
   return <details className="saved-script-excerpt"><summary>{record.title} · 第 {record.offset+1} 字起 · 已保存原文</summary>
     <p>{record.path}</p><p className="tiny">原文件 SHA-256 {record.sha256}</p>
@@ -243,6 +237,7 @@ function EnhancementOptions({stage,selected,change}:{stage:string;selected:strin
   </fieldset>;
 }
 export function StepRequirements({pid,eid,stage,close,toComposer}:{pid:string;eid:string;stage:string;close:()=>void;toComposer?:(text:string)=>void}) {
+  const definition=useQuery<StepForm>("step_form",{episode_id:eid,stage});
   const saved=useQuery<Partial<Step>>("step_config",{episode_id:eid,stage});
   const [draft,setDraft]=useState<Step|null>(null),[browse,setBrowse]=useState(false);
   const [showHistory,setShowHistory]=useState(false);
@@ -251,7 +246,7 @@ export function StepRequirements({pid,eid,stage,close,toComposer}:{pid:string;ei
   const form=draft ?? {...empty,...saved.data};
   function change(update:Partial<Step>) {setDraft({...form,...update});}
   async function save(toChat:boolean) {
-    const {revision,...values}=form;
+    const {revision,form:storedForm,...values}=form;
     const result=await cmd<Step>("save_step_config",{episode_id:eid,stage,...values,expected_revision:revision ?? 0});
     if(toChat && toComposer){
       setDraft(result);
@@ -262,10 +257,13 @@ export function StepRequirements({pid,eid,stage,close,toComposer}:{pid:string;ei
   }
   return <Modal width={950} onClose={close}><h2>本步需求</h2><div className="col">
     {saved.data && <EnhancementOptions stage={stage} selected={form.enhancements ?? []} change={enhancements=>change({enhancements})}/>}
+    {definition.data && <><small className="muted">本步字段 · {definition.data.pack} · {definition.data.section ?? "历史配置"}</small>
+      {Object.entries(definition.data.fields).map(([key,label])=><label key={key}>{label}<textarea value={form[key as keyof StepForm["fields"]]}
+        onChange={e=>change({[key]:e.target.value})}/></label>)}</>}
+    {definition.error && <p className="error">{definition.error} <button className="btn" onClick={definition.reload}>重新读取字段</button></p>}
     {stage==="assets" ? <p className="muted small">保存后用于本集下一批图像。已建立的批次沿用各自确认的输入。</p> : <>
     <ProjectLibrary pid={pid} eid={eid} stage={stage}/>
     <label>创作路线 <select value={form.route} onChange={e=>change({route:e.target.value})}>{["短片","电影节 / 作者表达","流媒体 / 类型剧","自由自定","快速出片"].map(r=><option key={r}>{r}</option>)}</select></label>
-    {(["goal","format_note","keep"] as const).map((k,i)=><label key={k}>{stageFields[stage][i]}<textarea value={form[k]} onChange={e=>change({[k]:e.target.value})}/></label>)}
     <label>参考与知识库 <select value={form.mode} onChange={e=>{change({mode:e.target.value});setBrowse(false);}}>
       <option value="off">不调用</option><option value="match">匹配剧本与方法书</option><option value="method">只查方法书</option></select></label>
     {form.mode!=="off" && <><button className="btn" onClick={()=>setBrowse(!browse)}>{browse?"收起资料":"选择参考片段"}</button>
@@ -274,8 +272,8 @@ export function StepRequirements({pid,eid,stage,close,toComposer}:{pid:string;ei
         <div className="row"><label>借鉴方式 <input value={r.reason??""} onChange={e=>change({references:form.references.map((entry,j)=>j===i?{...entry,reason:e.target.value}:entry)})}/></label><button className="btn" onClick={()=>change({references:form.references.filter((_,j)=>i!==j)})}>移除</button></div></div>)}</>}
     </>}
     <ErrorLine error={act.error}/>{saved.error&&<span className="error">{saved.error}</span>}
-    <div className="row"><button className="btn" disabled={!saved.data||act.busy} onClick={()=>act.run(()=>save(false))}>保存本步配置</button>
-      {stage!=="assets" && toComposer && <button className="btn primary" disabled={!saved.data||act.busy} onClick={()=>act.run(()=>save(true))}>保存并带到创作对话</button>}<button className="btn" onClick={()=>setShowHistory(!showHistory)}>配置历史</button><button className="btn" onClick={close}>关闭</button></div>
+    <div className="row"><button className="btn" disabled={!saved.data||!definition.data||act.busy} onClick={()=>act.run(()=>save(false))}>保存本步配置</button>
+      {stage!=="assets" && toComposer && <button className="btn primary" disabled={!saved.data||!definition.data||act.busy} onClick={()=>act.run(()=>save(true))}>保存并带到创作对话</button>}<button className="btn" onClick={()=>setShowHistory(!showHistory)}>配置历史</button><button className="btn" onClick={close}>关闭</button></div>
     {showHistory&&<div>{history.error&&<p className="error">{history.error}</p>}{history.data?.length===0&&<p>本步还没有配置版本。</p>}
       {history.data?.map(h=><details key={h.revision}><summary>第 {h.revision} 版 · {h.goal||h.route}</summary><p>{[h.format_note,h.keep].filter(Boolean).join(" · ")}</p>
         {h.enhancements?.length ? <p>已选增强方法 · {h.enhancements.join("、")}</p> : null}

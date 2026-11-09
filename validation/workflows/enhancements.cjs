@@ -28,13 +28,32 @@ async function main() {
     await page.waitForURL("**/"+preview+"/delivery");
     await page.goto(base+"/"+preview+"/story");
     const btn = name => page.getByRole("button",{name,exact:true});
+    for (const [width,stage,label] of [[1440,"story","必须保留的内容与结局方向"],[800,"script","必须承接的故事动作与角色选择"]]) {
+      await page.setViewportSize({width,height:900});
+      await page.goto(base+"/"+preview+"/"+stage);
+      const views=page.getByRole("navigation",{name:"本阶段工作区"});
+      await views.getByRole("button",{name:"创作对话"}).click();
+      await page.locator(".assistant:visible textarea").fill(stage+" 暂存草稿");
+      await views.getByRole("button",{name:"本步需求与参考"}).click();
+      await page.getByLabel(label,{exact:true}).waitFor();
+      await page.locator(".modal").getByRole("button",{name:"关闭",exact:true}).click();
+      await views.getByRole("button",{name:"成果文档"}).click();
+      await page.locator(".center:visible").waitFor();
+      await views.getByRole("button",{name:"创作对话"}).click();
+      assert.equal(await page.locator(".assistant:visible textarea").inputValue(),stage+" 暂存草稿");
+      await views.getByRole("button",{name:"成果文档"}).click();
+    }
+    await page.setViewportSize({width:1440,height:900});
+    await page.goto(base+"/"+preview+"/story");
     await btn("阶段技能").click();
     await page.getByLabel("显示全部阶段的方法").check();
     assert.equal(await page.locator("fieldset").getByRole("checkbox").count(),72);
+    await page.getByLabel("必须保留的内容与结局方向").fill("保留最后一声关门");
     await page.getByRole("checkbox",{name:/00-A ·/}).check();
     await btn("保存本步配置").click();
     await page.getByRole("heading",{name:"本步需求",exact:true}).waitFor({state:"hidden"});
     await btn("本步需求与参考").click();
+    assert.equal(await page.getByLabel("必须保留的内容与结局方向").inputValue(),"保留最后一声关门");
     assert.ok(await page.getByRole("checkbox",{name:/00-A ·/}).isChecked());
     await btn("关闭").last().click();
     const input = page.getByPlaceholder("输入你的想法，继续完善这一集");
@@ -47,6 +66,7 @@ async function main() {
     assert.deepEqual(selected.map(s=>s.source.enhancementIds),[["00-A"],["00-A"]]);
     await page.goto(base+"/"+preview+"/cast");
     await btn("本集出图增强方法").click();
+    await page.getByLabel("本批画面要表现的动作或状态").fill("角色穿着蓝色雨衣");
     await page.getByRole("checkbox",{name:/07-A ·/}).check();
     await btn("保存本步配置").click();
     await page.getByRole("heading",{name:"本步需求",exact:true}).waitFor({state:"hidden"});
@@ -66,6 +86,7 @@ async function main() {
     assert.ok(receipt.batchId,JSON.stringify(receipt));
     const batch = await q("batch_view",{batch_id:receipt.batchId});
     assert.equal(batch.state,"awaiting_authorization");
+    assert.match(batch.spec.items[0].prompt,/本批画面要表现的动作或状态：角色穿着蓝色雨衣/);
     assert.match(batch.spec.items[0].prompt,/正面脸、侧面脸、正面全身、背面全身/);
     assert.ok(batch.spec.enhancements.every(source=>source.source.enhancementIds.includes("07-A")));
     await page.reload();

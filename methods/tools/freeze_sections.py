@@ -254,6 +254,12 @@ def build(ref, source_root, output, pins=None, reviewed_ranges=None):
     stages["story_review"][:0] = ["story_review", "story_standard"]
     if production:
         production_v5.add_guides(files,stages,expected)
+    if version >= 7:
+        # Form definitions are workbench UI metadata; the referenced stage sections retain their own hashes.
+        form_name = "workbench-forms.json"
+        previous_forms = output.parent / f"v{version-1}" / form_name
+        forms = previous_forms if previous_forms.exists() else ROOT / "methods/short-film/v7" / form_name
+        expected[form_name] = forms.read_bytes()
     manifest = dict(id=ref, source=pins, stages=stages, files=files, projectFiles={"puggy":project_files})
     expected["manifest.json"] = (json.dumps(manifest, ensure_ascii=False, indent=2)+"\n").encode()
     def verify_existing():

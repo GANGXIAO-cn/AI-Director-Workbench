@@ -75,8 +75,8 @@ async function main() {
       assert.equal(overflow,false);
       layouts.push({width,documentWidth:Math.round(content.width),bodyOverflow:overflow});
     }
-    await btn("专注对话").click();
-    await btn("返回成果文档").click();
+    await btn("创作对话").click();
+    await btn("成果文档").click();
     await nav.getByRole("button",{name:"展开主导航"}).click();
     await link("选题池").click();
     await page.waitForURL("**/p/"+project.id+"/topics");

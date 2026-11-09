@@ -389,3 +389,8 @@ kbd { border-radius: 4px; background: var(--card2); padding: 2px 5px; }
 
 .director-files { list-style: none; padding: 0; margin: 8px 0; display: flex; flex-wrap: wrap; gap: 8px; }
 .director-files li { display: flex; gap: 5px; align-items: center; overflow-wrap: anywhere; }
+
+.episode-workspace { flex-direction: column; }
+.stage-views { display: flex; flex: none; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+.stage-views [aria-pressed="true"] { color: var(--ink); background: var(--card2); }
+.episode-workspace > .ws { min-height: 0; }

@@ -86,6 +86,9 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
     const next = params.size ? path+"?"+params.toString() : path;
     if (next !== hash) go(next);
   };
+  const hasRequirements = ["story","script","plan","prompts","publish","assets","space","cast","review"].includes(stage);
+  const needsLabel = ["space","cast","assets"].includes(stage) ? "本集出图增强方法" : stage==="review" ? "对照审查使用的提示词配置" : "本步需求与参考";
+  const documentPanel=useRef<HTMLDivElement>(null);
   const versionStage = stage==="review" ? "prompts" : stage;
   const missingVersion = !!(view.data && focus && ["story","script","plan","prompts","publish"].includes(versionStage)
     && !view.data.artifacts.find((a:any)=>a.stage===versionStage)?.versions.some((version:any)=>version.id===focus));
@@ -111,7 +114,14 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
     return map[s] ? "done" : s === stage ? "now" : "";
   };
   return (
-    <div className="app">
+    <div className="app episode-workspace">
+      {!canvasMode && hasRequirements && <nav className="stage-views" aria-label="本阶段工作区">
+        <button className="pill" aria-pressed={chatOnly && !requirements} onClick={()=>setFocusChat(true)}>创作对话</button>
+        <button className="pill" aria-label={needsLabel} title={needsLabel} aria-haspopup="dialog" onClick={()=>setRequirements(true)}>本步需求</button>
+        <button className="pill" aria-pressed={!chatOnly && !requirements} onClick={()=>{
+          setFocusChat(false); requestAnimationFrame(()=>documentPanel.current?.focus({preventScroll:true}));
+        }}>成果文档</button>
+      </nav>}
       <div className={"ws"+(chatOnly?" chat-only":"")+(canvasMode?" canvas-only":"")} style={{flex:1, gridTemplateColumns: canvasMode || chatOnly ? "minmax(0, 1fr)" : `${cols[0]}px minmax(0, 1fr) ${cols[1]}px`}}>
         {!canvasMode && <div className="catalog">
           <div className="spread" style={{ padding: "0 8px 12px" }}><b>目录</b><a className="muted" href={`#/p/${v.episode.project_id}`}>⇤</a></div>
@@ -122,12 +132,12 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
         </div>}
         {!canvasMode && <><ColumnDivider side={0} width={cols[0]} resize={width=>setCols(old=>[width,old[1]])}/>
           <ColumnDivider side={1} width={cols[1]} resize={width=>setCols(old=>[old[0],width])}/></>}
-        <div className="center">
+        <div className="center" ref={documentPanel} tabIndex={-1}>
           <div className="topbar">
-            {!canvasMode && stage!=="package" && <button className="btn narrow-chat" onClick={()=>setFocusChat(true)}>专注对话</button>}
+            {!canvasMode && !hasRequirements && stage!=="package" && <button className="btn narrow-chat" onClick={()=>setFocusChat(true)}>专注对话</button>}
             {["assets","prompts"].includes(stage) && <button className="btn" onClick={() => setShowPalettes(true)}>本集色卡</button>}
             {stage !== "package" && <button className="btn" onClick={() => setShowMethod(true)}>制作方法</button>}
-            {["story","script","plan","prompts","publish","assets","space","cast","review"].includes(stage) && <button className="btn" onClick={()=>setRequirements(true)}>{["space","cast","assets"].includes(stage)?"本集出图增强方法":stage==="review"?"对照审查使用的提示词配置":"本步需求与参考"}</button>}
+            {canvasMode && <button className="btn" onClick={()=>setRequirements(true)}>{needsLabel}</button>}
             <span className="title">{v.episode.display_code} · {v.episode.title || "未命名"}</span>
             <span className="muted small">{frameOrientation(v.kickoff.spec.aspectRatio)}</span>
             <span style={{ marginLeft: "auto" }} className="chip">◐ {v.kickoff.relation === "continue" ? "承接前集" : "独立成集"}</span>

@@ -91,7 +91,7 @@ QUERIES = {
     "episode_contact_options", "space_locks", "api_providers",
     "step_history", "segment_palette_trace", "rhythm_review", "shot_reference_view",
     "project_role_assets", "historical_episodes", "historical_receipt", "historical_review_inputs", "product_placements", "project_resources", "project_section", "episode_project_sections", "available_configs", "groups", "project_knowledge",
-    "resource_mounts", "browse_scripts", "search_script_bodies", "script_excerpt", "browse_palettes", "palette_detail", "project_palettes", "episode_palettes", "step_config",
+    "resource_mounts", "browse_scripts", "search_script_bodies", "script_excerpt", "browse_palettes", "palette_detail", "project_palettes", "episode_palettes", "step_config", "step_form",
     "project_presets", "episode_owner", "list_projects", "project_view", "episode_view", "kickoff_preview", "read_import", "compare", "continue_check",
     "draft_prompts", "plan_preview", "adoption_preview", "impacts", "ref_frames", "episode_bookmarks", "pack_view", "trace_shot", "blocked_segments", "cast_matrix", "episode_assets",
     "asset_version", "library", "image_providers", "batch_view", "episode_batches", "compare_cells", "image_references",

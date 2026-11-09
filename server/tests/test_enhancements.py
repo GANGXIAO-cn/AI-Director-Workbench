@@ -47,11 +47,13 @@ def test_image_selection_freezes_in_batch_before_authorization(tmp_path):
     env = Env(tmp_path)
     wb = env.wb
     _, eid = env.new_episode()
-    wb.save_step_config(eid, "assets", enhancements=["07-A"])
+    wb.save_step_config(eid, "assets", keep="保留角色右侧衣袋", enhancements=["07-A"])
     args = dict(episode_id=eid, provider="fake-image", operation="generate", size="64x64", budget_cents=4,
                 items=[dict(prompt="人物四格", inputs=[], target=dict(name="身份卡", category="identity"))])
     first = wb.create_batch(**args)
     b = wb.batch_view(first["batchId"])
+    assert b["spec"]["stepRequirements"]["form"] == wb.step_form(eid,"assets")
+    assert "必须保留的外观和空间关系：保留角色右侧衣袋" in b["spec"]["items"][0]["prompt"]
     expected = enhancements.entries(["07-A"])
     assert b["spec"]["enhancements"] == [e["methodSource"] for e in expected]
     assert all(e["text"] in b["spec"]["items"][0]["prompt"] for e in expected)
@@ -88,6 +90,9 @@ def test_writing_stages_and_comparison_use_scoped_enhancements(tmp_path, profile
         sections = [s for s in wb.run_methods(rid)["sections"] if (s["source"] or {}).get("enhancementIds")]
         assert sections and {tuple(s["source"]["enhancementIds"]) for s in sections} == {(code,)}
         assert all(s["text"] in prompt for s in sections)
+        schema = wb.step_form(eid,stage)
+        assert schema["pack"]=="short-film@v7" and schema["section"] in prompt
+        assert schema["sourceHash"] in prompt and all(label in prompt for label in schema["fields"].values())
         assert marker in prompt and enhancements.SCOPE in prompt
         if profile == "_template":
             assert all(term not in prompt.casefold() for term in ("puggy", "milo", "fourthwall"))
