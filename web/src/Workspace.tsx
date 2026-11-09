@@ -203,6 +203,7 @@ function useVersion(ctx: Ctx, stage: string) {
 
 function VersionTabs({ ctx, art, current }: { ctx: Ctx; art: any; current: any }) {
   const [show, setShow] = useState(false);
+  const { go } = useProjectRoute();
   const act=useAction();
   const refs=useQuery<any>(show && current ? "version_sources":null,{version_id:current?.id});
   return <div className="row">{art.versions.map((v: any) => (
@@ -216,7 +217,12 @@ function VersionTabs({ ctx, art, current }: { ctx: Ctx; art: any; current: any }
       {refs.error && <p className="error">{refs.error}</p>}
       {refs.data && <><p>来源 {refs.data.origin} {refs.data.base ? " · 基版 "+refs.data.base : ""} {refs.data.run ? " · 运行 "+refs.data.run : ""}</p>
         {refs.data.inputs.length===0 && <p>这个版本没有直接读取外部参考的运行记录。</p>}
-        {refs.data.inputs.map((item:any)=><details key={item.sha256+item.name}><summary>{item.name} · {({citation:"引用资料",visual_reference:"导演色卡",method:"制作方法",project_method:"项目方法",step_requirements:"本步需求",reference_pack:"参考包",adaptation_source:"改编来源"} as Record<string,string>)[item.role] || item.role}</summary><small>输入文件 SHA-256 {item.sha256}</small>{!refs.data.run && <p className="muted small">来源稿的运行 · {item.sourceRuns?.join("、")}</p>}<VersionSourceText role={item.role} text={item.text}/></details>)}</>}
+        {refs.data.inputs.map((item:any)=><details key={item.sha256+item.name}>
+          <summary>{item.role === "adopted_story" ? "起草时采用的故事" + (item.storyVersion ? " · "+rno(item.storyVersion.display_no) : "") :
+            item.name+" · "+(({citation:"引用资料",visual_reference:"导演色卡",method:"制作方法",project_method:"项目方法",step_requirements:"本步需求",reference_pack:"参考包",adaptation_source:"改编来源"} as Record<string,string>)[item.role] || item.role)}</summary>
+          {item.storyVersion && <button className="btn" onClick={() => { setShow(false); go(`#/e/${ctx.eid}/story?v=${item.storyVersion.id}`); }}>打开故事原稿</button>}
+          <small>输入文件 SHA-256 {item.sha256}</small>{!refs.data.run && <p className="muted small">来源稿的运行 · {item.sourceRuns?.join("、")}</p>}
+          <VersionSourceText role={item.role} text={item.text}/></details>)}</>}
       <button className="btn" onClick={()=>setShow(false)}>关闭</button></Modal>}</div>;
 }
 

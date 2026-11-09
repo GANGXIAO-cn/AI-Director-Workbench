@@ -79,6 +79,40 @@ def test_script_reads_review_used_for_adoption(tmp_path):
     assert script in upstream and "此次采用记录没有关联独审" in upstream
 
 
+def test_script_sources_keep_the_story_adopted_at_queue_time(tmp_path):
+    env = Env(tmp_path)
+    wb = env.wb
+    _, eid = env.new_episode()
+    env.adopt_story(eid)
+
+    def revise_story(text):
+        art = env.art(eid, "story")
+        base = art["adopted_version_id"]
+        content = dict(art["versions"][-1]["content"], synopsis=text)
+        vid = wb.save_manual(art["id"], base, content, "save-" + text)["versionId"]
+        env.drain(wb.submit_review(vid, "review-" + text)["runId"])
+        wb.adopt(art["id"], vid, base, "adopt-" + text)
+        return vid
+
+    original = "值班员把蓝票放入抽屉。"
+    revised = "值班员把红票退给乘客。"
+    r02 = revise_story(original)
+    run = wb.create_task(eid, "script", "起草分场剧本")["runId"]
+    revise_story(revised)
+    env.drain(run)
+    prompt = env.codex.calls[-1].prompt
+    assert original in prompt and revised not in prompt
+    assert all(word not in prompt.casefold() for word in ("puggy", "milo", "leo", "女主人"))
+    script = env.art(eid, "script")
+    draft = script["versions"][-1]
+    manual = wb.save_manual(script["id"], draft["id"], dict(draft["content"], notes="导演补记"), "script-note")["versionId"]
+    for vid in (draft["id"], manual):
+        source, = [i for i in wb.version_sources(vid)["inputs"] if i["role"] == "adopted_story"]
+        assert source["storyVersion"] == {"id": r02, "display_no": 2}
+        assert source["sourceRuns"] == [run]
+        assert original in source["text"] and revised not in source["text"]
+
+
 def test_new_episode_is_created_only_when_kickoff_succeeds(tmp_path):
     wb = Env(tmp_path).wb
     pid = wb.create_project("_template","短片")["projectId"]

@@ -1488,11 +1488,24 @@ class Core:
 
     def version_sources(self, version_id, reference_only=False):
         with connect(self.db_path) as db:
-            v = _row(db,"SELECT * FROM version WHERE id=?",version_id)
+            v = _row(db, "SELECT v.*, a.stage, a.episode_id FROM version v JOIN artifact a ON a.id=v.artifact_id "
+                         "WHERE v.id=?", version_id)
             roles = {"reference_pack","adaptation_source"}
             if not reference_only:
                 roles.update({"citation","visual_reference","project_method","method","step_requirements"})
+                if v["stage"] == "script":
+                    roles.add("adopted_story")
             inputs = self._version_materials(db,v,roles)
+            for item in inputs:
+                if item["role"] == "adopted_story":
+                    header = item["text"].partition("\n")[0]
+                    if header.startswith("工作台采用版本："):
+                        story = db.execute(
+                            "SELECT v.id, v.display_no FROM version v JOIN artifact a ON a.id=v.artifact_id "
+                            "WHERE v.id=? AND a.episode_id=? AND a.stage='story'",
+                            (header.removeprefix("工作台采用版本："), v["episode_id"])).fetchone()
+                        if story:
+                            item["storyVersion"] = dict(story)
         return dict(origin=v["origin"],base=v["base_id"],run=v["source_run_id"],inputs=inputs)
 
     def segment_palette_trace(self, version_id, segment):
