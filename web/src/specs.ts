@@ -1,4 +1,4 @@
-export const specLabels:Record<string,string> = {h3Resolution:"H3 分辨率",h3Candidates:"H3 候选数",h3InstanceType:"H3 实例档位",filmFormat:"作品形态",shootingFormat:"拍摄格式",shotRhythm:"镜头节奏",postText:"画面文字",promptLanguage:"提示词语言",aspectRatio:"画幅",segmentMaxSeconds:"每段最长秒数",targetDuration:"全片时长",packaging:"默认交付范围",sound:"声音要求",style:"画面风格"};
+export const specLabels:Record<string,string> = {assetRoot:"项目素材目录",h3Resolution:"H3 分辨率",h3Candidates:"H3 候选数",h3InstanceType:"H3 实例档位",filmFormat:"作品形态",shootingFormat:"拍摄格式",shotRhythm:"镜头节奏",postText:"画面文字",promptLanguage:"提示词语言",aspectRatio:"画幅",segmentMaxSeconds:"每段最长秒数",targetDuration:"全片时长",packaging:"默认交付范围",sound:"声音要求",style:"画面风格"};
 export function frameOrientation(value: string) {
   const match = /^(\d+):(\d+)$/.exec(value);
   if (!match) return "画幅待确认";

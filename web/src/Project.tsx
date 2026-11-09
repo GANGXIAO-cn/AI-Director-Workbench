@@ -8,7 +8,7 @@ import {specLabels,specChoices} from "./specs";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useEffect, useState } from "react";
 import { blob, cmd, q, commandId, importManuscript } from "./api";
-import { ErrorLine, Modal, Pills, SegBar, Tag, fmtMs, useAction, useQuery } from "./ui";
+import { ErrorLine, Modal, Pills, PROVIDER_LABEL, SegBar, Tag, fmtMs, useAction, useQuery } from "./ui";
 
 export default function Project({ id }: { id: string }) {
   const { hash, active } = useProjectRoute();
@@ -284,7 +284,7 @@ function ModelPick({ label, provider, setProvider, sel, setSel, catalog }: any) 
   return (
     <div className="col" style={{ gap: 4 }}>
       <div className="row small">{label}
-        <select value={provider} onChange={(e) => setProvider(e.target.value)}>{Object.keys(catalog?.text ?? { codex: 1, claude: 1, antigravity: 1 }).map((k) => <option key={k}>{k}</option>)}</select>
+        <select value={provider} onChange={(e) => setProvider(e.target.value)}>{Object.keys(catalog?.text ?? { codex: 1, claude: 1, antigravity: 1 }).map((k) => <option key={k} value={k}>{PROVIDER_LABEL[k] ?? k}</option>)}</select>
         <select value={sel.model ?? ""} onChange={(e) => setSel({ model: e.target.value || null, effort: null })}>{models.map((x: any) => <option key={x.label} value={x.id ?? ""}>{x.label}{x.status !== "verified" ? "（待检测）" : ""}</option>)}</select>
         <select value={sel.effort ?? ""} onChange={(e) => pickEffort(e.target.value || null)}>{["", "low", "medium", "high", "xhigh", "max"].map((x) => <option key={x} value={x}>{x || "默认强度"}{x && !(m?.efforts ?? []).includes(x) ? "（不兼容）" : ""}</option>)}</select>
       </div>

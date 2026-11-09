@@ -100,7 +100,7 @@ function Library({ id, p }: any) {
     <div>
       <div className="spread"><div><h1>复用资产库</h1><div className="muted small">检索、看图、复制到本集；本集图审核后再登记。九宫格只归本集。</div></div>
         <div className="row"><input placeholder="名称 / 用途" value={qText} onChange={(e) => setQ(e.target.value)} />
-          <select value={status} onChange={(e) => setStatus(e.target.value)}><option value="">全部状态</option>{["pending", "approved", "limited", "retired"].map((s) => <option key={s} value={s}>{labels[s]}</option>)}</select></div></div>
+          <select aria-label="资产审核状态" value={status} onChange={(e) => setStatus(e.target.value)}><option value="">全部状态</option>{["pending", "approved", "limited", "retired"].map((s) => <option key={s} value={s}>{labels[s]}</option>)}</select></div></div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(200px,1fr))", gap: 12, marginTop: 16 }}>
         {(lib.data ?? []).map((e) => (
           <div key={e.id} className={`card ${detail?.id === e.id ? "sel" : "line"}`} style={{ cursor: "pointer" }} onClick={() => {setDetailId(e.id);setLimits(null);}}>

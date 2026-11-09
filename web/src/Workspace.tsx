@@ -601,7 +601,9 @@ function PlanView({ ctx }: { ctx: Ctx }) {
     <button className="btn primary" disabled={act.busy} onClick={()=>act.run(async()=>{await cmd("create_task",{episode_id:ctx.eid,stage:"plan",goal:"按采用剧本设计镜头、接点和生成段"});ctx.reload();})}>按剧本设计镜头与生成段</button><ErrorLine error={act.error}/></div>;
   const shots = current.content.shots ?? [];
   const scenes: string[] = [...new Set<string>(shots.map((s: any) => s.origin?.scene ?? "参考镜头"))];
-  const over = lay.segments.filter((s: any) => s.duration > 15000);
+  const segmentLimit = Number(ctx.view.kickoff.spec.segmentMaxSeconds ?? 15);
+  const over = lay.segments.filter((s: any) => s.duration > segmentLimit * 1000);
+  const belowTarget = ctx.view.kickoff.spec.targetDuration === "over_60" && lay.total <= 60000;
   return (
     <div>
       <div className="stagehead">
@@ -610,9 +612,10 @@ function PlanView({ ctx }: { ctx: Ctx }) {
           <button key={t} className={`tab ${tab === t ? "on" : ""}`} onClick={() => setTab(t)}>{l}</button>))}</div>
       </div>
       <VersionTabs ctx={ctx} art={art} current={current} />
+      {belowTarget && <p className="card amber">本集目标严格超过 60 秒，当前设计 {lay.total / 1000} 秒。请在整集交付前调整镜头时长。</p>}
       {over.map((s: any) => (
         <div key={s.id} className="card amber" style={{ marginTop: 10 }}>
-          <b>{s.id} 共 {s.duration / 1000} 秒，超过 15 秒</b><span className="muted small"> · 须在动作完成处拆段，修复前阻断交付</span>
+          <b>{s.id} 共 {s.duration / 1000} 秒，超过本集 {segmentLimit} 秒上限</b><span className="muted small"> · 须在动作完成处拆段，修复前阻断交付</span>
           <div className="row" style={{ marginTop: 8 }}>{s.shots.slice(1).map((sid: string) => (
             <button key={sid} className="btn" disabled={ctx.locked} onClick={() => act.run(async () => { const r = await ctx.write("split_segment", { version_id: current.id, segment_id: s.id, first_shot_of_second: sid }); await ctx.reload(); ctx.setFocus(r.versionId); })}>在 {sid} 前拆开</button>))}</div>
         </div>))}
@@ -642,9 +645,9 @@ function PlanView({ ctx }: { ctx: Ctx }) {
         </div>))}
       {tab === "segments" && <table className="table" style={{ marginTop: 12 }}><thead><tr><th>段</th><th>策略</th><th>全片时间</th><th>段长</th><th>镜头</th></tr></thead>
         <tbody>{lay.segments.map((s: any) => <tr key={s.id}><td>{s.id}</td><td><select disabled={ctx.locked} value={s.strategy} onChange={(e) => act.run(async () => {
-          const r = await ctx.write("save_manual", { artifact_id: art.id, base_version_id: current.id, note: `${s.id} 改为 ${e.target.value}`,
+          const r = await ctx.write("save_manual", { artifact_id: art.id, base_version_id: current.id, note: `${s.id} 改为${e.target.value === "grid" ? "九宫格" : "自由参考"}`,
             content: { ...current.content, segments: current.content.segments.map((g: any) => g.id === s.id ? { ...g, strategy: e.target.value } : g) } });
-          await ctx.reload(); ctx.setFocus(r.versionId); })}><option value="flex">flex</option><option value="grid">grid</option></select></td><td>{fmtMs(s.start)}–{fmtMs(s.end)}</td><td>{s.duration / 1000}s</td><td>{s.shots.join("、")}</td></tr>)}</tbody></table>}
+          await ctx.reload(); ctx.setFocus(r.versionId); })}><option value="flex">自由参考</option><option value="grid">九宫格</option></select></td><td>{fmtMs(s.start)}–{fmtMs(s.end)}</td><td>{s.duration / 1000}s</td><td>{s.shots.join("、")}</td></tr>)}</tbody></table>}
       {tab === "table" && <table className="table" style={{ marginTop: 12 }}><thead><tr><th>镜</th><th>段</th><th>段内</th><th>机位</th><th>动作</th><th>出处</th></tr></thead>
         <tbody>{shots.map((s: any) => { const t = lay.shots[s.id]; const seg = lay.segments.find((x: any) => x.id === s.segment);
           return <tr key={s.id}><td>{s.id}</td><td>{s.segment}</td><td>{((t.start - seg.start) / 1000).toFixed(1)}–{((t.end - seg.start) / 1000).toFixed(1)}s</td><td>{s.camera}</td><td>{s.action}</td><td className="muted">{s.refs?.length ? "参考镜头" : s.origin?.scene}</td></tr>; })}</tbody></table>}
@@ -748,7 +751,7 @@ function CastView({ ctx }: { ctx: Ctx }) {
   });
   return (
     <div>
-      <div className="stagehead"><div><h1>角色出镜与身份覆盖</h1><div className="muted small">逐段绑定；grid 段的交付输入只取本段一张九宫格，缺口可修格或改 flex</div></div>
+      <div className="stagehead"><div><h1>角色出镜与身份覆盖</h1><div className="muted small">逐段绑定。使用九宫格时交付本段的一张整图，缺图时可修格或改用自由参考。</div></div>
         <div className="row"><input placeholder="新增角色 ID" value={role} onChange={(e) => setRole(e.target.value)} style={{ width: 140 }} /></div></div>
       {fixed.error && <p className="error">{fixed.error}</p>}
       {fixed.data?.roles?.length > 0 && <div className="row"><span>本项目固定身份图</span>{fixed.data.roles.map((r:any)=><button key={r.id} className="btn"
@@ -788,7 +791,7 @@ function CastView({ ctx }: { ctx: Ctx }) {
                   onChange={e=>setOpenings({...openings,[observationKey]:e.target.checked})}/> 已核对图中角色和本段开场状态</label>}
                 <label>对照观察 <input value={observations[observationKey] ?? (same ? c?.note ?? "" : "")} onChange={e=>setObservations({...observations,[observationKey]:e.target.value})}/></label>
                 <div className="row">{["ok","unclear","absent"].map(st=><button key={st} className="btn ghost" onClick={()=>set(row.segment,r,st)}>{st==="ok"?"身份清楚":st==="unclear"?"看不清":"未出镜"}</button>)}</div>
-                {c?.options?.map((o:string)=><a key={o} href={o.includes("flex") ? `#/e/${ctx.eid}/plan` : `#/e/${ctx.eid}/assets`}>{o}</a>)}</div></td>); })}
+                {c?.options?.map((o:string)=><a key={o} href={o.includes("flex") ? `#/e/${ctx.eid}/plan` : `#/e/${ctx.eid}/assets`}>{o==="改用 flex" ? "改用自由参考" : o}</a>)}</div></td>); })}
           </tr>))}</tbody></table>
       <ErrorLine error={act.error} />
     </div>

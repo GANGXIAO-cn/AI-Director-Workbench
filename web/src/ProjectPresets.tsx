@@ -27,7 +27,8 @@ function EpisodeOverride({ep,refresh}:{ep:Episode;refresh:()=>Promise<void>}) {
     {groups.flatMap(g=>g.keys).map(k=><option key={k} value={k}>{specLabels[k]}</option>)}</select></label>
     <label>本集新值 {specChoices[key]?<select value={value} onChange={e=>{setValue(e.target.value);setChecked(null);}}>
       {Object.entries(specChoices[key]).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select>:
-      <input value={value} onChange={e=>{setValue(e.target.value);setChecked(null);}}/>}</label>
+      <input type={key==="segmentMaxSeconds"?"number":"text"} min={key==="segmentMaxSeconds"?5:undefined} max={key==="segmentMaxSeconds"?15:undefined}
+        value={value} onChange={e=>{setValue(e.target.value);setChecked(null);}}/>}</label>
     <button className="btn" disabled={action.busy||value===String(ep.effective[key]??"")} onClick={()=>action.run(async()=>{
       setChecked(await cmd<Preview>("episode_spec_change",{episode_id:ep.id,key,value}));})}>预览本集变更</button>
     {checked&&<div className="field"><p>{format(key,ep.effective[key]??"未设置")} → {format(key,value)}</p>
