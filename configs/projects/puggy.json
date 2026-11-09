@@ -50,6 +50,7 @@
     "assetLibraryIndex": "复用资产库/index.json",
     "imageOutputRoot": "/Users/xiaogang/Documents/自媒体 2/tools/openai-image-mcp/outputs",
     "sceneBaselines": "制作基准/固定生产资产.json",
+    "topicLedger": "系列台账.json",
     "topicCatalog": "选题池/candidates.json",
     "soundStandard": "声音设定.md",
     "promptStandard": "制作基准/视频提示词标准.json",

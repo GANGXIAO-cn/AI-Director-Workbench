@@ -1,4 +1,5 @@
 import { ProjectBaselines } from "./ProjectBaselines";
+import { TopicResearch } from "./TopicResearch";
 import { FreeChat } from "./FreeChat";
 import { UploadedMethods } from "./UploadedMethods";
 import { MethodChanges, FrozenMethods } from "./MethodChanges";
@@ -26,7 +27,7 @@ export function ProjectPage({ id, sub, arg }: { id: string; sub: string; arg?: s
       case "baseline": return <ProjectBaselines pid={id} />;
       case "library": return <Library id={id} p={p.data} />;
       case "knowledge": return <Knowledge id={id} />;
-      case "topics": return <Topics id={id} />;
+      case "topics": return <Topics key={id} id={id} />;
       case "groups": return <Groups id={id} p={p.data} />;
       case "closure": return <Closure id={id} cid={arg!} />;
       case "closure-start": return <ClosureStart id={id} did={arg!} />;
@@ -193,11 +194,33 @@ function Topics({ id }: { id: string }) {
   const [status, setStatus] = useState("全部");
   const act = useAction();
   const STATUSES = ["全部", "候选", "开发中", "待审稿", "已成稿", "已制作", "弃用"];
-  const list = (t.data ?? []).filter((x) => status === "全部" || x.status === status);
+  const [search,setSearch]=useState("");
+  const [pair,setPair]=useState(["",""]);
+  const originals=source.data ?? [];
+  const cards=[
+    ...(t.data ?? []).map(c=>({key:"topic:"+c.id,code:c.code,premise:c.premise,mechanism:c.mechanism,
+      difference:c.similar.map((hit:any)=>hit.title+" · "+hit.body).join("；"),group:"本系统选题"})),
+    ...originals.map(c=>({key:"source:"+c.code,code:c.code,premise:c.premise,mechanism:c.mechanisms.join("、"),
+      difference:[c.comparison,c.payoff].filter(Boolean).join(" · "),group:"原始卡"}))];
+  const matches=(statusValue:string,values:unknown[])=>(status==="全部" || statusValue===status) &&
+    values.join(" ").toLocaleLowerCase().includes(search.trim().toLocaleLowerCase());
+  const list=(t.data ?? []).filter(c=>matches(c.status,[c.code,c.premise,c.mechanism,c.motivation]));
   return (
     <div>
       <h1>选题池与研究</h1><div className="muted small" style={{ margin: "6px 0 16px" }}>状态流转：加入池只建候选；开工进入开发中；送审为待审稿；独审完成并采用后为已成稿；交付后为已制作。</div>
+      <TopicResearch key={id} projectId={id} poolChanged={t.reload}/>
       <ProjectStageMethods id={id} stage="topic" />
+      <label>搜索选题 <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="编号、前提或机制"/></label>
+      {cards.length>1 && <details><summary>比较两张选题卡</summary><div className="grid2">
+        {pair.map((key,i)=>{
+          const card=cards.find(c=>c.key===key);
+          return <div key={i}><select aria-label={i===0 ? "第一张选题卡" : "第二张选题卡"} value={key}
+            onChange={e=>setPair(pair.map((old,j)=>j===i?e.target.value:old))}>
+            <option value="">选择一张选题卡</option>{cards.filter(c=>c.key!==pair[1-i]).map(c=>
+              <option key={c.key} value={c.key}>{c.code} · {c.group} · {c.premise}</option>)}</select>
+            {card && <><p>{card.premise}</p><p>机制 · {card.mechanism || "尚未记录"}</p>
+              <p>既有对照与结尾 · {card.difference || "尚未记录"}</p></>}</div>;
+        })}</div></details>}
       <div className="row">{STATUSES.map((s) => <button key={s} className={`pill ${status === s ? "on" : ""}`} onClick={() => setStatus(s)}>{s}</button>)}</div>
       <div className="grid2" style={{ marginTop: 14 }}>{list.map((x) => (
         <div key={x.id} className="card line">
@@ -210,8 +233,8 @@ function Topics({ id }: { id: string }) {
           {x.status === "候选" && <button className="btn ghost" style={{ marginTop: 8 }} onClick={() => act.run(async () => { await cmd("drop_topic", { topic_id: x.id }); t.reload(); })}>弃用</button>}
         </div>))}</div>
       <h2>项目原始选题池</h2>{source.error&&<p className="error">{source.error}</p>}
-      {(source.data ?? []).filter(c=>!t.data?.some(x=>x.code===c.code)).map(c=><details className="card" key={c.code}><summary>{c.code} · {c.title}</summary><p>{c.premise}</p><p>机制：{c.mechanisms?.join("、")} · 来源：{c.path}</p>
-        <button className="btn" onClick={()=>act.run(async()=>{await cmd("take_source_topic",{project_id:id,code:c.code,sha256:c.sha256});await t.reload();})}>加入本项目候选</button></details>)}
+      {originals.filter(c=>matches(c.status,[c.code,c.title,c.premise,c.mechanisms.join(" ")])).map(c=><details className="card" key={c.code}><summary>{c.code} · {c.title}</summary><p>{c.premise}</p><p>机制：{c.mechanisms?.join("、")} · 来源：{c.path} · {c.status}</p>{c.comparison && <p>相近旧题 · {c.comparison}</p>}{c.payoff && <p>结尾 · {c.payoff}</p>}
+        {t.data?.some(x=>x.code===c.code) ? <span>本项目已有同号卡</span> : <button className="btn" onClick={()=>act.run(async()=>{await cmd("take_source_topic",{project_id:id,code:c.code,sha256:c.sha256});await t.reload();})}>加入本项目候选</button>}</details>)}
       <h2 style={{ marginTop: 20 }}>加入候选</h2>
       <div className="grid2">{(["code", "premise", "mechanism", "motivation"] as const).map((k) => <input key={k} placeholder={{ code: "编号", premise: "故事前提", mechanism: "机制", motivation: "角色动机" }[k]} value={form[k]} onChange={(e) => setForm({ ...form, [k]: e.target.value })} />)}</div>
       <button className="btn primary" style={{ marginTop: 10 }} onClick={() => act.run(async () => { await cmd("add_topic", { project_id: id, ...form }); t.reload(); })}>加入选题池</button>

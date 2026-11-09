@@ -71,6 +71,7 @@ def default_image_providers():
 
 COMMANDS = {
     "revise_baseline", "follow_baseline",
+    "start_topic_research", "accept_research_topic",
     "add_reply_to_canvas","send_free_chat","stop_free_chat","retry_free_chat",
     "set_quota_retry_policy", "save_provider", "read_provider_models", "label_provider_model",
     "start_story_comparison", "preview_acting",
@@ -87,7 +88,7 @@ COMMANDS = {
     "create_group", "continue_in_group", "authorize_expert", "pause_expert", "manual_expert", "set_task_executor", "adopt_pack", "backup", "restore",
 }
 QUERIES = {
-    "free_chat","free_chat_options",
+    "free_chat","free_chat_options","topic_researches",
     "episode_contact_options", "space_locks", "api_providers",
     "step_history", "segment_palette_trace", "rhythm_review", "shot_reference_view",
     "project_role_assets", "historical_episodes", "historical_receipt", "historical_review_inputs", "product_placements", "project_resources", "project_section", "episode_project_sections", "available_configs", "groups", "project_knowledge",
@@ -325,7 +326,7 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
         if isinstance(result, dict):
             if result.get("runId"):
                 worker.submit(result["runId"])
-            if name in ("send_free_chat","retry_free_chat"):
+            if name in ("send_free_chat","retry_free_chat","start_topic_research"):
                 args = (result["turnId"],result["attemptId"])
                 if worker.inline:
                     wb.execute_free_chat(*args)

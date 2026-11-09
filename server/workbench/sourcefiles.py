@@ -138,7 +138,7 @@ class SourceFilesMixin(BaselineRevisionMixin, ProjectLibraryMixin, RoleAssetMixi
             found = read_named(production(db, project_id), "topicCatalog")
         if not found: return []
         rel, data = found
-        return [dict(code=c["id"], title=c["title"], premise=c["cn"], status=c["status"], mechanisms=c.get("mechanisms",[]), path=rel,
+        return [dict(code=c["id"], title=c["title"], premise=c["cn"], status=c["status"], mechanisms=c.get("mechanisms",[]), comparison=c.get("oldref",""), payoff=c.get("payoff",""), path=rel,
                      sha256=sha256_bytes(data)) for c in json.loads(data)["candidates"]]
 
     def take_source_topic(self, project_id, code, sha256, command_id=None):

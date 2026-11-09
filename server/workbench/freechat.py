@@ -10,11 +10,12 @@ from .db import connect, dumps, new_id, transaction
 from .errors import Conflict, NotFound, Rejected, row
 from .executors.base import ExecRequest
 from .prompts import prompt_from
+from . import topicresearch
 
 REPLY_SCHEMA = {"type":"object", "properties":{"reply":{"type":"string"}}, "required":["reply"], "additionalProperties":False}
 
 
-class FreeChatMixin:
+class FreeChatMixin(topicresearch.TopicResearchMixin):
     def free_chat(self, project_id, thread_id=None, episode_id=None, stage=None):
         with connect(self.db_path) as db:
             row(db, "SELECT id FROM project WHERE id=?", project_id)
@@ -26,7 +27,7 @@ class FreeChatMixin:
                     thread_id = threads[0]["id"]
             else:
                 threads = [dict(r) for r in db.execute("SELECT f.id,f.title FROM free_thread f WHERE project_id=? "
-                           "AND NOT EXISTS(SELECT 1 FROM episode_stage_thread s WHERE s.thread_id=f.id) ORDER BY f.rowid DESC",(project_id,))]
+                           "AND NOT EXISTS(SELECT 1 FROM episode_stage_thread s WHERE s.thread_id=f.id) AND NOT EXISTS(SELECT 1 FROM topic_research r WHERE r.thread_id=f.id) ORDER BY f.rowid DESC",(project_id,))]
             if thread_id and not any(t["id"] == thread_id for t in threads):
                 raise NotFound("当前工作区找不到这段对话")
             turns = []
@@ -90,6 +91,8 @@ class FreeChatMixin:
                         raise Rejected("本次参考图需要支持图片的执行器")
                 elif thread_id and db.execute("SELECT 1 FROM episode_stage_thread WHERE thread_id=?", (tid,)).fetchone():
                     raise Rejected("请在对应单集阶段继续这段对话")
+                if thread_id and db.execute("SELECT 1 FROM topic_research WHERE thread_id=?", (tid,)).fetchone():
+                    raise Rejected("请在选题池中查看研究结果")
                 if thread_id:
                     row(db,"SELECT id FROM free_thread WHERE project_id=? AND id=?",project_id,tid)
                 else:
@@ -193,12 +196,17 @@ class FreeChatMixin:
                     path = work/f"{len(images)+1}.{extension}"
                     path.write_bytes(data)
                     images.append(path)
-            prompt = prompt_from(entries,"根据本次选用的创作方法和资料，直接回答本条消息。将答复放入 reply 字段。","free_chat")
-            request = ExecRequest(attempt,"free_chat","free_chat",prompt,REPLY_SCHEMA,"new",work,
+            purpose = manifest["purpose"]
+            research = purpose == "topic_research"
+            guidance = topicresearch.INSTRUCTIONS if research else "根据本次选用的创作方法和资料，直接回答本条消息。将答复放入 reply 字段。"
+            prompt = prompt_from(entries, guidance, purpose)
+            request = ExecRequest(attempt,purpose,purpose,prompt,topicresearch.SCHEMA if research else REPLY_SCHEMA,"new",work,
                                   model=manifest.get("creator",{}).get("model"), effort=manifest.get("creator",{}).get("effort"),
                                   timeout=int(self.get_setting("executor_timeout",600)),images=images)
             out = self.executors[t["provider"]].start(request)
-            if out.ok:
+            if research and out.ok:
+                reply, status = topicresearch.research_reply(out.structured, entries), "succeeded"
+            elif out.ok:
                 body = out.structured
                 if not isinstance(body,dict) or not isinstance(body.get("reply"),str) or not body["reply"].strip():
                     raise ValueError("执行器没有返回有效的对话正文")

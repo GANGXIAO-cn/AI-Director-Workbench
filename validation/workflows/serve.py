@@ -21,6 +21,9 @@ if __name__ == "__main__":
         # Historical receipt inspection must not dispatch unrelated queued jobs from the source snapshot.
         for rid in env.wb.pending_runs():
             env.wb.stop_run(rid)
+    elif os.environ.get("ADW_TEST_TOPIC_RESEARCH"):
+        from topic_research_fixture import prepare
+        prepare(env)
     elif os.environ.get("ADW_TEST_STORY_SKILL"):
         env.wb.create_project("puggy", "PUGGY 故事技能验收")
     elif os.environ.get("ADW_TEST_METHOD_SYNC"):

@@ -328,6 +328,8 @@ CREATE TABLE IF NOT EXISTS free_turn(
   id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES free_thread(id), text TEXT NOT NULL, reply TEXT,
   provider TEXT NOT NULL, status TEXT NOT NULL, reason TEXT, attempt TEXT NOT NULL, input_hash TEXT NOT NULL,
   manifest_relpath TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS topic_research(
+  thread_id TEXT PRIMARY KEY REFERENCES free_thread(id), project_id TEXT NOT NULL REFERENCES project(id));
 CREATE INDEX IF NOT EXISTS free_turn_thread ON free_turn(thread_id);
 CREATE TABLE IF NOT EXISTS uploaded_method(
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES project(id), title TEXT NOT NULL, UNIQUE(project_id,title));

@@ -9,12 +9,14 @@ from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parent
 def run(script):
-    if script not in {"revision_sessions","cooperation","project_context","director_inputs","editing_navigation","history","shot_wall","enhancements","story_skill","script_methods","home","archive_page","baselines","publish_handoff","mixed_media","h3_sound","h3_guides","interrupted_history","free_chat","image_inventory","story_handoff","prompt_signals","project_folder","browser","resources","knowledge","script_bodies","presets","delivery_page","projects","shot_refs","navigation","story_comparison","providers","method_sync","custom_methods","contact_sheet"}:
+    if script not in {"topic_research","revision_sessions","cooperation","project_context","director_inputs","editing_navigation","history","shot_wall","enhancements","story_skill","script_methods","home","archive_page","baselines","publish_handoff","mixed_media","h3_sound","h3_guides","interrupted_history","free_chat","image_inventory","story_handoff","prompt_signals","project_folder","browser","resources","knowledge","script_bodies","presets","delivery_page","projects","shot_refs","navigation","story_comparison","providers","method_sync","custom_methods","contact_sheet"}:
         raise ValueError(script)
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
     env = dict(os.environ, ADW_TEST_PORT=str(port))
+    if script == "topic_research":
+        env["ADW_TEST_TOPIC_RESEARCH"]="1"
     if script == "project_context":
         env["ADW_TEST_PROJECT_CONTEXT"]="1"
     if script == "history":

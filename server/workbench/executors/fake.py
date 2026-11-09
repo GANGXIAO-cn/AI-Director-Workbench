@@ -123,6 +123,11 @@ def directed(req: ExecRequest, name: str):
         return quota_exhausted(req)
     if "directorRequest" in req.schema.get("properties", {}):
         return dict(draft(req), kind="discussion", changes=[], directorRequest="", reply="本次只讨论当前稿件。")
+    if req.kind == "topic_research":
+        source, quote = re.search(r"^===== research_source · (.*?) =====\n([^\n]+)", p, re.M).groups()
+        return {"candidates":[dict(title="错拿的钥匙", premise="值班员试图在交班前归还拿错的钥匙。",
+                                   mechanism="两人互换线索", motivation="按时完成交班",
+                                   difference="将发现遗失改为主动归还。",source=source,quote=quote[:24])]}
     if req.kind == "free_chat":
         return {"reply":"已按本轮资料回应。"+request.strip()}
     if req.kind == "cut_explanation":
