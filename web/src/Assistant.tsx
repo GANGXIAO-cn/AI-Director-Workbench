@@ -5,7 +5,7 @@ import { useProjectRoute } from "./projectNavigation";
 import { useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { Ref } from "react";
 import { cmd, q } from "./api";
-import { Avatars, ErrorLine, PROVIDER_LABEL, Tag, rno, useAction, useQuery } from "./ui";
+import { Avatars, ErrorLine, Modal, PROVIDER_LABEL, STAGES, Tag, rno, useAction, useQuery } from "./ui";
 
 export type Selection = { label: string; data: Record<string, any> } | null;
 
@@ -42,6 +42,7 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
   const provider = selected.provider;
   const models = catalog.data?.text?.[provider]?.models ?? [];
   const efforts = models.find((m:any) => m.id === (selected.model ?? null))?.efforts ?? [null];
+  const [history, setHistory] = useState(false);
   const [choice, setChoice] = useState<string | null>(null);
   const [impact, setImpact] = useState<any>(null);
   const act = useAction();
@@ -67,6 +68,8 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
   return (
     <aside className="assistant">
       <div className="head">导演助手 <button className="btn focus-toggle" aria-pressed={focusChat} onClick={()=>setFocusChat(!focusChat)}>{focusChat ? "返回成果文档" : "专注对话"}</button><Avatars create={plan?.create?.provider} review={plan?.review?.provider} /><span className="muted tiny" style={{ marginLeft: "auto", textAlign: "right" }}>{task ? `任务：${task.goal.slice(0, 14)}` : "尚无任务"}{task ? <><br />自动修订 {task.used_rounds}/{task.max_rounds} 轮</> : null}</span></div>
+      <button className="btn ghost" onClick={()=>setHistory(true)}>本集对话历史</button>
+      {history && <EpisodeHistory view={view} close={()=>setHistory(false)} reload={reload}/>}
       <div className="msgs">
         {(task?.messages ?? []).map((m: any) => <Message key={m.id} m={m} task={task} reload={reload} art={art} />)}
         {live.map((r: any) => (
@@ -143,8 +146,29 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
 const BATCH_STATE: Record<string, string> = { awaiting_authorization: "待确认", authorized: "已授权", completed: "完成", partial: "部分待发",
   pending_reconcile: "待核对", partially_succeeded: "部分成功", failed: "失败", cancelled: "已取消" };
 
-function Message({ m, task, reload, art }: { m: any; task: any; reload: () => void; art: any }) {
-  const { hash } = useProjectRoute();
+function EpisodeHistory({view,close,reload}:{view:any;close:()=>void;reload:()=>void}) {
+  const [filter,setFilter] = useState("");
+  const records = view.artifacts.flatMap((art:any) => art.tasks.flatMap((task:any) => {
+    const stage = task.goal === "两遍独审" ? "review" : art.stage;
+    return task.messages.map((message:any) => ({art,task,message,stage}));
+  })).sort((a:any,b:any) => a.message.created_at-b.message.created_at || a.task.created_at-b.task.created_at ||
+    a.task.id.localeCompare(b.task.id) || a.message.seq-b.message.seq);
+  const names = Object.fromEntries(STAGES);
+  const visible = records.filter((r:any) => !filter || filter === r.stage);
+  return <Modal width={760} onClose={close}><div className="spread"><h2>本集对话历史 · {view.episode.display_code}</h2>
+    <button className="btn" onClick={close}>关闭历史</button></div>
+    <label>筛选阶段 <select value={filter} onChange={e=>setFilter(e.target.value)}><option value="">全部阶段</option>
+      {STAGES.filter(([k])=>records.some((r:any)=>r.stage===k)).map(([k,label])=><option key={k} value={k}>{label}</option>)}</select></label>
+    {visible.length === 0 && <p>本集还没有阶段对话记录。</p>}
+    {visible.map(({art,task,message,stage}:any,i:number)=><div key={message.id} className="history-entry">
+      {visible[i-1]?.task.id !== task.id && <h3>{names[stage]} · {task.goal}</h3>}
+      <time className="muted tiny">{new Date(message.created_at*1000).toLocaleString()}</time>
+      <Message m={message} task={task} art={art} reload={reload} closeHistory={close}/>
+    </div>)}
+  </Modal>;
+}
+
+function Message({ m, task, reload, art, closeHistory }: { m:any; task:any; reload:()=>void; art:any; closeHistory?:()=>void }) {
   const {focusChat, setFocusChat} = useDisplay();
   const act = useAction();
   const payload = m.payload ? JSON.parse(m.payload) : null;
@@ -153,7 +177,7 @@ function Message({ m, task, reload, art }: { m: any; task: any; reload: () => vo
     <div className="mcard focus">
       <div className="msg"><div className="who"><i className="codex" />澄清</div></div>
       <div>{m.text}</div>
-      {task.state === "clarifying" && <div className="row" style={{ marginTop: 8 }}>{payload.options.map((o: string) => (
+      {!closeHistory && task.state === "clarifying" && <div className="row" style={{ marginTop: 8 }}>{payload.options.map((o: string) => (
         <button key={o} className="btn" onClick={() => act.run(async () => { await cmd("answer_clarification", { task_id: task.id, answer: o }); reload(); })}>{o}</button>))}</div>}
       {payload.relatedIds?.length > 0 && <div className="muted tiny">关联：{payload.relatedIds.join("、")}</div>}
       <ErrorLine error={act.error} />
@@ -165,11 +189,12 @@ function Message({ m, task, reload, art }: { m: any; task: any; reload: () => vo
         <div className="spread small"><span>{art?.stage === "story" ? "故事稿" : art?.stage === "script" ? "剧本" : "成果"} {v ? rno(v.display_no) : ""} 草稿 · {PROVIDER_LABEL[payload.provider] ?? payload.provider}</span>
           <Tag tone={art?.adopted_version_id === payload.versionId ? "green" : "amber"}>{art?.adopted_version_id === payload.versionId ? "已采用" : "待采用"}</Tag></div>
         <div className="small" style={{ margin: "6px 0" }}>{m.text}{payload.baseVersionId ? `（基于 ${rno(art?.versions.find((x: any) => x.id === payload.baseVersionId)?.display_no)}）` : ""}</div>
-        <div className="row"><a className="btn" onClick={()=>{if (focusChat) setFocusChat(false);}} href={`#${hash.split("#")[1].split("?")[0]}?v=${payload.versionId}`}>定位</a></div>
+        <div className="row"><a className="btn" onClick={()=>{closeHistory?.(); if (focusChat) setFocusChat(false);}} href={`#/e/${task.episode_id}/${art.stage}?v=${payload.versionId}`}>{closeHistory ? "打开完整稿" : "定位"}</a></div>
       </div>);
   }
   if (m.role === "system") {
-    const review = m.run_id && art?.versions.flatMap((v: any) => v.reviews).find((r: any) => r?.run_id === m.run_id);
+    const isReview = m.kind === "review" || (m.kind === "text" && m.text.startsWith("独立审查（会话隔离）结论"));
+    const review = isReview && m.run_id && art?.versions.flatMap((v: any) => v.reviews).find((r: any) => r?.run_id === m.run_id);
     return <div className="mcard small">{review ? <>独立审查 · 另开会话 <Tag tone={review.original_decision === "pass" ? "green" : "red"}>{review.original_decision === "pass" ? "通过" : review.original_decision === "uncertain" ? "待确认" : "退回"}</Tag> · {review.issues.length} 条意见</> : m.text}</div>;
   }
   return <div className="msg"><div className="who"><i className="codex" />助手</div><div>{m.text}</div></div>;

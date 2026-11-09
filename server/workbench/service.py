@@ -228,11 +228,17 @@ class Core:
     def import_file(self, project_id, name, data: bytes, purpose, episode_id=None, provided_source="",
                     command_id=None):
         payload = dict(project_id=project_id, name=name, sha=sha256_bytes(data), purpose=purpose, episode_id=episode_id)
+        if provided_source == "episode_story":
+            if not episode_id or purpose not in ("story_source","script_source"):
+                raise Rejected("请选择本集故事稿或剧本")
+            payload["forStory"] = True
         parsed = extract_manuscript(name, data) if purpose in ("story_source", "script_source") else None
         with transaction(self.db_path) as db:
             _row(db, "SELECT id FROM project WHERE id=?", project_id, missing="项目不存在")
             if episode_id:
                 self._episode_in(db, episode_id, project_id)
+            if provided_source == "episode_story":
+                self._kickoff(db, episode_id)
             def run():
                 iid = new_id()
                 rel = self.store.import_copy(project_id, iid, name, data)
@@ -244,6 +250,11 @@ class Core:
                     db.execute("INSERT INTO import_extraction VALUES(?,?)", (iid, method))
                 return dict(importId=iid, parseStatus=status, diagnostic=diag, extractionMethod=method, preview=(text or "")[:800])
             return self._command(db, command_id, "import", payload, run)
+
+    def _episode_manuscript(self, db, eid):
+        return db.execute("SELECT id,original_name,sha256,parsed_text FROM import_record WHERE episode_id=? "
+                          "AND provided_source='episode_story' AND parse_status='parsed' ORDER BY copied_at DESC,rowid DESC LIMIT 1",
+                          (eid,)).fetchone()
 
     def read_import(self, import_id):
         with connect(self.db_path) as db:
@@ -980,7 +991,7 @@ class Core:
                                 setting["content"] if setting else None, issue["decision"], issue["reason"], int(blocking)))
                 thread = db.execute("SELECT id FROM thread WHERE task_id=?", (task["id"],)).fetchone()[0]
                 self._message(db, thread, "system", f"独立审查（会话隔离）结论：{result['decision']}，"
-                              f"{len(result['issues'])} 条意见", None, None, run_id)
+                              f"{len(result['issues'])} 条意见", None, None, run_id, kind="review")
                 self._finish(run_id, "succeeded", outcome=outcome, attempts=attempts,
                              result_hash=sha256_bytes(body), db=db)
                 follow += self._after_review(db, task, run, rid, result)
@@ -1347,6 +1358,9 @@ class Core:
                 view["sourceImport"] = dict(db.execute(
                     "SELECT id,original_name,sha256,purpose,parsed_text FROM import_record WHERE id=?",
                     (kick["source_import_id"],)).fetchone())
+            manuscript = self._episode_manuscript(db, episode_id)
+            if manuscript:
+                view["storyManuscript"] = dict(manuscript)
             view["refPacks"] = []
             for pk in db.execute("SELECT DISTINCT p.* FROM ref_pack p WHERE p.episode_id=? OR p.id IN (SELECT pack_id FROM task_pack tp "
                                  "JOIN task t ON t.id=tp.task_id WHERE t.episode_id=?) OR p.id IN (SELECT pack_id FROM shot_bookmark "

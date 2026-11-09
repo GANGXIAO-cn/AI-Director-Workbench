@@ -9,12 +9,16 @@ from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parent
 def run(script):
-    if script not in {"enhancements","story_skill","script_methods","home","archive_page","baselines","publish_handoff","mixed_media","h3_sound","h3_guides","interrupted_history","free_chat","image_inventory","story_handoff","prompt_signals","project_folder","browser","resources","knowledge","script_bodies","presets","delivery_page","projects","shot_refs","navigation","story_comparison","providers","method_sync","custom_methods","contact_sheet"}:
+    if script not in {"history","shot_wall","enhancements","story_skill","script_methods","home","archive_page","baselines","publish_handoff","mixed_media","h3_sound","h3_guides","interrupted_history","free_chat","image_inventory","story_handoff","prompt_signals","project_folder","browser","resources","knowledge","script_bodies","presets","delivery_page","projects","shot_refs","navigation","story_comparison","providers","method_sync","custom_methods","contact_sheet"}:
         raise ValueError(script)
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
     env = dict(os.environ, ADW_TEST_PORT=str(port))
+    if script == "history":
+        env["ADW_TEST_HISTORY"] = "1"
+    if script == "shot_wall":
+        env["ADW_TEST_SHOT_WALL"] = "1"
     if script == "story_skill":
         env["ADW_TEST_STORY_SKILL"] = "1"
     if script == "script_methods":

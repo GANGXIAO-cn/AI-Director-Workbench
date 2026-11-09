@@ -62,23 +62,34 @@ class DeliveryMixin:
 
     # ============================================================ publish settings / pack
     def publish_settings(self, project_id):
-        custom = self.get_setting(f"publish:{project_id}")
+        return self._effective_publish_settings(project_id, self.get_setting(f"publish:{project_id}"))
+
+    def _effective_publish_settings(self, project_id, custom):
         with connect(self.db_path) as db:
             project = row(db, "SELECT config_id,production FROM project WHERE id=?", project_id)
         prod = json.loads(project["production"])
         default_format = prod.get("publishCopyFormat")
         if default_format is None and project["config_id"] == "puggy":
             default_format = load_config("puggy")["production"].get("publishCopyFormat")
-        if custom:
-            return publishing.settings({"copy_format": default_format, **custom})
+        if custom is not None and not isinstance(custom, dict):
+            raise Rejected("发布设置须为对象")
+        if custom is not None:
+            merged = {"copy_format": default_format, **custom}
+            if merged["copy_format"] != "instrumental_v1" or "hook_emoji" in merged:
+                return publishing.settings(merged)
         if prod.get("publishSettings") and prod.get("assetRoot"):
             path = Path(prod["assetRoot"]) / prod["publishSettings"]
             if path.is_file():
-                return publishing.settings(dict(json.loads(path.read_text()), copy_format=default_format))
-        return publishing.settings(None)
+                original = json.loads(path.read_text())
+                if custom is None:
+                    return publishing.settings(dict(original, copy_format=default_format))
+                # Older project overrides can omit the required closing marker from the profile.
+                merged["hook_emoji"] = original.get("hook_emoji", "")
+        return publishing.settings(merged if custom is not None else None)
 
     def set_publish_settings(self, project_id, settings):
-        self.put_setting(f"publish:{project_id}", publishing.settings(settings))
+        effective = self._effective_publish_settings(project_id, settings)
+        self.put_setting(f"publish:{project_id}", effective)
 
     def import_publish_pack(self, project_id, name, data, source="upload"):
         cfg = self.publish_settings(project_id)

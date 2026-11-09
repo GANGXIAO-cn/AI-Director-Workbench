@@ -62,3 +62,48 @@ def test_image_selection_freezes_in_batch_before_authorization(tmp_path):
     with patch.object(env.images, "submit", wraps=env.images.submit) as submitted:
         wb.execute_batch(first["batchId"])
         assert submitted.call_args.args[0]["prompt"] == b["spec"]["items"][0]["prompt"]
+
+
+@pytest.mark.parametrize("profile", ["_template", "puggy"])
+def test_writing_stages_and_comparison_use_scoped_enhancements(tmp_path, profile):
+    from workbench.executors.fake import quota_exhausted
+
+    env = Env(tmp_path)
+    wb = env.wb
+    pid, eid = env.new_episode(config=profile)
+    env.adopt_story(eid)
+    env.script(eid)
+    plan = env.plan86({"G01":[8000]})
+    env.save_adopt(eid, "plan", plan)
+    asset = env.image(pid, eid)
+    prompt_version, _ = env.save_adopt(eid, "prompts", env.prompts_for(plan, asset["versionId"]))
+    choices = {"story":"01-A", "script":"04-B", "plan":"00-C", "prompts":"09-Q", "publish":"08-C"}
+    for stage, code in choices.items():
+        marker = "本步固定要求 " + stage
+        wb.save_step_config(eid, stage, goal=marker, enhancements=[code])
+        rid = wb.create_task(eid, stage, "按本步要求检查输入")["runId"]
+        env.codex.script = [quota_exhausted]
+        env.drain(rid)
+        prompt = env.codex.calls[-1].prompt
+        sections = [s for s in wb.run_methods(rid)["sections"] if (s["source"] or {}).get("enhancementIds")]
+        assert sections and {tuple(s["source"]["enhancementIds"]) for s in sections} == {(code,)}
+        assert all(s["text"] in prompt for s in sections)
+        assert marker in prompt and enhancements.SCOPE in prompt
+        if profile == "_template":
+            assert all(term not in prompt.casefold() for term in ("puggy", "milo", "fourthwall"))
+        if stage == "prompts":
+            assert "H3" in prompt
+
+    selected = enhancements.entries(["09-Q"])
+    for name in ("cold_read", "comparison"):
+        review = wb.start_prompt_review(prompt_version, "G01", name, "check-"+name)
+        env.drain(review["runId"])
+        prompt = env.claude.calls[-1].prompt
+        assert all((s["text"] in prompt) == (name == "comparison") for s in selected)
+        assert ("本步固定要求 prompts" in prompt) == (name == "comparison")
+        if profile == "_template":
+            assert all(term not in prompt.casefold() for term in ("puggy", "milo", "fourthwall"))
+    assert wb.prompt_review_status(prompt_version)["G01"]["ok"]
+    wb.save_step_config(eid, "prompts", goal="本步固定要求 prompts", enhancements=[])
+    status = wb.prompt_review_status(prompt_version)["G01"]
+    assert status["coldRead"]["state"] == "passed" and not status["ok"]

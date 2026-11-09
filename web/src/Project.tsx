@@ -5,7 +5,7 @@ import { useProjectRoute } from "./projectNavigation";
 import {specLabels,specChoices} from "./specs";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useEffect, useState } from "react";
-import { blob, cmd, q } from "./api";
+import { blob, cmd, q, commandId, importManuscript } from "./api";
 import { ErrorLine, Modal, Pills, SegBar, Tag, fmtMs, useAction, useQuery } from "./ui";
 
 export default function Project({ id }: { id: string }) {
@@ -109,6 +109,7 @@ function AddEpisode({ code, onClose, onAdd }: any) {
 }
 
 function EpisodeCard({ e, projectId, onKick, reload }: { e: any; projectId: string; onKick: () => void; reload: () => void }) {
+  const [importing,setImporting] = useState(false);
   const [editing, setEditing] = useState(false);
   const [facts, setFacts] = useState((e.leftover_facts ?? []).join("\n"));
   const act = useAction();
@@ -117,6 +118,7 @@ function EpisodeCard({ e, projectId, onKick, reload }: { e: any; projectId: stri
   const delivered = e.deliveries.some((d: any) => d.scope === "full");
   return (
     <div className="epcard">
+      {importing && <EpisodeManuscript pid={projectId} episode={e} close={()=>setImporting(false)}/>}
       <div className="thumb" style={{ backgroundImage: cover ? `url(${cover})` : undefined, display: "grid", placeItems: "center", color: "#3a3b42", fontSize: "2.31rem" }}>{cover ? "" : "☺"}</div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <Tag tone={e.tone}>{e.label}</Tag>
@@ -128,7 +130,7 @@ function EpisodeCard({ e, projectId, onKick, reload }: { e: any; projectId: stri
         <div style={{ margin: "10px 0" }}><SegBar total={11} done={e.progress} now={!delivered && !!e.kickoff_id} /></div>
         <div className="row" style={{ justifyContent: "flex-end" }}>
           {!e.kickoff_id && <button className="btn primary" onClick={onKick}>开工</button>}
-          {e.kickoff_id && !delivered && <a className="btn" href={`#/e/${e.id}/story`}>我有故事稿</a>}
+          {e.kickoff_id && !delivered && <button className="btn" onClick={()=>setImporting(true)}>我有故事稿</button>}
           {e.kickoff_id && !delivered && <a className="btn primary" href={`#/e/${e.id}/${e.adopted.story ? (e.adopted.plan ? "assets" : "script") : "story"}`}>{e.adopted.story ? "开始制作" : "继续"}</a>}
           {delivered && <a className="btn" href={`#/e/${e.id}/delivery`}>图文页</a>}
           {delivered && e.closure && e.closure.state !== "confirmed" && <a className="btn primary" href={`#/p/${projectId}/closure/${e.closure.id}`}>收尾</a>}
@@ -137,6 +139,25 @@ function EpisodeCard({ e, projectId, onKick, reload }: { e: any; projectId: stri
       </div>
     </div>
   );
+}
+
+function EpisodeManuscript({pid,episode,close}:{pid:string;episode:any;close:()=>void}) {
+  const [file,setFile] = useState<File|null>(null);
+  const [request,setRequest] = useState(commandId);
+  const [result,setResult] = useState<any>(null);
+  const action = useAction();
+  return <Modal onClose={()=>{if (!action.busy) close();}} width={560}><h2>导入本集故事来源 · {episode.display_code}</h2>
+    <p>保存的原文会随本集下一次故事任务发送。已经采用的稿件可继续查看。</p>
+    <label>选择本地稿件 <input type="file" disabled={action.busy} accept=".md,.txt,.docx,.pdf"
+      onChange={e=>{setFile(e.target.files?.[0] ?? null);setResult(null);setRequest(commandId());action.clear();}}/></label>
+    {result?.parseStatus==="parsed" && <><p>已导入 {file?.name}</p><pre className="field">{result.preview}</pre>
+      <a className="btn primary" href={`#/e/${episode.id}/story`} onClick={close}>查看本集故事稿</a></>}
+    {result?.parseStatus==="failed" && <p className="error">{result.diagnostic}</p>}
+    <ErrorLine error={action.error}/>
+    <div className="row"><button className="btn" disabled={action.busy} onClick={close}>{result?"关闭":"取消"}</button>
+      {!result && <button className="btn primary" disabled={!file || action.busy}
+        onClick={()=>action.run(async()=>setResult(await importManuscript(pid,file!,"story_source",episode.id,request)))}>导入为本集故事来源</button>}</div>
+  </Modal>;
 }
 
 export function Kickoff({ projectId, prefill, onClose }: { projectId: string; prefill: any; onClose: () => void }) {

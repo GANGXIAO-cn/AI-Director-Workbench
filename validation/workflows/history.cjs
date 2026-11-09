@@ -1,0 +1,88 @@
+const assert = require("node:assert/strict");
+const {chromium} = require("playwright");
+const base = "http://127.0.0.1:"+process.env.ADW_TEST_PORT;
+
+async function main() {
+  const browser = await chromium.launch({executablePath:process.env.CHROME_PATH,headless:true});
+  try {
+    const page = await browser.newPage({viewport:{width:1440,height:960}});
+    page.setDefaultTimeout(6000);
+    const query = async (name,args={})=>(await page.request.get(base+"/api/q/"+name,{params:{args:JSON.stringify(args)}})).json();
+    assert.match((await query("storage_status")).dataDir,/\/adw-workflows-[^/]+\/data$/);
+    const [project] = await query("list_projects");
+    const {episodes} = await query("project_overview",{project_id:project.id});
+    const episode = code=>episodes.find(e=>e.display_code===code).id;
+    const eid = episode("E03");
+    const data = await query("episode_view",{episode_id:eid});
+    const old = data.artifacts.find(a=>a.stage==="story").adopted_version_id;
+    const button = name=>page.getByRole("button",{name,exact:true});
+    await page.goto(base+"/#/p/"+project.id);
+    await page.getByRole("link",{name:"导演助手 · E03"}).click();
+    await page.waitForURL("**/#/e/"+eid+"/story");
+    await page.locator(".assistant .head").getByText(/创作 Claude.*独审 Codex/).waitFor();
+    await page.locator(".msgs").getByText("退回",{exact:true}).waitFor();
+    assert.doesNotMatch(await page.locator(".msgs").innerText(),/诊断包含 pass/);
+    await page.goto(base+"/#/e/"+eid+"/script");
+    await button("本集对话历史").click();
+    const history = page.locator(".modal").filter({hasText:"本集对话历史"});
+    const original = history.locator(".msg.user").filter({hasText:"写本集故事稿"});
+    await original.waitFor();
+    const messages = await history.locator(".msg.user").allTextContents();
+    assert.deepEqual(messages,["写本集故事稿","将抽屉关上的动作放在第二场","改写本集开场动作"]);
+    const select = history.getByLabel("筛选阶段");
+    await select.selectOption("script");
+    assert.deepEqual(await history.locator(".msg.user").allTextContents(),[messages[1]]);
+    await select.selectOption("story");
+    assert.deepEqual(await history.locator(".msg.user").allTextContents(),[messages[0],messages[2]]);
+    assert.equal(await history.getByText("退回",{exact:true}).count(),1);
+    assert.equal(await history.getByText("通过",{exact:true}).count(),1);
+    await history.getByRole("link",{name:"打开完整稿"}).first().click();
+    await page.waitForURL("**/#/e/"+eid+"/story?v="+old);
+    await page.getByRole("heading",{name:"故事稿",exact:true}).waitFor();
+    await page.getByText(data.artifacts.find(a=>a.stage==="story").versions.find(v=>v.id===old).content.synopsis,{exact:true}).first().waitFor();
+    await page.goto(base+"/#/e/"+episode("E02")+"/story");
+    await page.locator(".assistant .head").getByText(/创作 Codex.*独审 Claude/).waitFor();
+    await button("本集对话历史").click();
+    assert.deepEqual(await history.locator(".msg.user").allTextContents(),["另一集专属的夜班记录"]);
+    await button("关闭历史").click();
+    await page.goto(base+"/#/p/"+project.id+"/groups");
+    for (let i=0;i<2;i++) {
+      await button("连续夜班").click();
+      const members = page.locator(".card.line").filter({hasText:"先交班"}).locator(".spread.small > span:first-child");
+      await members.first().waitFor();
+      assert.deepEqual((await members.allTextContents()).map(s=>s.split(" · ").slice(0,2)),[["先交班","E03"],["再巡店","E02"]]);
+      if (i===0) await page.reload();
+    }
+    await page.goto(base+"/#/p/"+project.id);
+    const chosen = page.locator(".epcard").filter({hasText:"E03 ·"});
+    const originalText = "晚班柜台打烊，蓝色雨伞还挂在门上。";
+    const file = {name:"夜班补充稿.md",mimeType:"text/markdown",buffer:Buffer.from(originalText)};
+    const episodeView = id=>query("episode_view",{episode_id:id});
+    await chosen.getByRole("button",{name:"我有故事稿"}).click();
+    await page.getByLabel("选择本地稿件").setInputFiles(file);
+    await page.locator(".modal").getByRole("button",{name:"取消",exact:true}).click();
+    assert.ok(!(await episodeView(eid)).storyManuscript);
+    await chosen.getByRole("button",{name:"我有故事稿"}).click();
+    await page.getByLabel("选择本地稿件").setInputFiles(file);
+    await button("导入为本集故事来源").click();
+    await page.locator(".modal").getByText(originalText,{exact:true}).waitFor();
+    await page.getByRole("link",{name:"查看本集故事稿"}).click();
+    await page.getByText("本集补充稿件 · 夜班补充稿.md",{exact:true}).click();
+    await page.getByText(originalText,{exact:true}).waitFor();
+    assert.equal((await episodeView(eid)).artifacts.find(a=>a.stage==="story").adopted_version_id,old);
+    assert.ok(!(await episodeView(episode("E02"))).storyManuscript);
+    const composer = page.getByPlaceholder("输入你的想法，继续完善这一集");
+    await composer.fill("参考刚导入的夜班补充稿");
+    await composer.press("Control+Enter");
+    await page.waitForFunction(()=>document.querySelector(".composer textarea")?.value==="");
+    const art = (await episodeView(eid)).artifacts.find(a=>a.stage==="story");
+    const run = art.tasks.flatMap(t=>t.runs).sort((a,b)=>a.created_at-b.created_at).at(-1);
+    const manifest = (await query("run_manifest",{run_id:run.id})).manifest;
+    const entry = manifest.inputs.find(x=>x.role==="citation" && x.name.includes(file.name));
+    const sent = await (await page.request.get(base+"/api/blob/"+entry.sha256)).json();
+    assert.equal(sent.text,originalText);
+    assert.equal(sent.importId,(await episodeView(eid)).storyManuscript.id);
+    console.log("PASS 分集分阶段对话、找回旧稿、审核结论、项目助手入口、执行器分工、故事组回读");
+  } finally { await browser.close(); }
+}
+main().catch(e=>{console.error(e);process.exitCode=1;});

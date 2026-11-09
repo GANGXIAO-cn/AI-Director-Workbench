@@ -244,9 +244,9 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
 
     @app.post("/api/projects/{pid}/imports")
     async def import_file(pid: str, file: UploadFile = File(...), purpose: str = Form(...),
-                          episodeId: str | None = Form(None), commandId: str | None = Form(None)):
+                          episodeId: str | None = Form(None), commandId: str | None = Form(None), forStory: bool = Form(False)):
         data = await file.read()
-        return wb.import_file(pid, file.filename, data, purpose, episodeId or None, "upload", commandId)
+        return wb.import_file(pid, file.filename, data, purpose, episodeId or None, "episode_story" if forStory else "upload", commandId)
 
     @app.get("/api/imports/{iid}")
     def read_import(iid: str):

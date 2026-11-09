@@ -127,7 +127,7 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
             {!canvasMode && stage!=="package" && <button className="btn narrow-chat" onClick={()=>setFocusChat(true)}>专注对话</button>}
             {["assets","prompts"].includes(stage) && <button className="btn" onClick={() => setShowPalettes(true)}>本集色卡</button>}
             {stage !== "package" && <button className="btn" onClick={() => setShowMethod(true)}>制作方法</button>}
-            {["story","script","plan","prompts","publish","assets","space","cast"].includes(stage) && <button className="btn" onClick={()=>setRequirements(true)}>{["space","cast","assets"].includes(stage)?"本集出图增强方法":"本步需求与参考"}</button>}
+            {["story","script","plan","prompts","publish","assets","space","cast","review"].includes(stage) && <button className="btn" onClick={()=>setRequirements(true)}>{["space","cast","assets"].includes(stage)?"本集出图增强方法":stage==="review"?"对照审查使用的提示词配置":"本步需求与参考"}</button>}
             <span className="title">{v.episode.display_code} · {v.episode.title || "未命名"}</span>
             <span className="muted small">{frameOrientation(v.kickoff.spec.aspectRatio)}</span>
             <span style={{ marginLeft: "auto" }} className="chip">◐ {v.kickoff.relation === "continue" ? "承接前集" : "独立成集"}</span>
@@ -141,7 +141,7 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
       </div>
       {showPalettes && <EpisodePaletteSettings key={stage} eid={id} stage={stage} close={() => setShowPalettes(false)}/>}
       {showMethod && <StageMethods key={id+stage} pid={v.episode.project_id} eid={id} stage={stage} close={() => setShowMethod(false)} />}
-      {requirements && <StepRequirements key={stage} pid={v.episode.project_id} eid={id} stage={["space","cast"].includes(stage)?"assets":stage} close={()=>setRequirements(false)} toComposer={text=>{composeRef.current?.(text); if (window.matchMedia("(max-width: 1120px)").matches) setFocusChat(true);}}/>}
+      {requirements && <StepRequirements key={stage} pid={v.episode.project_id} eid={id} stage={["space","cast"].includes(stage)?"assets":versionStage} close={()=>{setRequirements(false); if (stage==="review") void reload();}} toComposer={stage==="review"?undefined:text=>{composeRef.current?.(text); if (window.matchMedia("(max-width: 1120px)").matches) setFocusChat(true);}}/>}
       {batch && <BatchModal batch={batch} assets={ctx.assets} close={() => { setBatch(null); reload(); }} />}
     </div>
   );
@@ -292,12 +292,17 @@ function StoryView({ ctx }: { ctx: Ctx }) {
   const editId=params.get("edit")==="1" ? params.get("v") : null;
   useEffect(()=>{if (editId && current?.id===editId) {setEdit(true);setTab("synopsis");}},[hash,editId,current?.id]);
   const k = ctx.view.kickoff;
+  const manuscript = ctx.view.storyManuscript;
+  const sourcePanel = manuscript && <details className="card"><summary>本集补充稿件 · {manuscript.original_name}</summary>
+    <div className="muted tiny">用于下一次故事任务 · 文件指纹 {manuscript.sha256.slice(0,12)}</div>
+    <pre className="field">{manuscript.parsed_text}</pre></details>;
   if (requestedRun) return <div><h1>改编故事稿</h1><p role="status">{result ? "正在打开新稿…" :
     run && ["queued","running"].includes(run.status) ? "改编稿生成中…" :
     run?.reason || (run ? "本次运行尚无改编稿。" : "本集未找到这次改编任务。")}</p>
     <a href={`#/e/${ctx.eid}/story`}>查看本集故事稿</a></div>;
   if (!current) return (
     <div><div className="stagehead"><div><h1>故事稿</h1><div className="muted small">尚无稿件 · 来源：{k.source_type === "import" ? ctx.view.sourceImport?.original_name : k.idea_text ?? "选题卡"}</div></div></div>
+      {sourcePanel}
       {ctx.view.sourceImport && <div className="field small">{ctx.view.sourceImport.parsed_text}</div>}
       <p className="muted">在右侧导演助手输入要求开始起草；导入的故事稿或剧本只作故事来源，起草后先过故事独审。</p></div>);
   const review = current.reviews[current.reviews.length - 1];
@@ -316,6 +321,7 @@ function StoryView({ ctx }: { ctx: Ctx }) {
         {tab!=="compare" && <div className="row">{edit ? <><button className="btn" onClick={() => setEdit(false)}>取消</button>
           <button className="btn primary" onClick={() => act.run(async () => { const r = await cmd("save_manual", { artifact_id: art.id, base_version_id: current.id, content: draft }); await ctx.reload(); ctx.setFocus(r.versionId); })}>保存为手稿</button></>
           : <button className="btn" onClick={() => {setDraft(current.content);setEdit(true);}}>✎ 编辑</button>}</div>}</div>
+      {sourcePanel}
       {tab === "synopsis" && (edit ? <textarea style={{ minHeight: 260, marginTop: 12 }} value={storyText(draft.synopsis)} onChange={(e) => setDraft({ ...draft, synopsis: e.target.value })} /> : (
         <div className="field" style={{ marginTop: 12, border: "1px solid #2b5fb8" }}>{paras.map((p: string, i: number) => (
           <div key={i} className={`para ${ctx.sel?.data.paragraph === i + 1 ? "sel" : ""}`} onClick={() => ctx.setSel({ label: `故事梗概 第${i + 1}段`, data: { field: "synopsis", paragraph: i + 1, text: p.slice(0, 40) } })}>{p}</div>))}</div>))}
@@ -550,7 +556,7 @@ function PlanView({ ctx }: { ctx: Ctx }) {
   const [trace, setTrace] = useState<any>(null);
   const act = useAction();
   const lay = useMemo(() => layout(current?.content), [current?.id]);
-  const still = (id?: string) => blob(ctx.assets.find((a) => a.id === id)?.sha256);
+  const references = current?.id === art?.adopted_version_id ? adoptedReferences(ctx) : {};
   useEffect(() => {
     let active = true;
     setTrace(null);
@@ -595,11 +601,7 @@ function PlanView({ ctx }: { ctx: Ctx }) {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(180px,1fr))", gap: 10 }}>
             {shots.filter((s: any) => (s.origin?.scene ?? "参考镜头") === sc).map((s: any) => (
               <div key={s.id} className={`shotcard ${shot === s.id ? "sel" : ""}`} onClick={() => { setShot(s.id); ctx.setSel({ label: `镜头 ${s.id}（${s.segment}）`, data: { shot: s.id, segment: s.segment, version: current.id } }); }}>
-                <div className="pic" style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
-                  {[s.startAssetId, s.endAssetId].some(id => still(id))
-                    ? [s.startAssetId, s.endAssetId].map((id, i) => still(id) && <img key={i} src={still(id)} alt={i ? "落幅" : "起幅"} style={{ minWidth: 0, maxWidth: "50%", height: "100%", objectFit: "contain" }} />)
-                    : <span className="muted tiny">待绑定本镜构图</span>}
-                </div>
+                <ShotPictures shot={s} assets={ctx.assets} refs={references[s.segment]?.refs ?? []} />
                 <div className="body">
                   <div className="spread"><b>{s.id} <span className="muted small">{s.duration_ms / 1000}s</span></b><Tag tone="amber">{s.segment}</Tag></div>
                   <div className="muted tiny">{s.camera} · 全片 {fmtMs(lay.shots[s.id]?.start ?? 0)}–{fmtMs(lay.shots[s.id]?.end ?? 0)}</div>
@@ -765,7 +767,26 @@ function CastView({ ctx }: { ctx: Ctx }) {
 }
 
 // ---------------------------------------------------------------- 06 素材与选图 (J10, J14, J15, J18, J27, J41)
-function adoptedReferences(ctx:Ctx): Record<string,{refs:{assetVersionId:string;label:string;kind:string}[]}> {
+type ImageReference = {assetVersionId: string; label: string; kind: string; shots?: string[]};
+const frameFields = [["startAssetId", "起幅"], ["endAssetId", "落幅"]] as const;
+
+function ShotPictures({shot, assets, refs}: {shot: any; assets: any[]; refs: ImageReference[]}) {
+  const pictures: {id:string; caption:string; url:string}[] = [];
+  const add = (id:string, caption:string) => {
+    const asset = assets.find(a => a.id === id && a.kind === "image");
+    if (asset?.sha256) pictures.push({id, caption: caption+" · "+asset.name+" v"+asset.version_no, url:blob(asset.sha256)!});
+  };
+  for (const [field, label] of frameFields) if (shot[field]) add(shot[field], label);
+  for (const ref of refs) {
+    if (ref.kind !== "image" || (ref.shots?.length && !ref.shots.includes(shot.id))) continue;
+    if (!pictures.some(p => p.id === ref.assetVersionId)) add(ref.assetVersionId, ref.shots?.length ? "本镜引用" : "本段引用");
+  }
+  return <div className="pic shot-pictures">{pictures.length ? pictures.map(p =>
+    <figure key={p.caption+p.id}><img src={p.url} alt={p.caption} loading="lazy"/><figcaption title={p.caption}>{p.caption}</figcaption></figure>
+  ) : <span className="muted tiny">尚无本镜或本段参考图</span>}</div>;
+}
+
+function adoptedReferences(ctx:Ctx): Record<string,{refs:ImageReference[]}> {
   const prompts=artifactFor(ctx.view,"prompts");
   return prompts?.versions.find((v:any)=>v.id===prompts.adopted_version_id)?.content?.segments ?? {};
 }
@@ -805,7 +826,7 @@ function AssetsView({ ctx }: { ctx: Ctx }) {
     const r = await cmd("adopt_image", {episode_id:ctx.eid,version_id:a.id});
     setAdoptPre({id:a.id,name:a.name,version:a.version_no,refs:r.references,fingerprint:r.fingerprint});
   }
-  const imgStyle = mode === "灰度" ? { filter: "grayscale(1)" } : mode === "手机尺寸" ? {width:180,aspectRatio:"9/16",objectFit:"contain" as const,background:"#08090b",margin:"auto",border:"3px solid #494b54",borderRadius:16} : {};
+  const imgStyle = mode === "并排" ? {height:"min(32vh, 260px)",objectFit:"contain" as const} : mode === "灰度" ? { filter: "grayscale(1)" } : mode === "手机尺寸" ? {width:180,aspectRatio:"9/16",objectFit:"contain" as const,background:"#08090b",margin:"auto",border:"3px solid #494b54",borderRadius:16} : {};
   return (
     <div className="asset-stage">
       <div className="stagehead">
@@ -890,9 +911,27 @@ function NeedsTable({ ctx }: { ctx: Ctx }) {
   const content = plan?.versions.find((v: any) => v.id === plan.adopted_version_id)?.content;
   const lay = layout(content);
   const refs=adoptedReferences(ctx);
-  return <><table className="table"><thead><tr><th>段</th><th>策略</th><th>镜号</th><th>素材用途</th><th>缺口</th></tr></thead>
-    <tbody>{lay.segments.map((s: any) => { const used=refs[s.id]?.refs ?? [];const has=used.length>0 && used.every(r=>ctx.assets.some(a=>a.id===r.assetVersionId));
-      return <tr key={s.id}><td>{s.id}</td><td>{s.strategy==="grid"?"九宫格":"自由参考"}</td><td>{s.shots.join("、")}</td><td>{s.strategy === "grid" ? "本段九宫格" : "角色 / 场景 / 道具参考"}</td><td>{has ? <Tag tone="green">已引用 {used.length} 份</Tag> : <Tag tone="amber">待绑定参考</Tag>}</td></tr>; })}</tbody></table>
+  const cast = useQuery<any>("cast_matrix", {episode_id:ctx.eid});
+  const images = new Map(ctx.assets.filter(a => a.kind === "image").map(a => [a.id, a]));
+  return <><table className="table"><thead><tr><th>段</th><th>策略</th><th>镜号</th><th>素材用途</th><th>图片引用</th><th>角色身份覆盖</th></tr></thead>
+    <tbody>{lay.segments.map((s: any) => {
+      const used = (refs[s.id]?.refs ?? []).filter(r => r.kind === "image");
+      const bound = new Set(used.filter(r => images.has(r.assetVersionId)).map(r => r.assetVersionId));
+      const cells = cast.data?.rows.find((row:any) => row.segment === s.id)?.cells ?? {};
+      return <tr key={s.id}><td>{s.id}</td><td>{s.strategy==="grid"?"九宫格":"自由参考"}</td><td>{s.shots.join("、")}</td>
+        <td>{s.strategy === "grid" ? "本段九宫格" : "角色 / 场景 / 道具参考"}</td>
+        <td>{bound.size > 0 && <Tag tone="green">已引用 {bound.size} 张</Tag>}
+          {(!used.length || used.some(r => !bound.has(r.assetVersionId))) && <Tag tone="amber">待绑定参考</Tag>}</td>
+        <td>{!cast.data ? cast.error || "读取中…" : cast.data.roles.length === 0 ? "未登记角色" : cast.data.roles.map((role:string) => {
+          const cell = cells[role];
+          const name = images.get(cell?.assetVersionId)?.name;
+          let state = "待核对出镜";
+          if (cell?.status === "absent") state = "未出镜";
+          if (cell?.status === "unclear") state = "身份看不清";
+          if (cell?.status === "ok") state = !name ? "待绑定身份图" : bound.has(cell.assetVersionId) ? "已引用 "+name : "已绑定 "+name+"，提示词未引用";
+          return <div key={role}>{role} · {state}</div>;
+        })}</td></tr>;
+    })}</tbody></table>
     {lay.segments.some((s:any)=>s.strategy==="grid") && <GridMethods eid={ctx.eid}/>}</>;
 }
 
@@ -1334,7 +1373,14 @@ function DeliveryView({ ctx }: { ctx: Ctx }) {
   const [verify, setVerify] = useState<Record<string, any>>({});
   const act = useAction();
   const plan = artifactFor(ctx.view, "plan");
-  const lay = layout(plan?.versions.find((v: any) => v.id === plan.adopted_version_id)?.content);
+  const adoptedPlan = plan?.versions.find((v: any) => v.id === plan.adopted_version_id)?.content;
+  const lay = layout(adoptedPlan);
+  const images = new Set(ctx.assets.filter(a => a.kind === "image").map(a => a.id));
+  const missingFrames = (adoptedPlan?.shots ?? []).filter((shot:any) => scope === "full" || segs.includes(shot.segment))
+    .flatMap((shot:any) => {
+      const missing = frameFields.filter(([field]) => !images.has(shot[field])).map(([, label]) => label);
+      return missing.length ? [shot.segment+" "+shot.id+" · 缺"+missing.join("、")] : [];
+    });
   const load = async () => {
     const ov = await q("project_overview", { project_id: ctx.view.episode.project_id });
     const ep = ov.episodes.find((e: any) => e.id === ctx.eid);
@@ -1349,6 +1395,11 @@ function DeliveryView({ ctx }: { ctx: Ctx }) {
       <div className="stagehead"><div><h1>交付核验</h1><div className="muted small">核验实际读取文件、指纹和内容；只有核验通过且文件完整落盘才登记交付号</div></div>
         <Pills value={scope} onChange={setScope} options={[["full", "整集完整交付"], ["trial", "限定试验范围"]]} /></div>
       {scope === "trial" && <div className="row">{lay.segments.map((s: any) => <button key={s.id} className={`pill ${segs.includes(s.id) ? "on" : ""}`} onClick={() => setSegs(segs.includes(s.id) ? segs.filter((x) => x !== s.id) : [...segs, s.id])}>{s.id}</button>)}<span className="muted small">试验范围从零计时，不更新整集完成状态</span></div>}
+      {missingFrames.length > 0 && <details className="card">
+        <summary>起落幅参考待补 · {missingFrames.length} 镜</summary>
+        <p className="small">{missingFrames.join("；")}</p>
+        <a href={`#/e/${ctx.eid}/plan?v=${plan.adopted_version_id}`}>查看采用的制作方案</a>
+      </details>}
       {list.length > 0 ? (
         <div className="card red" style={{ marginTop: 14 }}>
           <b className="error">结构阻断 · {list.length} 项</b><span className="muted small"> · 不能放行，逐条定位到出错的阶段</span>
@@ -1532,7 +1583,7 @@ function ShotEditor({ ctx, art, version, shotId, onSaved }: any) {
       </div>
       <label className="col small" style={{ marginTop: 8 }}>动作<textarea value={sh.action} onChange={(e) => setSh({ ...sh, action: e.target.value })} /></label>
       <div className="grid2" style={{ marginTop: 8 }}>
-        {([["startAssetId", "起幅"], ["endAssetId", "落幅"]] as const).map(([field, label]) =>
+        {frameFields.map(([field, label]) =>
           <label key={field} className="col small">{label}
             <select aria-label={label} value={sh[field] ?? ""} onChange={(e) => setSh({ ...sh, [field]: e.target.value || null })}>
               <option value="">待绑定本镜构图</option>

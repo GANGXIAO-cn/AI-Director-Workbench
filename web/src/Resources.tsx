@@ -242,7 +242,7 @@ function EnhancementOptions({stage,selected,change}:{stage:string;selected:strin
     {catalog.data && !visible.length && <p>本阶段可以从全部方法中手动选择。</p>}
   </fieldset>;
 }
-export function StepRequirements({pid,eid,stage,close,toComposer}:{pid:string;eid:string;stage:string;close:()=>void;toComposer:(text:string)=>void}) {
+export function StepRequirements({pid,eid,stage,close,toComposer}:{pid:string;eid:string;stage:string;close:()=>void;toComposer?:(text:string)=>void}) {
   const saved=useQuery<Partial<Step>>("step_config",{episode_id:eid,stage});
   const [draft,setDraft]=useState<Step|null>(null),[browse,setBrowse]=useState(false);
   const [showHistory,setShowHistory]=useState(false);
@@ -253,7 +253,7 @@ export function StepRequirements({pid,eid,stage,close,toComposer}:{pid:string;ei
   async function save(toChat:boolean) {
     const {revision,...values}=form;
     const result=await cmd<Step>("save_step_config",{episode_id:eid,stage,...values,expected_revision:revision ?? 0});
-    if(toChat){
+    if(toChat && toComposer){
       setDraft(result);
       const goal=result.goal?.trim();
       toComposer(["按已保存的本步需求起草。",goal?.length<=180?goal:"",result.references.length?`结合所选 ${result.references.length} 段资料。`:""].filter(Boolean).join("\n"));
@@ -275,7 +275,7 @@ export function StepRequirements({pid,eid,stage,close,toComposer}:{pid:string;ei
     </>}
     <ErrorLine error={act.error}/>{saved.error&&<span className="error">{saved.error}</span>}
     <div className="row"><button className="btn" disabled={!saved.data||act.busy} onClick={()=>act.run(()=>save(false))}>保存本步配置</button>
-      {stage!=="assets" && <button className="btn primary" disabled={!saved.data||act.busy} onClick={()=>act.run(()=>save(true))}>保存并带到创作对话</button>}<button className="btn" onClick={()=>setShowHistory(!showHistory)}>配置历史</button><button className="btn" onClick={close}>关闭</button></div>
+      {stage!=="assets" && toComposer && <button className="btn primary" disabled={!saved.data||act.busy} onClick={()=>act.run(()=>save(true))}>保存并带到创作对话</button>}<button className="btn" onClick={()=>setShowHistory(!showHistory)}>配置历史</button><button className="btn" onClick={close}>关闭</button></div>
     {showHistory&&<div>{history.error&&<p className="error">{history.error}</p>}{history.data?.length===0&&<p>本步还没有配置版本。</p>}
       {history.data?.map(h=><details key={h.revision}><summary>第 {h.revision} 版 · {h.goal||h.route}</summary><p>{[h.format_note,h.keep].filter(Boolean).join(" · ")}</p>
         {h.enhancements?.length ? <p>已选增强方法 · {h.enhancements.join("、")}</p> : null}

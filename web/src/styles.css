@@ -173,6 +173,11 @@ del.d { color: var(--red); text-decoration: line-through; } ins.d { color: var(-
 .shotcard { background: var(--card); border-radius: 12px; overflow: hidden; border: 1.5px solid transparent; cursor: pointer; }
 .shotcard.sel { border-color: var(--white); }
 .shotcard .pic { height: 112px; background: #22262d center/cover; }
+.shot-pictures { display: flex; align-items: center; gap: 4px; overflow-x: auto; }
+.shot-pictures > span { margin: auto; }
+.shot-pictures figure { flex: 1 0 45%; min-width: 0; height: 100%; margin: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; }
+.shot-pictures img { width: 100%; height: 100%; object-fit: contain; }
+.shot-pictures figcaption { padding: 2px 4px; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .shotcard .body { padding: 8px 10px 10px; }
 .segstrip { display: flex; gap: 4px; margin-top: 18px; } .segstrip div { background: var(--card); border-radius: 6px; padding: 7px 8px;
   font-weight: 600; font-size: 0.92rem; } .segstrip div.on { background: var(--amber-bg); color: var(--amber); }

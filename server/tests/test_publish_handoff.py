@@ -91,3 +91,29 @@ def test_delayed_publish_run_and_restore_use_the_submitted_clock(tmp_path):
     assert wb.compose_publish(eid,restored)["cueBasis"] == sent
     fresh=wb.save_manual(art["id"],restored,dict(body="A different ending."),"manual")["versionId"]
     assert wb.compose_publish(eid,fresh)["cueBasis"]["segments"][0]["at"].endswith("00:09.000")
+
+
+def test_legacy_project_settings_use_the_same_validation_on_save_and_read(tmp_path):
+    from helpers import PUBLISH
+    from workbench.db import transaction
+
+    wb = Env(tmp_path).wb
+    pid = wb.create_project("puggy", "项目发布字段")["projectId"]
+    root = tmp_path / "profile"
+    root.mkdir()
+    (root / "publish.json").write_text(json.dumps(dict(PUBLISH, hook_emoji="🎬")))
+    with transaction(wb.db_path) as db:
+        db.execute("UPDATE project SET production=? WHERE id=?",
+                   (json.dumps(dict(assetRoot=str(root), publishSettings="publish.json", publishCopyFormat="instrumental_v1")), pid))
+    key = "publish:"+pid
+    wb.put_setting(key, publishing.settings(PUBLISH))
+    before = wb.publish_settings(pid)
+    assert before["hook_emoji"] == "🎬" and before["copy_format"] == "instrumental_v1"
+    with pytest.raises(Rejected, match="音乐字段"):
+        wb.set_publish_settings(pid, dict(PUBLISH, additional_fields=[]))
+    assert wb.publish_settings(pid) == before
+    wb.set_publish_settings(pid, dict(PUBLISH, title_prefix="New "))
+    assert wb.get_setting(key) == wb.publish_settings(pid)
+    generic = wb.create_project("_template", "通用项目")["projectId"]
+    wb.set_publish_settings(generic, dict(additional_fields=[]))
+    assert wb.publish_settings(generic)["additional_fields"] == []

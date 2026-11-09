@@ -36,6 +36,13 @@ export const upload = <T = any,>(kind: string, file: File, meta: Record<string, 
   form.append("meta", JSON.stringify(meta));
   return send<T>("POST", `/upload/${kind}`, undefined, form);
 };
+export function importManuscript(projectId:string, file:File, purpose:string, episodeId?:string, id?:string) {
+  const form = new FormData();
+  form.append("file",file); form.append("purpose",purpose);
+  if (episodeId) { form.append("episodeId",episodeId); form.append("forStory","true"); }
+  if (id) form.append("commandId",id);
+  return send("POST","/projects/"+encodeURIComponent(projectId)+"/imports",undefined,form);
+}
 export const blob = (sha?: string | null) => (sha ? `/api/blob/${sha}` : undefined);
 export const deliveryFile = (id: string, path: string) => `/api/delivery-file/${id}/${path}`;
 

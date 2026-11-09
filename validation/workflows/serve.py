@@ -93,6 +93,47 @@ if __name__ == "__main__":
     elif os.environ.get("ADW_TEST_CONTACT"):
         from contact_fixture import prepare
         seed = prepare(env)
+    elif os.environ.get("ADW_TEST_HISTORY"):
+        from workbench.executors.fake import review
+        sample = env.full_episode(segments={"G01":[8000]})
+        pid = sample["pid"]
+        _, older = env.new_episode(project_id=pid, code="E02")
+        env.drain(env.wb.create_task(older, "story", "另一集专属的夜班记录")["runId"])
+        _, eid = env.new_episode(project_id=pid, code="E03", plan={"create":{"provider":"claude"},"review":{"provider":"codex"}})
+        first = env.adopt_story(eid)
+        env.drain(env.wb.create_task(eid, "script", "将抽屉关上的动作放在第二场")["runId"])
+        env.drain(env.wb.create_task(eid, "story", "改写本集开场动作")["runId"])
+        second = env.art(eid,"story")["versions"][-1]["id"]
+        env.codex.script = [lambda req: review(req,"return",[{"reason":"缺角色反应"}])]
+        rejected = env.wb.submit_review(second, "returned")["runId"]
+        env.drain(rejected)
+        with env.db() as db:
+            db.execute("UPDATE message SET text=? WHERE run_id=? AND kind='review'", ("诊断包含 pass，本次有意见", rejected))
+            db.execute("UPDATE message SET kind='text',text=? WHERE run_id IN (SELECT run_id FROM review WHERE version_id=?) AND kind='review'",
+                       ("独立审查（会话隔离）结论：通过", first))
+        env.wb.create_group(pid,"连续夜班",[{"episodeId":eid,"chapter":"先交班"},{"episodeId":older,"chapter":"再巡店"}])
+    elif os.environ.get("ADW_TEST_SHOT_WALL"):
+        from helpers import png_bytes
+        pid, eid = env.new_episode()
+        env.wb.set_publish_settings(pid, {"additional_fields":[]})
+        env.adopt_story(eid)
+        env.script(eid)
+        plan = env.plan86({"G01":[3000,5000], "G02":[8000]})
+        first = env.image(pid, eid, name="值班员")
+        new = env.wb.register_asset(pid, "值班员", png_bytes(48,80,(2,70,90)), "identity",
+                                    episode_id=eid, asset_id=first["assetId"])["versionId"]
+        plan["shots"][0]["startAssetId"] = new
+        env.save_adopt(eid,"plan",plan)
+        env.wb.set_cast(eid,"G01","值班员","ok",new)
+        env.wb.set_cast(eid,"G02","值班员","absent")
+        prompts = env.prompts_for(plan, new)
+        prompts["segments"]["G01"]["refs"][0]["shots"] = ["S02"]
+        pv, _ = env.save_adopt(eid,"prompts",prompts)
+        env.review_segments(pv,["G01","G02"])
+        env.save_adopt(eid,"publish",dict(title="Night Shift",body="The night shift begins.",tags=["night"]))
+        delivery = env.wb.deliver(eid,"full","wall-delivery")
+        packed = env.wb.package(delivery["deliveryId"],["G01","G02"],"wall-package")
+        assert len(packed["project"]["assets"]) == 1 and packed["project"]["assets"][0]["sha256"] == env.wb.asset_version(new)["sha256"]
     elif os.environ.get("ADW_TEST_SHOT_REFS"):
         seed = env.full_episode(segments={"G01":[3000,3000,3000]})
         image = seed["img"]["versionId"]

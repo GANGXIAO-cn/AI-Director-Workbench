@@ -2,7 +2,7 @@
 import { isKickoffTopic } from "./topics";
 import { FileInput, PencilLine, Plus, PackageOpen, Film, Palette, NotebookPen, Ratio, ChevronDown, ArrowUp, type LucideIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { blob, cmd, upload } from "./api";
+import { blob, cmd, upload, importManuscript } from "./api";
 import {OpenProjectFolder, SaveProjectFolder} from "./ProjectFolders";
 import type { useProjectList } from "./projectNavigation";
 import { ErrorLine, Modal, PROVIDER_LABEL, go, useAction, useQuery } from "./ui";
@@ -99,12 +99,7 @@ export default function Home({ tab, projects }: { tab?: string; projects: Return
       const fresh = pid !== projectId;
       setProjectId(pid);
       const displayCode=code || (fresh ? "E01" : nextCode());
-      const fd = new FormData();
-      fd.append("file", file); fd.append("purpose", purpose);
-      const token = (await (await fetch("/api/session")).json()).token;
-      const res = await fetch(`/api/projects/${pid}/imports`, { method: "POST", headers: { "x-adw-token": token }, body: fd });
-      const r = await res.json();
-      if (!res.ok) throw new Error(r.error);
+      const r = await importManuscript(pid,file,purpose);
       setRecognized([{ name: file.name, purpose, episode:displayCode, projectId: pid, ...r }]);
     } else if (mode === "reference") {
       const file = referenceFile;

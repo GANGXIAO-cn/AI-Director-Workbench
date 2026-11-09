@@ -541,6 +541,11 @@ class ProductionMixin:
                                                    sha256=p["product"]["sha256"]) for p in records if p["segment"]])))
         extra += self._stage_reference_entries(task["episode_id"], task["stage"])
         if task["stage"] == "story":
+            manuscript = self._episode_manuscript(db, task["episode_id"])
+            if manuscript:
+                extra.append(dict(role="citation", name="导演导入的本集稿件 · "+manuscript["original_name"],
+                                  text=dumps(dict(importId=manuscript["id"], sha256=manuscript["sha256"],
+                                                  filename=manuscript["original_name"], text=manuscript["parsed_text"]))))
             for (pack_id,) in db.execute("SELECT pack_id FROM task_pack WHERE task_id=?", (task["id"],)) \
                     if self._has_table(db, "task_pack") else []:
                 extra.append(dict(role="reference_pack", name=f"pack-{pack_id}.txt", text=self._pack_text(db, pack_id)))
