@@ -11,22 +11,23 @@ import { ProjectPresets } from "./ProjectPresets";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { Fragment, useEffect, useState } from "react";
 import Expert from "./Expert";
-import { blob, cmd, q, setCliPath, upload } from "./api";
+import { blob, cmd, commandId, q, setCliPath, upload } from "./api";
 import { ErrorLine, Modal, PROVIDER_LABEL, Pills, Tag, fmtMs, useAction, usePoll, useQuery } from "./ui";
 
 const CATS: Record<string, string> = { character: "角色", relationship: "关系", space: "固定空间", rule: "世界规则", signature: "招牌行为", prop: "道具" };
 
 export function ProjectPage({ id, sub, arg }: { id: string; sub: string; arg?: string }) {
+  const route=useProjectRoute();
   const p = useQuery<any>("project_view", { project_id: id }, [sub, arg]);   // re-read on every page switch
   const head = <div className="spread" style={{ marginBottom: 18 }}><div className="row"><a className="muted" href={`#/p/${id}`}>← {p.data?.name ?? "项目"}</a></div></div>;
   const body = (() => {
     switch (sub) {
-      case "free": return <FreeChat key={id+"/"+(arg || "")} pid={id} thread={arg}/>;
+      case "free": return <FreeChat key={route.hash} pid={id} thread={arg}/>;
       case "settings": return <Settings id={id} p={p.data} reload={p.reload} />;
-      case "preset": return <><ProjectPresets key={id} pid={id}/><PublishSettings id={id}/></>;
+      case "preset": return <><ProjectPresets key={id} pid={id} showProjectLink/><PublishSettings id={id}/></>;
       case "baseline": return <ProjectBaselines pid={id} />;
-      case "library": return <Library id={id} p={p.data} />;
-      case "knowledge": return <Knowledge id={id} />;
+      case "library": return <Library key={id} id={id} p={p.data} />;
+      case "knowledge": return <Knowledge key={id} id={id} />;
       case "topics": return <Topics key={id} id={id} />;
       case "groups": return <Groups id={id} p={p.data} />;
       case "closure": return <Closure id={id} cid={arg!} />;
@@ -86,36 +87,82 @@ function Settings({ id, p, reload }: any) {
 }
 
 // ---------------------------------------------------------------- J48 / J32 复用资产库
+const assetCategories:Record<string,string> = {identity:"身份图",costume:"服装参考",scene:"空景",state:"场面 / 状态图",prop:"道具",product:"商品",reference:"参考图"};
+
+function LibraryUpload({projectId,previous,done,close}:{projectId:string;previous:any;done:(id:string)=>void;close:()=>void}) {
+  const [file,setFile]=useState<File|null>(null);
+  const [category,setCategory]=useState(previous?.category || "state");
+  const [usage,setUsage]=useState(previous?.usage || "");
+  const [request,setRequest]=useState(commandId);
+  const act=useAction();
+  async function save() {
+    if (!file) return;
+    const r=await upload("library-image",file,{projectId,category,usage,previousEntryId:previous?.id,commandId:request});
+    done(r.entryId);
+  }
+  return <Modal onClose={close}><h2>{previous ? "为 "+previous.name+" 添加版本" : "添加资产图片"}</h2>
+    <label className="field">图片文件 <input type="file" accept="image/png,image/jpeg" onChange={e=>{setFile(e.target.files?.[0]??null);setRequest(commandId());}}/></label>
+    <label className="field">图片分类 <select value={category} disabled={!!previous} onChange={e=>{setCategory(e.target.value);setRequest(commandId());}}>
+      {Object.entries(assetCategories).map(([key,label])=><option key={key} value={key}>{label}</option>)}
+      {previous && !assetCategories[category] && <option value={category}>{category}</option>}</select></label>
+    <label className="field">用途 <input value={usage} onChange={e=>{setUsage(e.target.value);setRequest(commandId());}}/></label>
+    <ErrorLine error={act.error}/><div className="row"><button className="btn primary" disabled={act.busy||!file||!usage.trim()} onClick={()=>act.run(save)}>保存到资产库</button>
+      <button className="btn" disabled={act.busy} onClick={close}>取消</button></div></Modal>;
+}
+
 function Library({ id, p }: any) {
   const [qText, setQ] = useState("");
   const [status, setStatus] = useState("");
-  const lib = useQuery<any[]>("library", { project_id: id, q: qText, status: status || null });
+  const route=useProjectRoute();
+  const [category,setCategory]=useState("");
+  const [uploading,setUploading]=useState<{previous:any}|null>(null);
+  const [attached,setAttached]=useState<string[]>([]);
+  const lib = useQuery<any[]>("library", {project_id:id});
+  const entries=(lib.data ?? []).filter(e=>(!qText || e.name.includes(qText) || e.usage.includes(qText)) && (!status || status===e.status) && (!category || e.category===category));
+  const availableCategories=[...new Set((lib.data??[]).map(e=>e.category as string))];
+  const selectedChat=new URLSearchParams(attached.map(id=>["image",id]));
+
   const [detailId,setDetailId] = useState("");
-  const detail = lib.data?.find(item=>item.id===detailId);
+  const detail = entries.find(item=>item.id===detailId);
   const [limits,setLimits] = useState<string|null>(null);
   const labels: Record<string,string> = {pending:"待审核",approved:"可复用",limited:"限条件",retired:"停用",rejected:"未通过"};
   const [target, setTarget] = useState("");
   const act = useAction();
+  const existingBase=detail?.source_episode_id===target ? detail?.asset_version_id :
+    detail?.usedBy.find((u:any)=>u.episode_id===target)?.copy_version;
   return (
     <div>
-      <div className="spread"><div><h1>复用资产库</h1><div className="muted small">检索、看图、复制到本集；本集图审核后再登记。九宫格只归本集。</div></div>
-        <div className="row"><input placeholder="名称 / 用途" value={qText} onChange={(e) => setQ(e.target.value)} />
-          <select aria-label="资产审核状态" value={status} onChange={(e) => setStatus(e.target.value)}><option value="">全部状态</option>{["pending", "approved", "limited", "retired"].map((s) => <option key={s} value={s}>{labels[s]}</option>)}</select></div></div>
+      <div className="spread"><div><h1>复用资产库</h1><div className="muted small">每个条目对应一版原图。核准后可复制到集内或用作改图底图。</div></div>
+        <div className="row"><button className="btn primary" onClick={()=>setUploading({previous:null})}>添加图片</button>
+          <select aria-label="按资产分类筛选" value={category} onChange={e=>setCategory(e.target.value)}><option value="">全部分类</option>
+            {availableCategories.map(key=><option key={key} value={key}>{assetCategories[key]||key}</option>)}</select>
+          <input placeholder="名称 / 用途" value={qText} onChange={(e) => setQ(e.target.value)} />
+          <select aria-label="资产审核状态" value={status} onChange={(e) => setStatus(e.target.value)}><option value="">全部状态</option>{["pending", "approved", "limited", "retired","rejected"].map((s) => <option key={s} value={s}>{labels[s]}</option>)}</select></div></div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(200px,1fr))", gap: 12, marginTop: 16 }}>
-        {(lib.data ?? []).map((e) => (
+        {entries.map((e) => (
           <div key={e.id} className={`card ${detail?.id === e.id ? "sel" : "line"}`} style={{ cursor: "pointer" }} onClick={() => {setDetailId(e.id);setLimits(null);}}>
-            <img src={blob(e.sha256)} style={{ width: "100%", borderRadius: 8 }} />
+            <img src={blob(e.sha256)} alt={e.name+" v"+e.version_no} style={{ width: "100%", borderRadius: 8 }} />
             <div className="spread" style={{ marginTop: 6 }}><b>{e.name}</b><Tag tone={e.status === "approved" ? "green" : e.status === "pending" ? "amber" : e.status === "retired" ? "" : "blue"}>{labels[e.status]}</Tag></div>
-            <div className="muted tiny">v{e.version_no} · {e.width}×{e.height} · {e.usage}</div>
+            <div className="muted tiny">v{e.version_no} · {e.width}×{e.height} · {assetCategories[e.category]||e.category} · {e.usage}</div>
+            {e.kind==="image" && <label onClick={event=>event.stopPropagation()}><input type="checkbox" aria-label={`附上 ${e.name} v${e.version_no}`}
+              checked={attached.includes(e.asset_version_id)} disabled={!attached.includes(e.asset_version_id) && attached.length>=6}
+              onChange={ev=>setAttached(prev=>ev.target.checked ? [...prev,e.asset_version_id] : prev.filter(v=>v!==e.asset_version_id))}/> 对话附图</label>}
           </div>))}
-        {(lib.data ?? []).length === 0 && <div className="muted">库中还没有条目。</div>}
+        {lib.data && entries.length === 0 && <div className="muted">库中还没有条目。</div>}
       </div>
+      {attached.length>0 && <div className="row"><a className="btn primary" href={`#/p/${id}/free?${selectedChat}`}>带 {attached.length} 张图去对话</a>
+        <button className="btn" onClick={()=>setAttached([])}>清空选择</button></div>}
+      {uploading && <LibraryUpload projectId={id} previous={uploading.previous} close={()=>setUploading(null)} done={entry=>{
+        setUploading(null);setDetailId(entry);setCategory("");setStatus("");setQ("");void lib.reload();
+      }}/>}
+      {lib.error && <p className="error">{lib.error}</p>}
       {detail && (
         <div className="card cyan" style={{ marginTop: 16 }}>
           <b>{detail.name} · ID {detail.asset_version_id.slice(0, 8)}@v{detail.version_no}</b>
           <div className="small" style={{ margin: "6px 0" }}>指纹 <span className="mono">{detail.sha256.slice(0, 16)}</span> · 来源集 {detail.source_episode_id?.slice(0, 6) ?? "—"} · 限制：{detail.limits || "无"} · 实际观察：{detail.observation || "—"}</div>
           <div className="small">被使用：{detail.usedBy.length ? detail.usedBy.map((u: any) => u.episode_id.slice(0, 6)).join("、") : "暂无"}</div>
           <div className="row" style={{ marginTop: 8 }}>
+            {detail.kind==="image" && <button className="btn" onClick={()=>setUploading({previous:detail})}>添加新版本</button>}
             {detail.status === "pending" && <><button className="btn" onClick={() => act.run(async () => { await cmd("review_library", { entry_id: detail.id, status: "approved" }); lib.reload(); })}>核准可复用</button>
               <button className="btn" onClick={()=>setLimits(detail.limits || "")}>限条件</button>
               {limits!==null && <Modal onClose={()=>setLimits(null)}><h2>限定“{detail.name}”的使用条件</h2>
@@ -126,8 +173,13 @@ function Library({ id, p }: any) {
                   setLimits(null);await lib.reload();
                 })}>保存限制条件</button><ErrorLine error={act.error}/></Modal>}</>}
             {["approved", "limited"].includes(detail.status) && <>
-              <select value={target} onChange={(e) => setTarget(e.target.value)}><option value="">复制到哪一集</option>{(p?.episodes ?? []).map((e: any) => <option key={e.id} value={e.id}>{e.display_code}</option>)}</select>
+              <select aria-label="资产目标集" value={target} onChange={(e) => setTarget(e.target.value)}><option value="">选择目标集</option>{(p?.episodes ?? []).map((e: any) => <option key={e.id} value={e.id}>{e.display_code}</option>)}</select>
               <button className="btn primary" disabled={!target} onClick={() => act.run(async () => { await cmd("copy_to_episode", { entry_id: detail.id, episode_id: target }); lib.reload(); })}>复制到本集</button>
+              {detail.kind==="image" && <button className="btn" disabled={act.busy || !p?.episodes.some((ep:any)=>ep.id===target && ep.kickoff_id)} onClick={()=>act.run(async()=>{
+                const local=existingBase ||
+                  (await cmd("copy_to_episode",{entry_id:detail.id,episode_id:target})).versionId;
+                route.go(`#/e/${target}/assets?${new URLSearchParams({editImage:local,libraryEntry:detail.id})}`);
+              })}>{existingBase ? "用这版图改图" : "复制到目标集并改图"}</button>}
               <button className="btn" onClick={() => act.run(async () => { await cmd("review_library", { entry_id: detail.id, status: "retired" }); lib.reload(); })}>停用</button></>}
           </div>
         </div>)}
@@ -150,11 +202,19 @@ function Knowledge({ id }: { id: string }) {
   return (
     <div>
       <h1>知识库</h1><div className="row"><a className="btn" href="#/knowledge">浏览全局剧本知识库</a><a className="btn" href={`#/palette?project=${id}`}>选择导演色卡</a></div><div className="muted small" style={{ margin: "6px 0 16px" }}>自有资料为主（台账、机制、本机案例、导入的灵感材料）；推荐有依据，引用留记录。无平台数据也可开工。</div>
-      <div className="row"><select value={kind} onChange={(e) => setKind(e.target.value)}><option value="mechanism">机制</option><option value="case">本机案例</option><option value="inspiration">外部灵感</option><option value="">不指定分类</option></select>
-        <label className="btn">导入文件<input type="file" style={{ display: "none" }} onChange={(e) => e.target.files?.[0] && act.run(async () => {setImported(await upload("knowledge", e.target.files![0], { projectId: id, kind: kind || undefined }));await records.reload();})} /></label></div>
+      <section className={records.data?.length===0 ? "card first-use" : ""}>
+        <h2>项目已导入资料</h2>
+        {records.data?.length===0 && <p>这个项目还没有资料。可先导入一份 UTF-8 文本，供本项目检索和引用。</p>}
+        <div className="row"><select aria-label="导入资料分类" value={kind} onChange={e=>setKind(e.target.value)}><option value="mechanism">机制</option><option value="case">本机案例</option><option value="inspiration">外部灵感</option><option value="">不指定分类</option></select>
+          <label className="btn file-picker">{records.data?.length===0 ? "导入第一份资料" : "导入文件"}<input type="file" onChange={e=>{
+            const file=e.currentTarget.files?.[0];e.currentTarget.value="";
+            if(file) act.run(async()=>{setImported(await upload("knowledge",file,{projectId:id,kind:kind||undefined}));await records.reload();});
+          }}/></label></div>
+        {records.error && <p className="error">{records.error}</p>}
+        {records.data?.map(r=><p key={r.id}>{r.title} · {r.source} · {r.sha256.slice(0,12)}</p>)}
+      </section>
       {imported.map((r, i) => <div key={i} className="small" style={{ margin: "4px 0" }}>{r.name} · <Tag tone={r.status === "readable" ? "green" : r.status === "duplicate" ? "" : r.status === "corrupt" ? "red" : "amber"}>{({ readable: "可读", duplicate: "重复", corrupt: "损坏", needs_category: "需指定分类" } as any)[r.status]}</Tag></div>)}
       <ProjectLibrary pid={id}/><HistoricalChecks pid={id}/>
-      <h2>项目已导入资料</h2>{records.data?.map(r=><p key={r.id}>{r.title} · {r.source} · {r.sha256.slice(0,12)}</p>)}
       <h2 style={{ marginTop: 20 }}>查相似（台账与知识库）</h2>
       <div className="row"><input style={{ flex: 1 }} placeholder="输入前提或机制，例：三次失败后警报赶跑对手" value={text} onChange={(e) => setText(e.target.value)} />
         <button className="btn primary" onClick={() => act.run(async () => setHits(await q("similar", { project_id: id, text })))}>检索</button></div>

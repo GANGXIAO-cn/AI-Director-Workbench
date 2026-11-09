@@ -40,6 +40,41 @@ if __name__ == "__main__":
         first = env.wb.create_task(eid,"script","切换前的原版任务")["runId"]
         env.drain(first)
         (fixture/"method-test.json").write_text(json.dumps(dict(impact=impact,first=first,pid=pid,eid=eid)))
+    elif os.environ.get("ADW_TEST_ACTIVITY_LOG"):
+        pid,eid=env.new_episode(name="回执核对")
+        from workbench.images import ImageOutcome
+        provider=env.images
+        submit=provider.submit
+        provider.script=["ok","insufficient","timeout"]
+        def reply(request):
+            result=submit(request)
+            if result.state=="unknown":
+                return ImageOutcome("unknown",error="timeout: Authorization: Bearer FAKE_LOG_TOKEN_12345678 /Users/PRIVATE_LOG_NAME")
+            return result
+        provider.submit=reply
+        batch=env.wb.create_batch(eid,provider.name,"generate",[dict(prompt="画信号灯"+str(i)) for i in range(3)],
+                                  "64x64",budget_cents=100)
+        env.wb.authorize_batch(batch["batchId"],batch["summaryHash"],"approve")
+        env.wb.execute_batch(batch["batchId"])
+        task=env.wb.create_task(eid,"story","写开场")
+        env.drain(task["runId"])
+        turn=env.wb.send_free_chat(pid,"检查场景连续","codex",command_id="log-chat")
+        env.wb.execute_free_chat(turn["turnId"],turn["attemptId"])
+    elif os.environ.get("ADW_TEST_LIBRARY_IMAGES"):
+        pid,eid = env.new_episode(name="资产版本核对")
+        for i in range(5):
+            image = env.image(pid,eid,"站台参考"+str(i+1),"scene",rgb=(50,10+i,60))
+            env.wb.submit_reuse(image["versionId"],"站台空间")
+    elif os.environ.get("ADW_TEST_EMPTY_PROJECT"):
+        env.wb.create_project("_template","新建空项目")
+    elif os.environ.get("ADW_TEST_GRID_CELLS"):
+        from workbench.images import png_bytes
+        pid,eid = env.new_episode(name="站台九格")
+        env.adopt_story(eid)
+        env.script(eid)
+        env.save_adopt(eid,"plan",env.plan86({"G01":[3000,5000]},{"G01":"grid"}))
+        env.wb.register_asset(pid,"站台九格",png_bytes(90,90),"grid",episode_id=eid,grid=True,
+                              cells=[dict(cell=3,moment="列车进站")])
     elif os.environ.get("ADW_TEST_SCRIPT_METHODS"):
         for profile in ["puggy","_template"]:
             pid,eid = env.new_episode(config=profile,name=profile,code="九格")

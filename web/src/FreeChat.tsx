@@ -18,7 +18,10 @@ export function FreeChat({pid,thread}:{pid:string;thread?:string}) {
   const methods = library.data?.methods ?? [];
   const [chosen,setChosen] = useState<string[]|null>(null);
   const [provider,setProvider] = useState("");
-  const [images,setImages] = useState<string[]>([]);
+  const [selectedImages,setImages] = useState<string[]|null>(null);
+  const requested = new URLSearchParams(route.hash.split("?")[1]).getAll("image");
+  const available = options.data?.assets ?? [];
+  const images = selectedImages ?? [...new Set(requested)].filter(id=>available.some(a=>a.id===id)).slice(0,6);
   const [canvas,setCanvas] = useState("");
   const [target,setTarget] = useState("");
   const [uploadTitle,setUploadTitle] = useState("");
@@ -90,9 +93,12 @@ export function FreeChat({pid,thread}:{pid:string;thread?:string}) {
           <button className="btn" disabled={!newFile||(!uploadMethod&&!uploadTitle.trim())||action.busy} onClick={()=>action.run(addSkill)}>上传并使用 SKILL.md</button></div></details>
       {!!options.data?.assets.length && <details><summary>附项目原图（{images.length}/6）</summary><select aria-label="附项目原图" multiple value={images}
         onChange={e=>setImages(Array.from(e.target.selectedOptions,o=>o.value).slice(0,6))}>{options.data.assets.map(a=><option key={a.id} value={a.id}>{a.name} · R{a.version_no}</option>)}</select></details>}
+      {images.length>0 && <p className="small">本次附图 · {images.map(id=>{
+        const image=available.find(a=>a.id===id);return image ? image.name+" v"+image.version_no : "";
+      }).join("、")}</p>}
       {canvases.length>0 && <label>引用画布 <select value={canvas} onChange={e=>setCanvas(e.target.value)}><option value="">不附画布</option>{canvases.map(c=><option key={c.id} value={c.id}>{c.display_code} · R{c.revision}</option>)}</select></label>}
       <textarea disabled={action.busy} aria-label="对话内容" placeholder="聊一个灵感，或贴一段需要修改的文字" value={text} onChange={e=>{setText(e.target.value);sessionStorage.setItem(draftKey,e.target.value);}}/>
-      <button className="btn primary" disabled={!text.trim()||!executor||pending||action.busy||!transcript.data} onClick={()=>action.run(async()=>{try {await send();} catch(e){await Promise.all([transcript.reload(),options.reload()]);throw e;}})}>发送</button>
+      <button className="btn primary" disabled={!text.trim()||!executor||pending||action.busy||!transcript.data||!options.data} onClick={()=>action.run(async()=>{try {await send();} catch(e){await Promise.all([transcript.reload(),options.reload()]);throw e;}})}>发送</button>
     </div>{notice && <p role="status">{notice}</p>}<ErrorLine error={action.error}/>{[transcript.error,library.error,options.error].filter(Boolean).map(e=><p className="error" key={e}>{e}</p>)}
   </section>;
 }

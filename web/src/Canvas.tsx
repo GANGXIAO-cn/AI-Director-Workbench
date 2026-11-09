@@ -27,6 +27,7 @@ const PRESETS: [string, string, string][] = [["身份图", "generate", "正面�
 
 export default function Canvas({ ctx, providers, openBatch }: { ctx: any; providers: any; openBatch: (b: any) => void }) {
   const [doc, setDoc] = useState<{ nodes: Node[]; edges: Edge[] }>({ nodes: [], edges: [] });
+  const [loaded,setLoaded] = useState(false);
   const revision = useRef(0);
   const lastSaved = useRef(doc);
   const undo = useRef<typeof doc[]>([]);
@@ -40,13 +41,14 @@ export default function Canvas({ ctx, providers, openBatch }: { ctx: any; provid
   const [sel, setSel] = useState<string | null>(null);
   const [required,setRequired] = useState<any>(null);
   const [cand, setCand] = useState<string | null>(null);
+  const [registered,setRegistered]=useState("");
   const [link, setLink] = useState({ to: "", kind: "input" });
   const [removeNode,setRemoveNode] = useState<Node|null>(null);
   const [compare, setCompare] = useState(false);
   const act = useAction();
   const drag = useRef<{ id: string; clientX: number; clientY: number; x: number; y: number } | null>(null);
-  const load = async () => { const v = await q("canvas_view", { episode_id: ctx.eid }); setDoc(v.doc); lastSaved.current=v.doc; undo.current=[]; revision.current = v.revision; };
-  useEffect(() => { load(); }, [ctx.eid]);
+  const load = async () => { const v = await q("canvas_view", { episode_id: ctx.eid }); setDoc(v.doc); lastSaved.current=v.doc; undo.current=[]; revision.current = v.revision; setLoaded(true); setSaveError(null); };
+  useEffect(() => { load().catch(err=>setSaveError(err.message)); }, [ctx.eid]);
   const save = (next: typeof doc, record=true) => {
     if (record && JSON.stringify(next)!==JSON.stringify(lastSaved.current)) {
       undo.current=[...undo.current.slice(-39),lastSaved.current];
@@ -95,6 +97,8 @@ export default function Canvas({ ctx, providers, openBatch }: { ctx: any; provid
     ctx.reload();
   });
   const candidates = (n: Node) => (batchOf(n)?.requests ?? []).filter((r: any) => r.asset_version_id).map((r: any) => assetOf(r.asset_version_id)).filter(Boolean);
+  const selectedPicture=node?.type==="generate" ? candidates(node).find((a:any)=>a.id===cand)
+    : node && (node.type==="reference" || node.type==="lock") ? assetOf(node.data.assetVersionId) : null;
   const center = (n: Node, side: "in" | "out") => ({ x: n.x + (side === "out" ? W[n.type] : 0), y: n.y + 40 });
   const wire = (from:string,to:string,kind:Edge["kind"]="input") => {
     if (!from || from===to || !doc.nodes.some(n=>n.id===from) || !doc.nodes.some(n=>n.id===to)) return;
@@ -116,8 +120,10 @@ export default function Canvas({ ctx, providers, openBatch }: { ctx: any; provid
   }
   const width=Math.max(1300,...doc.nodes.map(n=>n.x+W[n.type]+120));
   const height=Math.max(740,...doc.nodes.map(n=>n.y+400));
+  if (!loaded) return saveError ? <div className="card"><ErrorLine error={{message:saveError}}/>
+    <button className="btn" onClick={()=>load().catch(err=>setSaveError(err.message))}>重新读取画布</button></div> : <p>正在读取画布…</p>;
   return (
-    <div ref={board} className="canvas-board" style={{ position: "relative" }}>
+    <div ref={board} className="canvas-board">
       <div className="row" style={{ marginBottom: 8, flexWrap:"wrap" }}>
         {(["text", "reference", "lock", "generate", "usage"] as const).map((t) => <button key={t} className="btn ghost" onClick={() => add(t)}>＋ <NodeLabel type={t}/></button>)}
         <button className="btn" onClick={arrange}>整理布局</button><button className="btn" disabled={!undo.current.length} onClick={()=>{const prev=undo.current.pop(); if(prev) save(prev,false);}}>撤销</button>
@@ -132,7 +138,11 @@ export default function Canvas({ ctx, providers, openBatch }: { ctx: any; provid
         <button className="btn" onClick={()=>act.run(async()=>{if(document.fullscreenElement) await document.exitFullscreen();else await board.current?.requestFullscreen();})}>全屏</button>
         <a className="btn" href={location.href} target="_blank" rel="noreferrer">独立窗口</a>
       </div>
-      <div ref={viewport} className="canvas-viewport" style={{ position:"relative",height:760,overflow:"auto",background:"#0f1013",borderRadius:12,border:"1px solid var(--line)" }}
+      {!doc.nodes.length && <div className="card first-use">
+        <h2>这张画布还没有节点</h2><p>先写角色或画面要求，再把文本连到生成节点。</p>
+        <button className="btn primary" onClick={()=>add("text")}>添加第一个文本节点</button>
+      </div>}
+      <div ref={viewport} className="canvas-viewport"
         onPointerDown={e=>{if((e.target as HTMLElement).closest(".card,button,input,select,textarea,path"))return;
           const v=e.currentTarget;pan.current={x:e.clientX,y:e.clientY,left:v.scrollLeft,top:v.scrollTop};v.setPointerCapture(e.pointerId);}}
         onPointerMove={e=>{if(pan.current){const p=pan.current;e.currentTarget.scrollTo(p.left+p.x-e.clientX,p.top+p.y-e.clientY);}else onMove(e);}}
@@ -184,8 +194,10 @@ export default function Canvas({ ctx, providers, openBatch }: { ctx: any; provid
         {node && <div className="row" style={{ position: "absolute", left: node.x, top: Math.max(0, node.y - 44), zIndex: 4, background: "#1c1d21", border: "1px solid var(--line)", borderRadius: 10, padding: 4 }}>
           {node.type === "generate" && PRESETS.map(([l, op, text]) => <button key={l} className="btn ghost" onClick={() => patch(node.id, { data: { operation: op, prompt: text } })}>{l}</button>)}
           {node.type === "generate" && <button className="btn ghost" onClick={() => setCompare(!compare)}>看图评估</button>}
-          {node.type === "generate" && <button className="btn ghost" disabled={!cand} onClick={() => act.run(async () => { await cmd("submit_reuse", { version_id: cand, usage: node.title }); ctx.reload(); })}>登记到复用库</button>}
-          {node.type === "generate" && cand && <button className="btn ghost" onClick={() => setRequired(assetOf(cand))}>必用要求</button>}
+          {["generate","reference","lock"].includes(node.type) && <button className="btn ghost" disabled={!selectedPicture || !!selectedPicture.grid || act.busy} onClick={()=>act.run(async()=>{
+            await cmd("submit_reuse",{version_id:selectedPicture.id,usage:node.title});setRegistered(selectedPicture.id);
+          })}>{selectedPicture && registered===selectedPicture.id ? "已登记到复用库" : "登记到复用库"}</button>}
+          {node.type === "generate" && selectedPicture && <button className="btn ghost" onClick={() => setRequired(selectedPicture)}>必用要求</button>}
           <select value={link.to} onChange={(e) => setLink({ ...link, to: e.target.value })} style={{ fontSize: "0.92rem" }}><option value="">连线到…</option>
             {doc.nodes.filter((x) => x.id !== node.id).map((x) => <option key={x.id} value={x.id}>{x.title}</option>)}</select>
           <select value={link.kind} onChange={(e) => setLink({ ...link, kind: e.target.value })} style={{ fontSize: "0.92rem" }}><option value="input">实际输入</option><option value="ref">只作参考</option><option value="pending">待采用后接入</option></select>
@@ -224,7 +236,7 @@ export default function Canvas({ ctx, providers, openBatch }: { ctx: any; provid
           setRemoveNode(null);setSel(null);
         }}>确认移除节点</button></Modal>}
       {required && <RequiredImage ctx={ctx} asset={required} close={()=>setRequired(null)}/>}
-      {saveError && <div className="row"><ErrorLine error={{ message: saveError }} /><button className="btn" onClick={async () => { await saves.current; await load(); setSaveError(null); }}>重新载入已保存画布</button></div>}
+      {saveError && <div className="row"><ErrorLine error={{ message: saveError }} /><button className="btn" onClick={async () => { await saves.current; await load().catch(err=>setSaveError(err.message)); }}>重新载入已保存画布</button></div>}
       <ErrorLine error={act.error} />
     </div>
   );

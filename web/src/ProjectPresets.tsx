@@ -40,7 +40,7 @@ function EpisodeOverride({ep,refresh}:{ep:Episode;refresh:()=>Promise<void>}) {
     <ErrorLine error={action.error}/><button className="btn" onClick={()=>setOpen(false)}>收起调整</button></div>;
 }
 
-export function ProjectPresets({pid}:{pid:string}) {
+export function ProjectPresets({pid,showProjectLink=false}:{pid:string;showProjectLink?:boolean}) {
   const data=useQuery<{presets:Preset[];episodes:Episode[]}>("project_presets",{project_id:pid});
   const [name,setName]=useState("default");
   const [draft,setDraft]=useState<Draft|null>(null);
@@ -82,7 +82,8 @@ export function ProjectPresets({pid}:{pid:string}) {
         {data.data.episodes.map(ep=><details key={ep.id}><summary>{ep.code} · {ep.effective.aspectRatio} · {ep.name?nameOf(ep.name)+" "+revision(ep.rev!):"旧集，未登记预设来源"}</summary>
           {Object.entries(ep.effective).map(([k,v])=><div className="preset-row" key={k}><span>{specLabels[k]??k}</span>
             <span>{format(k,v)} {ep.base && ep.base[k]!==v && <b> · 本集覆盖</b>}</span></div>)}{!draft&&<EpisodeOverride ep={ep} refresh={data.reload}/>}</details>)}
-        {!data.data.episodes.length&&<p>本项目还没有已开工的集。</p>}</aside></div>
+        {!data.data.episodes.length&&<><p>本项目还没有已开工的集。开工时选择预设，之后可在这里查看该集的有效规格。</p>
+          {showProjectLink && !draft && <a className="btn" href={`#/p/${pid}`}>去项目选择或新增一集</a>}</>}</aside></div>
     {draft&&<div className="row"><button className="btn primary" disabled={action.busy || (draft.copying?!draft.name.trim():!differences.length)} onClick={()=>action.run(save)}>
       {draft.copying?"保存新预设":"保存修改"}</button><button className="btn" onClick={()=>{setDraft(null);action.clear();data.reload();}}>取消</button></div>}
     <ErrorLine error={action.error}/>{notice&&<p role="status">{notice}</p>}

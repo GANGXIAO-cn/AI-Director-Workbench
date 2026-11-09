@@ -9,12 +9,20 @@ from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parent
 def run(script):
-    if script not in {"episode_specs","topic_research","revision_sessions","cooperation","project_context","director_inputs","editing_navigation","history","shot_wall","enhancements","story_skill","script_methods","home","archive_page","baselines","publish_handoff","mixed_media","h3_sound","h3_guides","interrupted_history","free_chat","image_inventory","story_handoff","prompt_signals","project_folder","browser","resources","knowledge","script_bodies","presets","delivery_page","projects","shot_refs","navigation","story_comparison","providers","method_sync","custom_methods","contact_sheet"}:
+    if script not in {"activity_log","library_images","empty_project","grid_cells","episode_specs","topic_research","revision_sessions","cooperation","project_context","director_inputs","editing_navigation","history","shot_wall","enhancements","story_skill","script_methods","home","archive_page","baselines","publish_handoff","mixed_media","h3_sound","h3_guides","interrupted_history","free_chat","image_inventory","story_handoff","prompt_signals","project_folder","browser","resources","knowledge","script_bodies","presets","delivery_page","projects","shot_refs","navigation","story_comparison","providers","method_sync","custom_methods","contact_sheet"}:
         raise ValueError(script)
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
     env = dict(os.environ, ADW_TEST_PORT=str(port))
+    if script == "activity_log":
+        env["ADW_TEST_ACTIVITY_LOG"]="1"
+    if script == "library_images":
+        env["ADW_TEST_LIBRARY_IMAGES"]="1"
+    if script == "empty_project":
+        env["ADW_TEST_EMPTY_PROJECT"]="1"
+    if script == "grid_cells":
+        env["ADW_TEST_GRID_CELLS"]="1"
     if script == "topic_research":
         env["ADW_TEST_TOPIC_RESEARCH"]="1"
     if script == "project_context":

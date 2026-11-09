@@ -82,7 +82,7 @@ COMMANDS = {
     "resolve_impact", "create_pack", "edit_cuts", "add_beat", "bookmark", "save_pack", "adapt_from_pack",
     "add_space_item", "confirm_space_item", "set_cast", "set_role_baseline", "save_shot_observation", "reorder_refs", "edit_prompt_reference", "set_sound", "submit_reuse", "review_library",
     "copy_to_episode", "create_batch", "authorize_batch", "cancel_batch", "reconcile_request", "resubmit_request",
-    "mark_image", "redraw_cells", "adopt_image", "start_prompt_review", "start_prompt_review_batch", "waive_segment_issue", "set_publish_settings",
+    "set_grid_cell", "mark_image", "redraw_cells", "adopt_image", "start_prompt_review", "start_prompt_review_batch", "waive_segment_issue", "set_publish_settings",
     "deliver", "package", "package_preview", "start_closure", "decide_items", "confirm_closure", "propose_setting_change",
     "choose_episode_settings", "update_preset", "episode_spec_change", "cite", "take_source_topic", "add_topic", "drop_topic",
     "create_group", "continue_in_group", "authorize_expert", "pause_expert", "manual_expert", "set_task_executor", "adopt_pack", "backup", "restore",
@@ -94,11 +94,11 @@ QUERIES = {
     "project_role_assets", "historical_episodes", "historical_receipt", "historical_review_inputs", "product_placements", "project_resources", "project_section", "episode_project_sections", "available_configs", "groups", "project_knowledge",
     "resource_mounts", "browse_scripts", "search_script_bodies", "script_excerpt", "browse_palettes", "palette_detail", "project_palettes", "episode_palettes", "step_config", "step_form",
     "project_presets", "episode_owner", "list_projects", "project_view", "episode_view", "kickoff_preview", "read_import", "compare", "continue_check",
-    "draft_prompts", "plan_preview", "adoption_preview", "impacts", "ref_frames", "episode_bookmarks", "pack_view", "trace_shot", "blocked_segments", "cast_matrix", "episode_assets",
+    "grid_bindings", "draft_prompts", "plan_preview", "adoption_preview", "impacts", "ref_frames", "episode_bookmarks", "pack_view", "trace_shot", "blocked_segments", "cast_matrix", "episode_assets",
     "asset_version", "library", "image_providers", "batch_view", "episode_batches", "compare_cells", "image_references",
     "prompt_signals", "prompt_review_status", "publish_settings", "compose_publish", "delivery_problems", "delivery_view", "verify_delivery",
     "enhancement_catalog", "closure_view", "similar", "project_baselines", "source_styles", "source_topics", "topics", "group_view", "model_catalog", "validate_selection", "regress_pack", "pack_versions", "compare_packs", "stage_methods", "custom_methods", "custom_method_text", "project_stage_methods", "script_plan_budget", "acting_review",
-    "storage_status", "packager_status", "project_todos", "project_overview", "adoption_preview", "expert_view", "expert_history", "expert_preview", "canvas_view", "ref_questions", "task_records", "run_manifest", "run_methods", "version_sources", "probe",
+    "storage_status", "packager_status", "project_todos", "project_overview", "adoption_preview", "expert_view", "expert_history", "expert_preview", "canvas_view", "ref_questions", "activity_log", "task_records", "run_manifest", "run_methods", "version_sources", "probe",
 }
 ASYNC = {"execute_batch", "expert_run", "ask_cut"}
 
@@ -411,6 +411,9 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
             return wb.import_publish_pack(m["projectId"], file.filename, data)
         if kind == "reference":
             return wb.import_reference(m["projectId"], file.filename, data, m.get("commandId"))
+        if kind == "library-image":
+            return wb.upload_library_image(m["projectId"], file.filename or "图片", data, m.get("category"),
+                                           m.get("usage"), m.get("previousEntryId"), m.get("commandId"))
         if kind == "asset":
             return wb.register_asset(m["projectId"], m.get("name") or file.filename, data, m.get("category", "scene"),
                                      episode_id=m.get("episodeId"), roles=m.get("roles", []), grid=m.get("grid", False))

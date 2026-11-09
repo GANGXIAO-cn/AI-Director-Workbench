@@ -582,6 +582,18 @@ function PlanView({ ctx }: { ctx: Ctx }) {
   const { art, current } = useVersion(ctx, "plan");
   const [tab, setTab] = useState("shots");
   const [shot, setShot] = useState<string | null>(null);
+  const { hash } = useProjectRoute();
+  const linkedShot = new URLSearchParams(hash.split("?")[1]).get("shot");
+  useEffect(() => {
+    const shots = current?.content.shots ?? [];
+    if (linkedShot && shots.some((s:any)=>s.id === linkedShot)) {
+      setTab("shots");
+      setShot(linkedShot);
+      document.getElementById("shot-"+ctx.eid+"-"+linkedShot)?.scrollIntoView({block:"nearest"});
+    } else {
+      setShot(prior=>shots.some((s:any)=>s.id===prior) ? prior : null);
+    }
+  }, [linkedShot, current?.id, ctx.eid]);
   const [trace, setTrace] = useState<any>(null);
   const act = useAction();
   const lay = useMemo(() => layout(current?.content), [current?.id]);
@@ -632,7 +644,7 @@ function PlanView({ ctx }: { ctx: Ctx }) {
           <h2 style={{ marginTop: 18 }}>{sc}</h2>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(180px,1fr))", gap: 10 }}>
             {shots.filter((s: any) => (s.origin?.scene ?? "参考镜头") === sc).map((s: any) => (
-              <div key={s.id} className={`shotcard ${shot === s.id ? "sel" : ""}`} onClick={() => { setShot(s.id); ctx.setSel({ label: `镜头 ${s.id}（${s.segment}）`, data: { shot: s.id, segment: s.segment, version: current.id } }); }}>
+              <div key={s.id} id={`shot-${ctx.eid}-${s.id}`} className={`shotcard ${shot === s.id ? "sel" : ""}`} onClick={() => { setShot(s.id); ctx.setSel({ label: `镜头 ${s.id}（${s.segment}）`, data: { shot: s.id, segment: s.segment, version: current.id } }); }}>
                 <ShotPictures shot={s} assets={ctx.assets} refs={references[s.segment]?.refs ?? []} />
                 <div className="body">
                   <div className="spread"><b>{s.id} <span className="muted small">{s.duration_ms / 1000}s</span></b><Tag tone="amber">{s.segment}</Tag></div>
@@ -838,6 +850,16 @@ function AssetsView({ ctx }: { ctx: Ctx }) {
   const providers = useQuery<any>("image_providers");
   const act = useAction();
   const images = ctx.assets.filter((a) => a.kind === "image").sort((a, b) => (b.grid ? 1 : 0) - (a.grid ? 1 : 0));
+  const params = new URLSearchParams(hash.split("?")[1]);
+  const editVersion = params.get("editImage");
+  const libraryEntry = params.get("libraryEntry");
+  const editBase = editVersion && images.find(a=>a.id===editVersion && !a.grid);
+  const libraryBatch = editBase && libraryEntry ? {operation:"edit",base:editBase,libraryEntry} : null;
+  function closeBatchForm() {
+    setNewBatch(null);
+    if (editVersion) { params.delete("editImage"); params.delete("libraryEntry"); go(hash.split("?")[0]+(params.size?"?"+params:"")); }
+    void ctx.reload();
+  }
   const marked = (a: any, m: string) => a.marks.includes(m);
   const sourceBatches=new Map<string,any>(ctx.batches.flatMap(b=>b.requests.filter((r:any)=>r.asset_version_id).map((r:any)=>[r.asset_version_id,{batch:b, request:r}])));
   const filter = tab === "round" ? images.filter((a) => !marked(a, "backup")) : tab === "backup" ? images.filter((a) => !marked(a, "adopted") && !marked(a, "required")) : images;
@@ -870,7 +892,7 @@ function AssetsView({ ctx }: { ctx: Ctx }) {
           <label className="btn">上传<input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => e.target.files?.[0] && act.run(async () => { await upload("asset", e.target.files![0], { projectId: ctx.view.episode.project_id, episodeId: ctx.eid, category: upKind, grid: upKind === "grid" }); ctx.reload(); })} /></label></div>
       </div>
       <ProjectLibrary pid={ctx.view.episode.project_id} eid={ctx.eid} productsOnly refresh={ctx.reload} images={images} shots={artifactFor(ctx.view,"plan")?.versions.find((v:any)=>v.id===artifactFor(ctx.view,"plan")?.adopted_version_id)?.content.shots ?? []}/>
-      {tab === "canvas" ? <Canvas ctx={ctx} providers={providers.data ?? {}} openBatch={ctx.openBatch} /> : tab === "needs" ? <NeedsTable ctx={ctx} /> : (
+      {tab === "canvas" ? <Canvas key={ctx.eid} ctx={ctx} providers={providers.data ?? {}} openBatch={ctx.openBatch} /> : tab === "needs" ? <NeedsTable ctx={ctx} /> : (
         <div className="candidate-panel"><div className={"candidate-layout"+(shown.length<2?" single":"")}>
           {shown.map((a,i) => (
             <div key={i}>
@@ -922,14 +944,15 @@ function AssetsView({ ctx }: { ctx: Ctx }) {
       {detail && <Modal width={820} onClose={()=>setDetail(null)}><div className="spread">
         <h2>{detail.name} · v{detail.version_no}</h2><div className="row"><a href={blob(detail.sha256)} target="_blank" rel="noreferrer">打开原文件</a>
           <button className="btn" onClick={()=>setDetail(null)}>关闭原图</button></div>
-        </div><OriginalZoom name={detail.name} sha={detail.sha256}/>{!!detail.grid && <GridDetail a={detail} eid={ctx.eid}/>}</Modal>}
+        </div><OriginalZoom name={detail.name} sha={detail.sha256}/>{!!detail.grid && <GridDetail key={detail.id} a={detail} ctx={ctx}/>}</Modal>}
       {ctx.batches.length > 0 && <h2 style={{ marginTop: 24 }}>图像批次</h2>}
       {ctx.batches.map((b) => (
         <div key={b.id} className="card line" style={{ marginBottom: 8 }}>
           <div className="spread"><span>{b.provider} · {b.operation === "edit" ? "局部重画" : "生成"} · {b.count} 张 · {b.size} · {BATCH_LABEL[b.state] ?? b.state}</span><button className="btn" onClick={() => ctx.openBatch(b)}>打开</button></div>
           <div className="row small" style={{ marginTop: 6 }}>{b.requests.map((r: any) => <Tag key={r.id} tone={r.state === "succeeded" ? "green" : r.state === "unknown" ? "amber" : r.state === "failed" ? "red" : ""}>#{r.ordinal} {REQ[r.state] ?? r.state}</Tag>)}</div>
         </div>))}
-      {newBatch && <NewBatch ctx={ctx} init={newBatch} providers={providers.data ?? {}} close={() => { setNewBatch(null); ctx.reload(); }} />}
+      {(libraryBatch || newBatch) && providers.data && <NewBatch key={editVersion || "new"} ctx={ctx} init={libraryBatch || newBatch} providers={providers.data} close={closeBatchForm}/>}
+      {editVersion && !editBase && <p className="muted">正在查找本集的底图版本。<button className="btn" onClick={ctx.reload}>刷新素材</button><button className="btn" onClick={closeBatchForm}>返回选图</button></p>}
       <ErrorLine error={act.error} />
     </div>
   );
@@ -977,19 +1000,70 @@ function GridMethods({eid}:{eid:string}) {
       <pre style={{whiteSpace:"pre-wrap"}}>{entry.text}</pre></details>)}</details>;
 }
 
-function GridDetail({ a, eid }: { a: any; eid:string }) {
-  return (
-    <div className="card line" style={{ marginTop: 14 }}>
-      <b>九宫格详情 · {a.name} v{a.version_no}</b>{a.changed_cells && <span className="muted small"> · 请求修改第 {a.changed_cells.join("、")} 格</span>}
-      <GridMethods eid={eid}/>
-      {a.source_version_id && <GridComparison key={a.id} id={a.id} />}
-      <div style={{ display: "grid", gridTemplateColumns:"repeat(3,1fr)", gap: 6, marginTop: 10 }}>
-        {(a.cells ?? Array.from({ length: 9 }, (_, i) => ({ cell: i + 1 }))).map((c: any) => (
-          <div key={c.cell} className={`card ${a.changed_cells?.includes(c.cell) ? "amber" : "line"}`} style={{ padding: 8 }}>
-            <div role="img" aria-label={`第 ${c.cell} 格`} style={{aspectRatio:`${a.width||1}/${a.height||1}`,backgroundImage:`url(${blob(a.sha256)})`,backgroundSize:"300% 300%",backgroundPosition:`${(c.cell-1)%3*50}% ${Math.floor((c.cell-1)/3)*50}%`}}/><b>第 {c.cell} 格</b><div className="muted tiny">{c.moment || "未登记时刻"}</div></div>))}
-      </div>
+type GridBinding = {cell:number; plan_version_id:string|null; shot_id:string|null; offset_ms:number|null; revision:number};
+
+function GridDetail({ a, ctx }: { a:any; ctx:Ctx }) {
+  const bindings = useQuery<GridBinding[]>("grid_bindings", {episode_id:ctx.eid,version_id:a.id});
+  const art = artifactFor(ctx.view,"plan");
+  const plans = art?.versions ?? [];
+  const adopted = plans.find((v:any)=>v.id === art.adopted_version_id);
+  const [editing,setEditing] = useState<{cell:number; revision:number}|null>(null);
+  const [shotId,setShotId] = useState("");
+  const [seconds,setSeconds] = useState("");
+  const act = useAction();
+  const shot = adopted?.content.shots.find((s:any)=>s.id === shotId);
+  function edit(cell:number, binding?:GridBinding) {
+    const keep = !!adopted && adopted.id === binding?.plan_version_id;
+    setEditing({cell,revision:binding?.revision ?? 0});
+    setShotId(keep ? binding!.shot_id ?? "" : "");
+    setSeconds(keep ? String((binding!.offset_ms ?? 0)/1000) : "0");
+    act.clear();
+  }
+  async function save(clear=false) {
+    if (!editing) return;
+    await cmd("set_grid_cell", {episode_id:ctx.eid,version_id:a.id,cell:editing.cell,expected_revision:editing.revision,
+      plan_version_id:clear ? null : adopted.id,shot_id:clear ? null : shotId,
+      offset_ms:clear ? null : Math.round(Number(seconds)*1000)});
+    await bindings.reload();
+    setEditing(null);
+  }
+  return <div className="card line" style={{marginTop:14}}>
+    <b>九宫格详情 · {a.name} v{a.version_no}</b>{a.changed_cells && <span className="muted small"> · 请求修改第 {a.changed_cells.join("、")} 格</span>}
+    <GridMethods eid={ctx.eid}/>
+    {a.source_version_id && <GridComparison key={a.id} id={a.id}/>}
+    {bindings.error && <p className="error">{bindings.error} <button className="btn" onClick={bindings.reload}>重新读取</button></p>}
+    <div style={{display:"grid",gridTemplateColumns:"repeat(3,minmax(0,1fr))",gap:6,marginTop:10}}>
+      {Array.from({length:9},(_,i)=>{
+        const cell=i+1;
+        const meta=Array.isArray(a.cells) ? a.cells.find((c:any)=>c?.cell===cell) : null;
+        const binding=bindings.data?.find(b=>b.cell===cell);
+        const plan=plans.find((v:any)=>v.id===binding?.plan_version_id);
+        const sh=plan?.content.shots.find((s:any)=>s.id===binding?.shot_id);
+        const lay=sh && layout(plan.content);
+        const segment=sh && lay.segments.find((s:any)=>s.id===sh.segment);
+        const time=segment && lay.shots[sh.id].start-segment.start+(binding?.offset_ms ?? 0);
+        return <div key={cell} className={`card ${a.changed_cells?.includes(cell) ? "amber" : "line"}`} style={{padding:8}}>
+          <div role="img" aria-label={`第 ${cell} 格`} style={{aspectRatio:`${a.width||1}/${a.height||1}`,backgroundImage:`url(${blob(a.sha256)})`,backgroundSize:"300% 300%",backgroundPosition:`${i%3*50}% ${Math.floor(i/3)*50}%`}}/>
+          <b>第 {cell} 格</b>{typeof meta?.moment==="string" && <div className="muted tiny">{meta.moment}</div>}
+          {segment ? <div className="small"><a href={`#/e/${ctx.eid}/plan?${new URLSearchParams({v:plan.id,shot:sh.id})}`}>{rno(plan.display_no)} · {sh.segment} · {sh.id}</a>
+            <div>段内 {(time/1000).toFixed(3)} 秒</div></div> : <div className="muted tiny">{bindings.data ? "未关联镜头" : "正在读取镜头"}</div>}
+          {bindings.data && (adopted || binding?.shot_id) && <button className="btn" aria-label={`设置第 ${cell} 格镜头与时刻`} onClick={()=>edit(cell,binding)}>设置镜头与时刻</button>}
+        </div>;
+      })}
     </div>
-  );
+    {!adopted && <p className="muted small">采用本集制作方案后，即可给每格关联镜头与时刻。</p>}
+    {editing && <form className="card" onSubmit={e=>{e.preventDefault();void act.run(()=>save());}}>
+      <b>第 {editing.cell} 格镜头与时刻</b><div className="row">
+        <label>制作方案 {adopted && rno(adopted.display_no)} · 镜头 <select required value={shotId} onChange={e=>{setShotId(e.target.value);setSeconds("0");}}>
+          <option value="">选择镜头</option>{adopted?.content.shots.map((s:any)=><option key={s.id} value={s.id}>{s.segment} · {s.id} · {s.action}</option>)}
+        </select></label>
+        <label>距镜头开始（秒） <input type="number" min="0" step="0.001" max={shot ? shot.duration_ms/1000 : undefined} required value={seconds} onChange={e=>setSeconds(e.target.value)}/></label>
+      </div><div className="row"><button className="btn primary" disabled={!shot || act.busy}>保存关联</button>
+        {bindings.data?.some(b=>b.cell===editing.cell && b.shot_id) && <button type="button" className="btn" disabled={act.busy} onClick={()=>act.run(()=>save(true))}>解除关联</button>}
+        <button type="button" className="btn" onClick={()=>setEditing(null)}>取消</button></div>
+      <ErrorLine error={act.error}/>{act.error && <button type="button" className="btn" onClick={async()=>{await Promise.all([ctx.reload(),bindings.reload()]);setEditing(null);}}>刷新镜头与关联</button>}
+    </form>}
+  </div>;
 }
 
 function GridComparison({ id }: { id: string }) {
@@ -1000,9 +1074,9 @@ function GridComparison({ id }: { id: string }) {
 }
 
 function NewBatch({ ctx, init, providers, close }: { ctx: Ctx; init: any; providers: any; close: () => void }) {
-  const names = Object.keys(providers);
+  const names = Object.keys(providers).filter(name=>providers[name].capabilities.operations.includes(init.operation));
   const [provider, setProvider] = useState(names[0] ?? "");
-  const [prompt, setPrompt] = useState(init.base ? `局部重画 ${init.base.name}` : "");
+  const [prompt, setPrompt] = useState(init.base?.grid ? `局部重画 ${init.base.name}` : "");
   const [count, setCount] = useState(1);
   const [size, setSize] = useState("");
   const [quality, setQuality] = useState("low");
@@ -1017,23 +1091,36 @@ function NewBatch({ ctx, init, providers, close }: { ctx: Ctx; init: any; provid
   const ordered = chosen.filter(id=>relevant.some(l=>l.versionId===id));
   const act = useAction();
   const caps = providers[provider]?.capabilities;
-  useEffect(() => { if (caps && !caps.sizes.includes(size)) setSize(caps.sizes[0]); }, [provider]);
+  useEffect(() => {
+    if (!caps) return;
+    setSize(value=>caps.sizes.includes(value) ? value : caps.sizes[0]);
+    setQuality(value=>caps.quality.includes(value) ? value : caps.quality[0]);
+  }, [provider,caps]);
   const create = () => act.run(async () => {
     const budget_cents = budgetCents(budget);
-    const r = init.base ? await cmd("redraw_cells", { episode_id: ctx.eid, base_version_id: init.base.id, cells, reference_version_ids: Array.from(new Set([ref,...ordered].filter(id=>id && id!==init.base.id))), segments:scoped, prompt, provider, size, quality, budget_cents })
-      : await cmd("create_batch", { episode_id: ctx.eid, provider, operation: "generate", size, quality, budget_cents,
-        items: Array.from({ length: count }, (_, i) => ({ prompt, segments: scoped, inputs: ordered, target: { name: `${prompt.slice(0, 10)} ${i + 1}`, category: "state" } })) });
+    const args = {episode_id:ctx.eid,provider,size,quality,budget_cents};
+    const extraInputs = Array.from(new Set([ref,...ordered].filter(id=>id && id!==init.base?.id)));
+    let r;
+    if (init.base?.grid) {
+      r=await cmd("redraw_cells",{...args,base_version_id:init.base.id,cells,reference_version_ids:extraInputs,segments:scoped,prompt});
+    } else if (init.base) {
+      r=await cmd("create_batch",{...args,operation:"edit",items:[{prompt,segments:scoped,inputs:[init.base.id,...extraInputs],
+        libraryEntryId:init.libraryEntry,target:{name:init.base.name,category:init.base.category,assetId:init.base.asset_id,roles:init.base.roles}}]});
+    } else {
+      r=await cmd("create_batch",{...args,operation:"generate",items:Array.from({length:count},(_,i)=>({
+        prompt,segments:scoped,inputs:ordered,target:{name:`${prompt.slice(0,10)} ${i+1}`,category:"state"}}))});
+    }
     ctx.openBatch(await q("batch_view", { batch_id: r.batchId }));
     close();
   });
   return (
     <Modal onClose={close} width={620}>
-      <div className="row"><Tag tone="amber">会消耗额度</Tag><h2 style={{ margin: 0 }}>{init.base ? `局部重画 ${init.base.name}` : "发起图像批次"}</h2></div>
+      <div className="row"><Tag tone="amber">会消耗额度</Tag><h2 style={{ margin: 0 }}>{init.base?.grid ? `局部重画 ${init.base.name}` : init.base ? `垫图改图 · ${init.base.name} v${init.base.version_no}` : "发起图像批次"}</h2></div>
       <div className="formrow"><span className="muted">通道</span><select value={provider} onChange={(e) => setProvider(e.target.value)}>{names.map((n) => <option key={n} value={n}>{n}（{providers[n].verified === "simulated" ? "模拟" : providers[n].verified === "pending_verification" ? "待验证" : "已验证"}）</option>)}</select></div>
-      <div className="formrow"><span className="muted">要求</span><textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} /></div>
+      <div className="formrow"><span className="muted">要求</span><textarea aria-label="绘图要求" value={prompt} onChange={(e) => setPrompt(e.target.value)} /></div>
       {init.base ? <>
-        <GridMethods eid={ctx.eid}/>
-        <div className="formrow"><span className="muted">只改格</span><div className="row">{Array.from({ length: 9 }, (_, i) => i + 1).map((c) => <button key={c} className={`pill ${cells.includes(c) ? "on" : ""}`} onClick={() => setCells(cells.includes(c) ? cells.filter((x) => x !== c) : [...cells, c])}>{c}</button>)}</div></div>
+        {init.base.grid ? <><GridMethods eid={ctx.eid}/>
+        <div className="formrow"><span className="muted">只改格</span><div className="row">{Array.from({ length: 9 }, (_, i) => i + 1).map((c) => <button key={c} className={`pill ${cells.includes(c) ? "on" : ""}`} onClick={() => setCells(cells.includes(c) ? cells.filter((x) => x !== c) : [...cells, c])}>{c}</button>)}</div></div></> : <div className="row"><img width="80" src={blob(init.base.sha256)} alt="本批底图"/><span>第一张输入 · {init.base.name} v{init.base.version_no}</span></div>}
         <div className="formrow"><span className="muted">参考（仅绘图）</span><select value={ref} onChange={(e) => setRef(e.target.value)}><option value="">无</option>{ctx.assets.filter((a) => a.kind === "image" && a.id !== init.base.id).map((a) => <option key={a.id} value={a.id}>{a.name} v{a.version_no}</option>)}</select></div>
       </> : <>
         <div className="formrow"><span className="muted">张数</span><input type="number" min={1} max={9} value={count} onChange={(e) => setCount(+e.target.value)} /></div>
@@ -1046,9 +1133,10 @@ function NewBatch({ ctx, init, providers, close }: { ctx: Ctx; init: any; provid
       <div className="formrow"><span className="muted">尺寸</span><select value={size} onChange={(e) => setSize(e.target.value)}>{(caps?.sizes ?? []).map((s: string) => <option key={s}>{s}</option>)}</select></div>
       <div className="formrow"><span className="muted">质量</span><select value={quality} onChange={(e) => setQuality(e.target.value)}>{(caps?.quality ?? []).map((v: string) => <option key={v}>{v}</option>)}</select></div>
       <div className="formrow"><span className="muted">本批授权预算（{providers[provider]?.currency}）</span><input value={budget} onChange={(e) => setBudget(e.target.value)} /></div>
+      {!names.length && <p className="error">当前没有支持此操作的图像通道。</p>}
       <p className="muted small">只执行这一批；结果不明会标为“待核对”，不会自动重发。</p>
       <ErrorLine error={act.error} />
-      <div className="row" style={{ justifyContent: "flex-end" }}><button className="btn" onClick={close}>取消</button><button className="btn primary" disabled={act.busy} onClick={create}>生成摘要，去确认</button></div>
+      <div className="row" style={{ justifyContent: "flex-end" }}><button className="btn" onClick={close}>取消</button><button className="btn primary" disabled={act.busy || !prompt.trim() || !size || !names.length} onClick={create}>生成摘要，去确认</button></div>
     </Modal>
   );
 }
@@ -1071,7 +1159,7 @@ function BatchModal({ batch, assets, close }: { batch: any; assets: any[]; close
   const budget = editedBudget ?? (d.budget_cents == null ? "" : (d.budget_cents / 100).toFixed(2));
   return (
     <Modal onClose={close} width={640}>
-      <div className="row"><Tag tone="amber">会消耗额度</Tag><h2 style={{ margin: 0 }}>{d.operation === "edit" ? "局部重画" : "图像批次"} · {d.count} 张</h2><Tag>{BATCH_LABEL[d.state] ?? d.state}</Tag></div>
+      <div className="row"><Tag tone="amber">会消耗额度</Tag><h2 style={{ margin: 0 }}>{d.operation === "edit" ? (d.spec.items[0]?.cells?.length ? "局部重画" : "垫图改图") : "图像批次"} · {d.count} 张</h2><Tag>{BATCH_LABEL[d.state] ?? d.state}</Tag></div>
       {d.operation === "edit" && !!d.spec.items[0]?.cells?.length && (() => { const it = d.spec.items[0]; const base = assets.find((a) => a.id === it.inputs?.[0]); return base ? (
         <div className="row" style={{ marginTop: 12, flexWrap: "nowrap" }}>
           <div style={{ position: "relative", width: 96 }}><img src={blob(base.sha256)} style={{ width: 96, borderRadius: 6, display: "block" }} />
@@ -1081,6 +1169,10 @@ function BatchModal({ batch, assets, close }: { batch: any; assets: any[]; close
           <div className="small">基础图 {base.name}（{base.marks.includes("required") ? "必用" : "候选"}）<br />只改：第 {it.cells?.join("、")} 格；其余 {9 - (it.cells?.length ?? 0)} 格保持不变<br />参考：{it.inputs.slice(1).map((x: string) => assets.find((a) => a.id === x)?.name).join("、") || "无"}</div>
         </div>) : null; })()}
       <table className="table" style={{ margin: "12px 0" }}><tbody>
+        {d.spec.librarySources && <tr><td>资产库底图</td><td>{Object.entries(d.spec.librarySources).map(([id,value])=>{
+          const source=value as {name:string;versionNo:number;sha256:string;limits:string};
+          return <div key={id}>{source.name} v{source.versionNo} · {source.sha256.slice(0,12)}{source.limits && " · "+source.limits}</div>;
+        })}</td></tr>}
         {d.spec.palettes?.length>0&&<tr><td>风格来源</td><td><PaletteTrace cards={d.spec.palettes} label="本批次冻结色卡"/></td></tr>}
         <tr><td className="muted">服务</td><td>{d.provider}{d.model ? ` · ${d.model}` : ""} · {d.operation === "edit" ? "编辑（带基础图）" : d.spec.items.some((it: any) => it.inputs?.length) ? "带参考图生成（编辑接口）" : "文生图"}</td></tr>
         <tr><td className="muted">实际输入</td><td>{d.spec.items.map((it: any, i: number) => <div key={i} className="small">#{i + 1} {it.prompt}{it.cells ? ` · 目标格 ${it.cells.join("、")}` : ""}<OrderedImageInputs inputs={d.inputGroups?.[i]}/></div>)}</td></tr>

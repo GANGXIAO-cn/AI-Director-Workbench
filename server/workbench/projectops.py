@@ -7,7 +7,7 @@ import re
 import shutil
 import sqlite3
 
-from . import contracts, prompts
+from . import activity, contracts, prompts
 from .db import connect, dumps, new_id, transaction
 from .expert import ExpertMixin
 from .history import HistoryMixin
@@ -704,6 +704,10 @@ class ProjectOpsMixin(ExpertMixin, HistoryMixin):
                 todos.append(dict(kind="reconcile", episodeId=b["episode_id"], objectId=b["id"],
                                   title=f"{b['display_code']} 图像请求结果待核对", action="查原批次"))
         return todos
+
+    def activity_log(self, project_id=None, offset=0, limit=40):
+        with connect(self.db_path) as db:
+            return activity.page(db,project_id,offset,limit)
 
     def task_records(self, project_id=None, episode_id=None, stage=None, state=None):
         sql = ("SELECT t.*, e.display_code FROM task t JOIN episode e ON e.id=t.episode_id WHERE 1=1"

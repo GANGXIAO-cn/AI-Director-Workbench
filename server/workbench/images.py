@@ -6,7 +6,7 @@ is sent; a request whose outcome is unknown is never re-sent automatically.
 from contextlib import contextmanager
 from dataclasses import dataclass
 import json
-from . import imagechoices
+from . import imagechoices, timeline
 from io import BytesIO
 from itertools import zip_longest
 import os
@@ -296,6 +296,45 @@ class ImagesMixin:
         with connect(self.db_path) as db2:
             return get(db2)
 
+    def _episode_grid(self, db, episode_id, version_id):
+        image = self.asset_version(version_id, db)
+        if not image["grid"] or image["episode_id"] != episode_id:
+            raise Rejected("请选择本集的九宫格图片版本")
+
+    def grid_bindings(self, episode_id, version_id):
+        with connect(self.db_path) as db:
+            self._episode_grid(db, episode_id, version_id)
+            return [dict(r) for r in db.execute("SELECT cell,plan_version_id,shot_id,offset_ms,revision "
+                                                "FROM grid_cell_binding WHERE asset_version_id=? ORDER BY cell", (version_id,))]
+
+    def set_grid_cell(self, episode_id, version_id, cell, expected_revision, plan_version_id=None,
+                      shot_id=None, offset_ms=None, command_id=None):
+        with transaction(self.db_path) as db:
+            def run():
+                self._episode_grid(db, episode_id, version_id)
+                if type(cell) is not int or not 1 <= cell <= 9 or type(expected_revision) is not int:
+                    raise Rejected("请指定格号和当前记录版本")
+                prior = db.execute("SELECT revision FROM grid_cell_binding WHERE asset_version_id=? AND cell=?",
+                                   (version_id, cell)).fetchone()
+                revision = prior[0] if prior else 0
+                if revision != expected_revision:
+                    raise Conflict("本格已由其他窗口修改，请刷新后核对", current=revision)
+                if any(value is not None for value in (plan_version_id, shot_id, offset_ms)):
+                    plan = db.execute("SELECT v.id,v.content FROM artifact a JOIN version v ON v.id=a.adopted_version_id "
+                                      "WHERE a.episode_id=? AND a.stage='plan'", (episode_id,)).fetchone()
+                    if not plan or plan["id"] != plan_version_id:
+                        raise Conflict("本集采用的制作方案已变，请刷新后重新选择镜头")
+                    timing = timeline.layout(json.loads(plan["content"]))["shots"].get(shot_id) if isinstance(shot_id,str) else None
+                    if not timing or type(offset_ms) is not int or not 0 <= offset_ms <= timing["end_ms"] - timing["start_ms"]:
+                        raise Rejected("镜头或镜内时刻超出制作方案范围")
+                db.execute("INSERT INTO grid_cell_binding VALUES(?,?,?,?,?,?) ON CONFLICT(asset_version_id,cell) "
+                           "DO UPDATE SET plan_version_id=excluded.plan_version_id,shot_id=excluded.shot_id,"
+                           "offset_ms=excluded.offset_ms,revision=excluded.revision",
+                           (version_id, cell, plan_version_id, shot_id, offset_ms, revision + 1))
+                return dict(versionId=version_id, cell=cell, revision=revision + 1)
+            payload = [episode_id, version_id, cell, expected_revision, plan_version_id, shot_id, offset_ms]
+            return self._command(db, command_id, "grid_cell", payload, run)
+
     def asset_bytes(self, version_id):
         v = self.asset_version(version_id)
         return self.store.read_blob(v["sha256"])
@@ -323,12 +362,44 @@ class ImagesMixin:
                 v = self.asset_version(version_id, db)
                 if v["grid"]:
                     raise Rejected("九宫格只归本集，不能进入复用库")
-                eid = new_id()
-                db.execute("INSERT INTO library_entry VALUES(?,?,?,?,?,?,?,?,?,?)",
-                           (eid, v["project_id"], version_id, usage, aspect, limits, observation, "pending",
-                            v["episode_id"], self.clock()))
-                return dict(entryId=eid, status="pending")
+                return self._library_entry(db, v, usage, limits, observation, aspect)
             return self._command(db, command_id, "reuse", dict(v=version_id, u=usage, l=limits), run)
+
+    def _library_entry(self, db, version, usage, limits="", observation="", aspect=None):
+        prior = db.execute("SELECT id,status FROM library_entry WHERE asset_version_id=?", (version["id"],)).fetchone()
+        if prior:
+            return dict(entryId=prior["id"], status=prior["status"])
+        entry_id = new_id()
+        db.execute("INSERT INTO library_entry VALUES(?,?,?,?,?,?,?,?,?,?)",
+                   (entry_id, version["project_id"], version["id"], usage, aspect, limits, observation,
+                    "pending", version["episode_id"], self.clock()))
+        return dict(entryId=entry_id,status="pending")
+
+    def upload_library_image(self, project_id, filename, data, category, usage, previous_entry_id=None, command_id=None):
+        if not isinstance(usage,str) or not usage.strip():
+            raise Rejected("请填写图片用途")
+        payload = dict(project=project_id, name=filename, digest=sha256_bytes(data), category=category,
+                       usage=usage, previous=previous_entry_id)
+        with transaction(self.db_path) as db:
+            def run():
+                row(db, "SELECT id FROM project WHERE id=?", project_id)
+                previous = None
+                if previous_entry_id:
+                    entry = row(db, "SELECT asset_version_id FROM library_entry WHERE id=? AND project_id=?",
+                                previous_entry_id, project_id, missing="本项目没有此资产条目")
+                    previous = self.asset_version(entry["asset_version_id"],db)
+                    if previous["kind"] != "image" or previous["grid"]:
+                        raise Rejected("请选择可复用图片")
+                elif category not in ("identity","costume","scene","state","prop","product","reference"):
+                    raise Rejected("请选择图片分类")
+                asset = self.register_asset(project_id, previous["name"] if previous else Path(filename).name,
+                                            data, previous["category"] if previous else category,
+                                            episode_id=previous["episode_id"] if previous else None,
+                                            roles=previous["roles"] if previous else (),
+                                            asset_id=previous["asset_id"] if previous else None,
+                                            source_version_id=previous["id"] if previous else None, db=db)
+                return dict(asset, **self._library_entry(db,self.asset_version(asset["versionId"],db),usage.strip()))
+            return self._command(db,command_id,"library_upload",payload,run)
 
     def review_library(self, entry_id, status, limits=None, command_id=None):
         if status not in ("approved", "limited", "retired", "rejected"):
@@ -399,6 +470,8 @@ class ImagesMixin:
             locks = self._space_locks(db, episode_id)
             inputs = []
             scene_inputs = []
+            library_sources = {}
+            prepared_items = []
             for item in items:
                 aid = item.get("target", {}).get("assetId")
                 if aid:
@@ -409,6 +482,20 @@ class ImagesMixin:
                 if any(v["kind"] != "image" or v["project_id"] != ep["project_id"]
                        or v["episode_id"] not in (None, episode_id) for v in ordered):
                     raise Rejected("出图输入必须是本项目、本集可用的图像版本")
+                entry_id = item.get("libraryEntryId")
+                if entry_id:
+                    entry = row(db, "SELECT * FROM library_entry WHERE project_id=? AND id=?", ep["project_id"], entry_id)
+                    base = ordered[0] if ordered else {}
+                    if operation != "edit" or entry["status"] not in ("approved","limited") or not (
+                            base.get("id") == entry["asset_version_id"] or
+                            base.get("library_entry_id") == entry_id and base.get("source_version_id") == entry["asset_version_id"]):
+                        raise Rejected("请重新选择已核准的资产库底图版本")
+                    original = self.asset_version(entry["asset_version_id"], db)
+                    library_sources[entry_id] = dict(versionId=original["id"],name=original["name"],
+                                                     versionNo=original["version_no"],sha256=original["sha256"],limits=entry["limits"])
+                    if entry["limits"]:
+                        item = dict(item,prompt=item["prompt"]+"\n底图使用条件："+entry["limits"])
+                prepared_items.append(item)
                 inputs.append([v["sha256"] for v in ordered])
                 scoped = item.get("segments", [])
                 if not isinstance(scoped, list) or any(not isinstance(seg,str) for seg in scoped):
@@ -421,14 +508,16 @@ class ImagesMixin:
                                    detail={seg:[lock["label"] for lock in blocked if seg in lock["segments"]] for seg in names})
                 scene_inputs.append([dict(lock,positions=[n for n,h in enumerate(inputs[-1],1) if h==lock["sha256"]])
                                      for lock in relevant])
-            spec = dict(items=items, inputs=inputs, model=model, quality=quality)
+            spec = dict(items=prepared_items, inputs=inputs, model=model, quality=quality)
+            if library_sources:
+                spec["librarySources"] = library_sources
             if any(scene_inputs):
                 spec["sceneLocks"] = scene_inputs
             palettes = self.episode_palettes(episode_id,"assets")["cards"]
             if palettes:
                 spec["palettes"] = [stage_card(card, "assets") for card in palettes]
                 reference = "\n".join(card["visual"] + "\n" + card["image"] for card in palettes)
-                spec["items"] = [dict(item, prompt=item["prompt"] + "\n" + SCOPE + "\n" + reference) for item in items]
+                spec["items"] = [dict(item, prompt=item["prompt"] + "\n" + SCOPE + "\n" + reference) for item in spec["items"]]
             from .enhancements import entries as method_entries
             config = self.step_config(episode_id, "assets")
             definition = config.get("form")
@@ -450,6 +539,18 @@ class ImagesMixin:
             summary = dict(provider=provider, currency=prov.currency, verified=prov.verified, model=model, operation=operation, count=len(items),
                            size=size, inputs=inputs, quality=quality, inputHash=input_hash, budget_cents=budget_cents, estimate_cents=estimate)
             def run():
+                # Keep annotations as of authorisation preparation, even if the source is edited before landing.
+                bindings = {}
+                for item in items:
+                    if operation == "edit" and item.get("target", {}).get("grid") and item.get("inputs"):
+                        source = item["inputs"][0]
+                        records = [dict(r) for r in db.execute(
+                            "SELECT cell,plan_version_id,shot_id,offset_ms FROM grid_cell_binding "
+                            "WHERE asset_version_id=? AND plan_version_id IS NOT NULL ORDER BY cell", (source,))]
+                        if records:
+                            bindings[source] = records
+                if bindings:
+                    spec["gridBindings"] = bindings
                 # A cancelled, never-sent batch keeps its receipt. Tie its replacement to that receipt.
                 candidate_hash = input_hash
                 while True:
@@ -599,6 +700,12 @@ class ImagesMixin:
                                               cells=target.get("cellsMeta"), asset_id=target.get("assetId"),
                                               source_version_id=(item.get("inputs") or [None])[0] if b["operation"] == "edit" else None,
                                               changed_cells=item.get("cells"), note=f"批次 {batch_id}", db=db)
+                    if target.get("grid") and b["operation"] == "edit":
+                        source = item["inputs"][0]
+                        bindings = json.loads(b["spec"]).get("gridBindings", {}).get(source, [])
+                        db.executemany("INSERT INTO grid_cell_binding VALUES(?,?,?,?,?,1)",
+                                       [(res["versionId"], c["cell"], c["plan_version_id"], c["shot_id"], c["offset_ms"])
+                                        for c in bindings])
                     db.execute("UPDATE image_request SET state='succeeded', provider_request_id=?, asset_version_id=?, sha256=?, "
                                "ended_at=? WHERE id=?", (out.provider_request_id, res["versionId"], res["sha256"],
                                                          self.clock(), request_id))

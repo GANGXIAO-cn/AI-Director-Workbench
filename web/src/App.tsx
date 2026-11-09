@@ -1,3 +1,4 @@
+import { ActivityLog } from "./ActivityLog";
 import { SideNav } from "./SideNav";
 import { useEffect, useLayoutEffect, useState } from "react";
 import { ResourceBrowser } from "./Resources";
@@ -107,13 +108,13 @@ export default function App() {
     : route.tab || "idea";
   return <div className="project-desktop">
     {locationInfo.data?.externalProject && <div className="folder-location">独立项目 · 保存到 {locationInfo.data.dataDir}</div>}
-    {!!tabs.length && <nav aria-label="已打开的项目" className="project-tabs">
+    <div className="desktop-tools">{!!tabs.length && <nav aria-label="已打开的项目" className="project-tabs">
       {tabs.map(t => <span key={t.id} className={t.id === active ? "active" : ""}>
         <a aria-current={t.id === active ? "page" : undefined} href={t.hash}>{names.get(t.id) || "项目"}</a>
         <button type="button" aria-label={`关闭项目标签 ${names.get(t.id) || ""}`} onClick={() => close(t.id)}>×</button>
       </span>)}
       <a className="open-project" href="#/projects">＋ 打开项目</a>
-    </nav>}
+    </nav>}<ActivityLog projects={projects.data || []} current={active}/></div>
     <div className="desktop-body"><SideNav active={navActive} projects={projects.data || []} projectId={active}
       episode={route.page === "episode"} hash={hash}/>
     {tabs.filter(t => t.mounted).map(t => <div className="desktop-page" key={t.id} hidden={active !== t.id}>

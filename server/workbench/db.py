@@ -223,6 +223,10 @@ CREATE TABLE IF NOT EXISTS asset_version(
   sha256 TEXT NOT NULL, relpath TEXT NOT NULL, bytes INTEGER NOT NULL, width INTEGER, height INTEGER,
   source_version_id TEXT, grid INTEGER NOT NULL DEFAULT 0, cells TEXT, changed_cells TEXT,
   library_entry_id TEXT, note TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL, UNIQUE(asset_id, version_no));
+CREATE TABLE IF NOT EXISTS grid_cell_binding(
+  asset_version_id TEXT NOT NULL REFERENCES asset_version(id), cell INTEGER NOT NULL CHECK(cell BETWEEN 1 AND 9),
+  plan_version_id TEXT REFERENCES version(id), shot_id TEXT, offset_ms INTEGER, revision INTEGER NOT NULL,
+  PRIMARY KEY(asset_version_id,cell));
 CREATE TABLE IF NOT EXISTS library_entry(
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES project(id), asset_version_id TEXT NOT NULL,
   usage TEXT NOT NULL, aspect TEXT, limits TEXT NOT NULL DEFAULT '', observation TEXT NOT NULL DEFAULT '',
