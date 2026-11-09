@@ -17,9 +17,9 @@ export function artifactFor(view: any, stage: string) {
 }
 
 /** 导演助手: clarification, progress, draft, review and image-batch cards, plus the composer. */
-export default function Assistant({ view, stage, sel, setSel, reload, focus, batches, onOpenBatch, composeRef, openRequirements }: {
+export default function Assistant({ view, stage, sel, setSel, reload, focus, batches, onOpenBatch, composeRef, openRequirements, openTrial }: {
   view: any; stage: string; sel: Selection; setSel: (s: Selection) => void; reload: () => void; focus?: string | null;
-  batches: any[]; onOpenBatch: (b: any) => void; openRequirements: () => void; composeRef?:Ref<(draft:string)=>void>;
+  batches: any[]; onOpenBatch: (b: any) => void; openRequirements: () => void; openTrial:()=>void; composeRef?:Ref<(draft:string)=>void>;
 }) {
   const {focusChat,setFocusChat} = useDisplay();
   const {go, active} = useProjectRoute();
@@ -72,6 +72,7 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
     <aside className="assistant">
       <div className="head">导演助手 <button className="btn focus-toggle" aria-pressed={focusChat} onClick={()=>setFocusChat(!focusChat)}>{focusChat ? "返回成果文档" : "专注对话"}</button><Avatars create={plan?.create?.provider} review={plan?.review?.provider} /><span className="muted tiny" style={{ marginLeft: "auto", textAlign: "right" }}>{task ? `任务：${task.goal.slice(0, 14)}` : "尚无任务"}{task ? <><br />自动修订 {task.used_rounds}/{task.max_rounds} 轮</> : null}</span></div>
       <button className="btn ghost" onClick={()=>setHistory(true)}>本集对话历史</button>
+      {STAGE_ART[stage] && <button className="btn ghost" onClick={openTrial}>讨论与试写</button>}
       {history && <EpisodeHistory view={view} close={()=>setHistory(false)} reload={reload}/>}
       <div className="msgs">
         {(task?.messages ?? []).map((m: any) => <Message key={m.id} m={m} task={task} reload={reload} art={art} />)}
@@ -122,7 +123,7 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
             <button className="btn" onClick={() => onOpenBatch(b)}>{b.state === "awaiting_authorization" ? "确认、调整或取消" : "打开批次"}</button>
           </div>))}
       </div>
-      {STAGE_ART[stage] ? <div className="composer">
+      {STAGE_ART[stage] && !art ? <div className="composer"><button className="btn primary" onClick={openTrial}>用现有资料先试写</button></div> : STAGE_ART[stage] ? <div className="composer">
         {sel && <div className="selchip">选区：{sel.label} <span style={{ cursor: "pointer" }} onClick={() => setSel(null)}>×</span></div>}
         <DirectorFiles files={files} remove={act.busy ? undefined : i=>setFiles(files.filter((_,n)=>n!==i))}/>
         <textarea ref={input} disabled={act.busy} onPaste={e=>{

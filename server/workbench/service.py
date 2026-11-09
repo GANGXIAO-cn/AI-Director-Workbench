@@ -26,6 +26,13 @@ REVIEW_PASSES = {"review": "story", "cold_read": "cold_read", "comparison": "com
 from .errors import Conflict, NotFound, Rejected, row as _row, loads as _loads
 
 
+COOPERATION = {
+    "beginner": "推荐最短的下一步，只在缺关键输入时提问。导演指定试写或返回时按要求继续。",
+    "advanced": "按导演当前目标推进，允许跳步与下游试写。列明草稿来源、未定项和假设，避免停下要求选择菜单。",
+    "expert": "直接处理导演指定的内容，简述必要冲突与取舍，省略基础讲解。试写列明依据与假设。",
+}
+
+
 class Core:
     def __init__(self, data_dir: Path, executors: dict, clock=time.time, image_providers=None):
         self.store = Store(data_dir)
@@ -305,10 +312,14 @@ class Core:
 
     def start_episode(self, episode_id, source_type, executor_plan, source_import_id=None, idea_text=None,
                       topic_id=None, goal="", relation="independent", predecessor_ids=(), spec_overrides=None,
-                      command_id=None, project_id=None, display_code=None, leftover_facts=(), preset_name="default", preset_revision=None, use_story_skill=False, files=()):
+                      command_id=None, project_id=None, display_code=None, leftover_facts=(), preset_name="default", preset_revision=None, use_story_skill=False, files=(), cooperation_mode=None):
         payload = dict(project_id=project_id, display_code=display_code, facts=list(leftover_facts), episode_id=episode_id, source_type=source_type, plan=executor_plan, imp=source_import_id,
                        idea=idea_text, topic=topic_id, goal=goal, relation=relation, pre=list(predecessor_ids),
                        spec=spec_overrides)
+        if cooperation_mode is not None:
+            if not isinstance(cooperation_mode, str) or cooperation_mode not in COOPERATION:
+                raise Rejected("未知合作档位")
+            payload["cooperationMode"] = cooperation_mode
         _, pictures = attachments.prepare(files, images_only=True)
         if pictures:
             payload["pictures"] = pictures
@@ -367,6 +378,8 @@ class Core:
                            (episode_id,preset_name,preset["rev"],dumps(preset["values"])))
                 db.execute("INSERT INTO kickoff_method VALUES(?,?)", (episode_id, project["method_pack"]))
                 pin_at_kickoff(db, ep["project_id"], episode_id)
+                if cooperation_mode is not None:
+                    db.execute("INSERT INTO episode_cooperation VALUES(?,?)", (episode_id, cooperation_mode))
                 for picture, (_, data) in zip(pictures, files):
                     self.register_asset(ep["project_id"], picture["name"], data, "reference", episode_id=episode_id,
                                         origin="kickoff_reference", db=db)
@@ -376,6 +389,39 @@ class Core:
                 db.execute("UPDATE episode SET state='in_production', revision=revision+1 WHERE id=?", (episode_id,))
                 return dict(episodeId=episode_id, kickoffId=kid, storyArtifactId=aid, carriedFacts=carried)
             return self._command(db, command_id, "start_episode", payload, run)
+
+    def _cooperation_mode(self, db, episode_id):
+        result = db.execute("SELECT mode FROM episode_cooperation WHERE episode_id=?", (episode_id,)).fetchone()
+        return result[0] if result else "advanced"
+
+    def set_cooperation_mode(self, episode_id, mode, expected_mode):
+        if not isinstance(mode, str) or mode not in COOPERATION:
+            raise Rejected("未知合作档位")
+        with transaction(self.db_path) as db:
+            self._kickoff(db, episode_id)
+            current = self._cooperation_mode(db, episode_id)
+            if current not in (mode, expected_mode):
+                raise Conflict("本集合作档位已变化，请刷新后再选")
+            db.execute("INSERT INTO episode_cooperation VALUES(?,?) ON CONFLICT(episode_id) DO UPDATE SET mode=excluded.mode",
+                       (episode_id, mode))
+            return dict(mode=mode)
+
+    def set_optional_stage(self, episode_id, stage, skipped, reason="", expected_reason=""):
+        if stage not in ("space", "cast") or type(skipped) is not bool:
+            raise Rejected("只能跳过或恢复空间锁定、角色出镜")
+        if not isinstance(reason, str) or (skipped and not reason.strip()):
+            raise Rejected("请填写跳过本步的原因")
+        reason = reason.strip() if skipped else ""
+        with transaction(self.db_path) as db:
+            self._kickoff(db, episode_id)
+            record = db.execute("SELECT reason FROM optional_stage_choice WHERE episode_id=? AND stage=?",
+                                (episode_id, stage)).fetchone()
+            current = record[0] if record else ""
+            if current not in (expected_reason, reason):
+                raise Conflict("本步安排已变化，请刷新后再操作")
+            db.execute("INSERT INTO optional_stage_choice VALUES(?,?,?) ON CONFLICT(episode_id,stage) "
+                       "DO UPDATE SET reason=excluded.reason", (episode_id, stage, reason))
+            return dict(stage=stage, reason=reason)
 
     def _kickoff(self, db, episode_id):
         k = _row(db, "SELECT * FROM kickoff WHERE episode_id=?", episode_id, missing="本集尚未开工")
@@ -390,11 +436,42 @@ class Core:
             return f"选题卡 {t['code']}：{t['premise']}\n机制：{t['mechanism']}\n角色动机：{t['motivation']}" + self._original_card(db,t)
         return kickoff["idea_text"]
 
+    def _writing_inputs(self, db, task, pack, profile, settings_text, kickoff_text, base_content, request, upstream):
+        entries = prompts.creation_inputs(pack, settings_text, kickoff_text, task["stage"], base_content,
+                                          request, upstream, profile)
+        disabled = self.get_setting(f"method-options:{task['episode_id']}:{task['stage']}", [])
+        entries = [e for e in entries if e["role"] != "method" or e["name"] not in disabled]
+        entries.extend(self._custom_method_entries(db, task))
+        entries.extend(self._extra_creation_inputs(db, task))
+        return entries
+
+    def _stage_chat_inputs(self, db, eid, stage, source_version, thread_id):
+        kickoff = self._kickoff(db, eid)
+        pack, profile = self._episode_method(db, eid)
+        task = dict(episode_id=eid, project_id=self._episode_in(db,eid)["project_id"], stage=stage, id=thread_id)
+        entries = self._writing_inputs(db,task,pack,profile,prompts.render_settings(kickoff["settings_snapshot"]),
+                                       prompts.render_kickoff(kickoff,self._source_text(db,kickoff)),None,
+                                       "按本条消息讨论或试写。交代未定项与假设，试写不改变已采用成果。",None)
+        basis = dict(versionId=None, label="本集开工资料与导演本条要求")
+        if source_version:
+            source = _row(db, "SELECT v.*,a.stage,a.adopted_version_id FROM version v JOIN artifact a ON a.id=v.artifact_id "
+                          "WHERE a.episode_id=? AND v.id=?", eid, source_version, missing="指定稿件不属于本集")
+            label = "已采用" if source["adopted_version_id"] == source_version else "未采用"
+            basis = dict(versionId=source_version, stage=source["stage"], number=source["display_no"], label=label)
+            entries.append(dict(role="trial_source",name=f"{source['stage']} R{source['display_no']:02d} · {label}",
+                                text=render_stage(source["stage"],json.loads(source["content"]))))
+        mode = self._cooperation_mode(db, eid)
+        entries.append(dict(role="cooperation",name="本集合作方式",text=COOPERATION[mode]))
+        header = dict(episodeId=eid, stage=stage, stageBasis=basis, creator=kickoff["executor_plan"]["create"])
+        return header, entries
+
     # ------------------------------------------------------------------ tasks, threads, runs
     def create_task(self, episode_id, stage, goal, auto_revise=False, executor=None, command_id=None, selection=None,
-                    prompt_images=None, files=()):
+                    prompt_images=None, files=(), trial_turn_id=None):
         payload = dict(episode_id=episode_id, stage=stage, goal=goal, auto=auto_revise, ex=executor, sel=selection)
         extra, refs = attachments.prepare(files)
+        if trial_turn_id is not None:
+            payload["trialTurnId"] = trial_turn_id
         if refs:
             payload["attachments"] = refs
         if prompt_images is not None:
@@ -422,6 +499,15 @@ class Core:
                         raise Rejected("故事未通过独审并采用前，不能写剧本" if stage == "script"
                                        else f"上一步（{prev}）尚未采用")
                     self._ensure_artifact(db, ep, stage)
+                if trial_turn_id:
+                    turn = _row(db, "SELECT t.reply,t.input_hash,t.manifest_relpath FROM free_turn t JOIN episode_stage_thread s "
+                                "ON s.thread_id=t.thread_id WHERE t.id=? AND s.episode_id=? AND s.stage=? AND t.status='succeeded'",
+                                trial_turn_id, episode_id, stage, missing="请选择本集本阶段已经完成的试写")
+                    manifest, digest = self.store.load_manifest(turn["manifest_relpath"])
+                    if digest != turn["input_hash"]:
+                        raise Rejected("试写输入清单指纹不符")
+                    extra.append(dict(role="trial_reference", name="导演选用的试写 · "+trial_turn_id,
+                                      text="试写依据："+dumps(manifest["stageBasis"])+"\n输入指纹："+digest+"\n"+turn["reply"]))
                 aid = db.execute("SELECT id FROM artifact WHERE episode_id=? AND stage=?", (episode_id, stage)).fetchone()[0]
                 tid, thread = self._draft_thread(db, ep["project_id"], episode_id, aid, stage, goal, plan, auto_revise, selection, refs)
                 if prompt_images is not None:
@@ -604,12 +690,7 @@ class Core:
                 if base_version_id else None
             adopted_story = self._upstream_text(db, task)
             req_text = request if not selection else f"{request}\n（选区：{json.dumps(selection, ensure_ascii=False)}）"
-            entries = prompts.creation_inputs(pack, settings_text, kickoff_text, task["stage"], base_content,
-                                              req_text, adopted_story, profile)
-            disabled = self.get_setting(f"method-options:{task['episode_id']}:{task['stage']}", [])
-            entries = [e for e in entries if e["role"]!="method" or e["name"] not in disabled]
-            entries += self._custom_method_entries(db, task)
-            entries += self._extra_creation_inputs(db, task)
+            entries = self._writing_inputs(db,task,pack,profile,settings_text,kickoff_text,base_content,req_text,adopted_story)
             if task["stage"] == "story" and base_version_id:
                 base = self._version_of(db,base_version_id,task["artifact_id"])
                 prior = self._version_materials(db,base,{"reference_pack","adaptation_source"})
@@ -618,6 +699,10 @@ class Core:
                 frozen_names = {(e["role"],e["name"]) for e in prior}
                 entries = [e for e in entries if (e["role"],e["name"]) not in frozen_names]
                 entries.extend(dict(role=e["role"],name=e["name"],text=e["text"]) for e in prior)
+        if purpose in ("create", "revise", "parallel"):
+            mode = self._cooperation_mode(db, task["episode_id"])
+            entries.append(dict(role="cooperation", name="本集合作方式",
+                                text=COOPERATION[mode] + " 新稿另存，由导演采用。"))
         entries.extend(message_entries)
         header = dict(schemaVersion=1, purpose=purpose, projectId=task["project_id"], episodeId=task["episode_id"],
                       taskId=task_id, artifactId=task["artifact_id"], stage=task["stage"], provider=provider,
@@ -1366,6 +1451,9 @@ class Core:
             kick = db.execute("SELECT * FROM kickoff WHERE episode_id=?", (episode_id,)).fetchone()
             view = dict(episode=ep, kickoff=_loads(dict(kick), "predecessor_ids", "carried_facts", "settings_snapshot",
                                                    "spec", "executor_plan") if kick else None, artifacts=[])
+            view["cooperationMode"] = self._cooperation_mode(db, episode_id)
+            view["skippedStages"] = dict(db.execute(
+                "SELECT stage, reason FROM optional_stage_choice WHERE episode_id=? AND reason<>''", (episode_id,)))
             view["sourceFiles"] = [dict(r) for r in db.execute("SELECT kind,relpath,sha256 FROM episode_source WHERE episode_id=? ORDER BY kind", (episode_id,))]
             if kick and kick["source_import_id"]:
                 view["sourceImport"] = dict(db.execute(
@@ -1526,7 +1614,7 @@ class Core:
                          "WHERE v.id=?", version_id)
             roles = {"reference_pack","adaptation_source"}
             if not reference_only:
-                roles.update({"citation","visual_reference","project_method","method","step_requirements"})
+                roles.update({"citation","visual_reference","project_method","method","step_requirements","trial_reference"})
                 if v["stage"] == "script":
                     roles.add("adopted_story")
             inputs = self._version_materials(db,v,roles)

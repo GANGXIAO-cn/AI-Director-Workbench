@@ -76,7 +76,7 @@ COMMANDS = {
     "start_story_comparison", "preview_acting",
     "add_script_document", "refresh_script_index", "restore_step_revision",
     "use_fixed_role", "import_historical_episode", "episode_contact_sheet", "save_contact_options", "export_episode_contact_sheet", "historical_contact_sheet", "export_historical_contact_sheet", "save_product_placement", "set_project_sections", "use_project_product", "mount_resource", "restore_version", "set_stage_methods", "set_custom_methods", "save_palettes", "add_palette", "set_episode_palettes", "save_step_config",
-    "export_project_folder", "create_project", "rename_project", "set_recent_visibility", "visit_project", "create_episode", "record_leftovers", "start_episode", "create_task", "post_message", "retry_run",
+    "set_cooperation_mode", "set_optional_stage", "export_project_folder", "create_project", "rename_project", "set_recent_visibility", "visit_project", "create_episode", "record_leftovers", "start_episode", "create_task", "post_message", "retry_run",
     "save_manual", "submit_review", "waive", "adopt", "answer_clarification", "abandon_task", "stop_run", "open_stage", "save_canvas", "combine", "split_segment",
     "resolve_impact", "create_pack", "edit_cuts", "add_beat", "bookmark", "save_pack", "adapt_from_pack",
     "add_space_item", "confirm_space_item", "set_cast", "set_role_baseline", "save_shot_observation", "reorder_refs", "edit_prompt_reference", "set_sound", "submit_reuse", "review_library",
@@ -262,7 +262,8 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
                                 body.get("ideaText"), body.get("topicId"), body.get("goal", ""),
                                 body.get("relation", "independent"), body.get("predecessorIds", []),
                                 body.get("specOverrides"), body.get("commandId"), preset_name=body.get("presetName","default"),
-                                preset_revision=body.get("presetRevision"), use_story_skill=body.get("useStorySkill", False))
+                                preset_revision=body.get("presetRevision"), use_story_skill=body.get("useStorySkill", False),
+                                cooperation_mode=body.get("cooperationMode"))
 
     @app.get("/api/episodes/{eid}")
     def episode(eid: str):

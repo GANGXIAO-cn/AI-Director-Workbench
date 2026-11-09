@@ -1,3 +1,4 @@
+import { CooperationSelect } from "./Cooperation";
 import { Wrench } from "lucide-react";
 import { DirectorFiles, useDirectorCommand } from "./DirectorFiles";
 import { isKickoffTopic } from "./topics";
@@ -171,6 +172,7 @@ export function Kickoff({ projectId, prefill, onClose, pictures=[] }: { projectI
   const [pre, setPre] = useState(prefill.predecessorId ?? "");
   const [importId, setImportId] = useState(prefill.importId ?? "");
   const [topicId, setTopicId] = useState(prefill.topicId ?? "");
+  const [cooperation, setCooperation] = useState("advanced");
   const [mode, setMode] = useState<"manual" | "expert">(prefill.mode ?? "manual");
   const [split, setSplit] = useState<"default" | "custom">(prefill.creator && (prefill.creator !== "claude" || prefill.reviewer !== "codex") ? "custom" : "default");
   const [creator, setCreator] = useState(prefill.creator ?? "claude");
@@ -197,7 +199,7 @@ export function Kickoff({ projectId, prefill, onClose, pictures=[] }: { projectI
   const start = () => act.run(async () => {
     const started=await submit("start_episode", {
       episode_id: prefill.episodeId ?? null, project_id:projectId, display_code:prefill.displayCode, leftover_facts:prefill.leftoverFacts, source_type: source, executor_plan: { create: { provider: creator, ...cm }, review: { provider: reviewer, ...rm } },
-      preset_name:chosen.name,preset_revision:chosen.rev,
+      preset_name:chosen.name,preset_revision:chosen.rev,cooperation_mode:cooperation,
       spec_overrides: { ...(prefill.style ? { style: prefill.style } : {}), ...(ratioOverride ? {aspectRatio:ratioOverride} : {}) },
       goal: source === "idea" ? "" : goal,
       source_import_id: source === "import" ? importId : undefined, idea_text: source === "idea" ? idea : undefined,
@@ -238,6 +240,7 @@ export function Kickoff({ projectId, prefill, onClose, pictures=[] }: { projectI
           <select aria-label="本集画幅覆盖" value={ratioOverride} onChange={e=>setRatioOverride(e.target.value)}><option value="">沿用预设画幅</option>{Object.keys(specChoices.aspectRatio).map(r=><option key={r} value={r}>{r}</option>)}</select>
           <button className="pill" onClick={()=>setManagePresets(true)}>管理预设</button></div>
         <span className="muted small">{prefill.style ? "本集风格：" + prefill.style : "沿用项目风格"}</span></div></div>
+      <div className="formrow"><CooperationSelect value={cooperation} onChange={setCooperation}/></div>
       <div className="formrow"><span className="muted">运行模式</span><Pills value={mode} onChange={setMode} options={[["manual", "手工"], ["expert", "专家"]]} /></div>
       <div className="formrow"><span className="muted">模型分工</span><div className="col">
         <Pills value={split} onChange={v => { setSplit(v); if (v === "default") {setCreator("claude");setReviewer("codex");setCm({model:null,effort:null});setRm({model:null,effort:null});} }} options={[["default", "默认"], ["custom", "本集调整"]]} />

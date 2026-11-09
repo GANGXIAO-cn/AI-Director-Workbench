@@ -1,3 +1,5 @@
+import { StageTrial } from "./StageTrial";
+import { EpisodeCooperation, OptionalStage } from "./Cooperation";
 import { budgetAmount, budgetCents } from "./budget";
 import { PublishCues } from "./PublishCues";
 import { MediaPreview, PromptMedia } from "./PromptMedia";
@@ -24,7 +26,7 @@ import { ColumnDivider, savedWidths, type Widths } from "./WorkspaceColumns";
 import { frameOrientation } from "./specs";
 
 type Ctx = {
-  view: any; eid: string; reload: () => Promise<void>; sel: Selection; setSel: (s: Selection) => void; assets: any[];
+  openTrial:()=>void; view: any; eid: string; reload: () => Promise<void>; sel: Selection; setSel: (s: Selection) => void; assets: any[];
   batches: any[]; focus: string | null; setFocus: (v: string | null) => void; openBatch: (b: any) => void;
 };
 
@@ -72,6 +74,8 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
   const expertParam = new URLSearchParams(hash.split("?")[1]).get("expert");
   const [showPalettes, setShowPalettes] = useState(false);
   const [showMethod, setShowMethod] = useState(false);
+  const [trialRoute,setTrialRoute] = useState("");
+  useEffect(()=>setTrialRoute(""),[id,stage]);
   const [requirements,setRequirements]=useState(false);
   const composeRef=useRef<((draft:string)=>void)|null>(null);
   const batchParam = new URLSearchParams(hash.split("?")[1] ?? "").get("batch");
@@ -105,7 +109,7 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
       <button className="btn" onClick={view.reload}>刷新版本列表</button><button className="btn" onClick={()=>setFocus(null)}>返回当前稿</button></div>;
   }
   const ctx: Ctx = { view: v, eid: id, reload, sel, setSel, assets: assets.data ?? [], batches: batches.data ?? [], focus, setFocus,
-    openBatch: setBatch };
+    openBatch: setBatch, openTrial:()=>setTrialRoute(id+":"+stage) };
   const adopted = (s: string) => !!v.artifacts.find((a: any) => a.stage === s)?.adopted_version_id;
   const status = (s: string) => {
     const map: Record<string, boolean> = { story: adopted("story"), script: adopted("script"), plan: adopted("plan"),
@@ -125,9 +129,10 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
       <div className={"ws"+(chatOnly?" chat-only":"")+(canvasMode?" canvas-only":"")} style={{flex:1, gridTemplateColumns: canvasMode || chatOnly ? "minmax(0, 1fr)" : `${cols[0]}px minmax(0, 1fr) ${cols[1]}px`}}>
         {!canvasMode && <div className="catalog">
           <div className="spread" style={{ padding: "0 8px 12px" }}><b>目录</b><a className="muted" href={`#/p/${v.episode.project_id}`}>⇤</a></div>
+          <EpisodeCooperation eid={id} mode={v.cooperationMode} reload={view.reload}/>
           {STAGES.map(([k, label], i) => (
             <a key={k} className={`item ${k === stage ? "on" : ""}`} href={`#/e/${id}/${k}`}>
-              <span className="n">{String(i + 1).padStart(2, "0")}</span>{label}<span className={`st ${status(k)}`} />
+              <span className="n">{String(i + 1).padStart(2, "0")}</span>{label}{v.skippedStages[k] ? <small>已跳过</small> : <span className={`st ${status(k)}`} />}
             </a>))}
         </div>}
         {!canvasMode && <><ColumnDivider side={0} width={cols[0]} resize={width=>setCols(old=>[width,old[1]])}/>
@@ -144,11 +149,14 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
             <span className="chip">▯ {v.kickoff.spec.aspectRatio}</span>
             <a className="chip" href={`#/p/${v.episode.project_id}/expert${expertParam ? "/" + expertParam : ""}?episode=${id}`}>⇄ 手工 · 专家模式</a>
           </div>
-          {stage==="package"?<PackageView ctx={ctx} panel={packagePanel}/>:<StageView stage={stage} ctx={ctx} />}
+          {["space","cast"].includes(stage) && <OptionalStage key={id+stage} eid={id} stage={stage} skippedReason={v.skippedStages[stage] || ""} reload={view.reload}/>}
+          {stage==="package"?<PackageView ctx={ctx} panel={packagePanel}/>:!v.skippedStages[stage] && <StageView stage={stage} ctx={ctx} />}
         </div>
         {stage==="package" && <aside className="assistant package-aside" aria-label="出包设置" ref={setPackagePanel}/>}
-        {!canvasMode && stage!=="package" && <Assistant key={id + ":" + stage} composeRef={composeRef} openRequirements={()=>setRequirements(true)} view={v} stage={stage} sel={sel} setSel={setSel} reload={reload} focus={focus} batches={ctx.batches} onOpenBatch={setBatch} />}
+        {!canvasMode && stage!=="package" && <Assistant key={id + ":" + stage} composeRef={composeRef} openTrial={ctx.openTrial} openRequirements={()=>setRequirements(true)} view={v} stage={stage} sel={sel} setSel={setSel} reload={reload} focus={focus} batches={ctx.batches} onOpenBatch={setBatch} />}
       </div>
+      {trialRoute===id+":"+stage && <StageTrial key={trialRoute} projectId={v.episode.project_id} episodeId={id} stage={stage}
+        artifacts={v.artifacts} currentVersion={focus} provider={v.kickoff.executor_plan.create.provider} close={()=>setTrialRoute("")} reload={reload}/>}
       {showPalettes && <EpisodePaletteSettings key={stage} eid={id} stage={stage} close={() => setShowPalettes(false)}/>}
       {showMethod && <StageMethods key={id+stage} pid={v.episode.project_id} eid={id} stage={stage} close={() => setShowMethod(false)} />}
       {requirements && <StepRequirements key={stage} pid={v.episode.project_id} eid={id} stage={["space","cast"].includes(stage)?"assets":versionStage} close={()=>{setRequirements(false); if (stage==="review") void reload();}} toComposer={stage==="review"?undefined:text=>{composeRef.current?.(text); if (window.matchMedia("(max-width: 1120px)").matches) setFocusChat(true);}}/>}
@@ -229,7 +237,7 @@ function VersionTabs({ ctx, art, current }: { ctx: Ctx; art: any; current: any }
         {refs.data.inputs.length===0 && <p>这个版本没有直接读取外部参考的运行记录。</p>}
         {refs.data.inputs.map((item:any)=><details key={item.sha256+item.name}>
           <summary>{item.role === "adopted_story" ? "起草时采用的故事" + (item.storyVersion ? " · "+rno(item.storyVersion.display_no) : "") :
-            item.name+" · "+(({citation:"引用资料",visual_reference:"导演色卡",method:"制作方法",project_method:"项目方法",step_requirements:"本步需求",reference_pack:"参考包",adaptation_source:"改编来源"} as Record<string,string>)[item.role] || item.role)}</summary>
+            item.name+" · "+(({trial_reference:"阶段试写",citation:"引用资料",visual_reference:"导演色卡",method:"制作方法",project_method:"项目方法",step_requirements:"本步需求",reference_pack:"参考包",adaptation_source:"改编来源"} as Record<string,string>)[item.role] || item.role)}</summary>
           {item.storyVersion && <button className="btn" onClick={() => { setShow(false); go(`#/e/${ctx.eid}/story?v=${item.storyVersion.id}`); }}>打开故事原稿</button>}
           <small>输入文件 SHA-256 {item.sha256}</small>{!refs.data.run && <p className="muted small">来源稿的运行 · {item.sourceRuns?.join("、")}</p>}
           <VersionSourceText role={item.role} text={item.text}/></details>)}</>}
@@ -475,7 +483,7 @@ function ScriptView({ ctx }: { ctx: Ctx }) {
     if (tab === "diff" && current && adoptedId && current.id !== adoptedId) q("compare", { a_id: adoptedId, b_id: current.id }).then(setCmp);
     else setCmp(null);
   }, [tab, current?.id, adoptedId]);
-  if (!art) return <div className="empty">故事未通过独审并采用前，不能写剧本。</div>;
+  if (!art) return <div className="empty"><p>正式剧本会引用已采用的故事。</p><button className="btn" onClick={ctx.openTrial}>先试写本阶段</button></div>;
   const story = artifactFor(ctx.view, "story");
   if (!current) return <div><div className="stagehead"><h1>剧本</h1></div>
     <button className="btn primary" disabled={act.busy} onClick={()=>act.run(async()=>{await cmd("create_task",{episode_id:ctx.eid,stage:"script",goal:"按采用的故事写分场剧本"});ctx.reload();})}>按采用的故事起草剧本</button><ErrorLine error={act.error}/></div>;
@@ -580,7 +588,7 @@ function PlanView({ ctx }: { ctx: Ctx }) {
     }
     return () => { active = false; };
   }, [shot, current?.id, art?.adopted_version_id, ctx.eid]);
-  if (!art) return <div className="empty">剧本采用后才能设计镜头。</div>;
+  if (!art) return <div className="empty"><p>正式镜头表会引用已采用的剧本。</p><button className="btn" onClick={ctx.openTrial}>先试写本阶段</button></div>;
   if (!current) return <div><div className="stagehead"><h1>制作方案</h1></div>
     <button className="btn primary" disabled={act.busy} onClick={()=>act.run(async()=>{await cmd("create_task",{episode_id:ctx.eid,stage:"plan",goal:"按采用剧本设计镜头、接点和生成段"});ctx.reload();})}>按剧本设计镜头与生成段</button><ErrorLine error={act.error}/></div>;
   const shots = current.content.shots ?? [];
@@ -1156,7 +1164,7 @@ function PromptsView({ ctx }: { ctx: Ctx }) {
     });
     return () => cancelAnimationFrame(frame);
   }, [jump,seg,current?.id,txt]);
-  if (!art) return <div className="empty">制作方案采用后才能写分段提示词。</div>;
+  if (!art) return <div className="empty"><p>正式分段提示词会引用已采用的制作方案。</p><button className="btn" onClick={ctx.openTrial}>先试写本阶段</button></div>;
   const create = ctx.view.kickoff.executor_plan.create;
   const modelDraft = () => act.run(async () => {
     await cmd("create_task", {episode_id:ctx.eid, stage:"prompts", prompt_images:includeImages,
@@ -1334,7 +1342,7 @@ function PublishView({ ctx }: { ctx: Ctx }) {
   const composed = useQuery<any>(current ? "compose_publish" : null, { episode_id: ctx.eid, version_id: current?.id }, [current?.id]);
   const act = useAction();
   useEffect(() => { setForm(current?.content ?? { title: "", body: "", tags: [], extraFields: {}, cues: [] }); }, [current?.id]);
-  if (!art) return <div className="empty">提示词采用后编写发布包。</div>;
+  if (!art) return <div className="empty"><p>正式发布包会引用已采用的提示词。</p><button className="btn" onClick={ctx.openTrial}>先试写本阶段</button></div>;
   if (!form) return null;
   const copy = (t: string) => navigator.clipboard.writeText(t).catch(() => alert("复制失败，请手动选取原文"));
   const adoptedContent = (stage:string) => {

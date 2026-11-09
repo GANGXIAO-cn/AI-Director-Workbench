@@ -7,7 +7,7 @@ from .baselineview import block_by_key
 from .storage import sha256_bytes
 from .custommethods import edition
 from .db import connect, dumps, new_id, transaction
-from .errors import Conflict, Rejected, row
+from .errors import Conflict, NotFound, Rejected, row
 from .executors.base import ExecRequest
 from .prompts import prompt_from
 
@@ -15,13 +15,22 @@ REPLY_SCHEMA = {"type":"object", "properties":{"reply":{"type":"string"}}, "requ
 
 
 class FreeChatMixin:
-    def free_chat(self, project_id, thread_id=None):
+    def free_chat(self, project_id, thread_id=None, episode_id=None, stage=None):
         with connect(self.db_path) as db:
             row(db, "SELECT id FROM project WHERE id=?", project_id)
-            threads = [dict(r) for r in db.execute("SELECT id,title FROM free_thread WHERE project_id=? ORDER BY rowid DESC",(project_id,))]
+            if episode_id is not None:
+                self._episode_in(db, episode_id, project_id)
+                threads = [dict(r) for r in db.execute("SELECT f.id,f.title FROM free_thread f JOIN episode_stage_thread s "
+                           "ON s.thread_id=f.id WHERE f.project_id=? AND s.episode_id=? AND s.stage=?", (project_id,episode_id,stage))]
+                if threads and thread_id is None:
+                    thread_id = threads[0]["id"]
+            else:
+                threads = [dict(r) for r in db.execute("SELECT f.id,f.title FROM free_thread f WHERE project_id=? "
+                           "AND NOT EXISTS(SELECT 1 FROM episode_stage_thread s WHERE s.thread_id=f.id) ORDER BY f.rowid DESC",(project_id,))]
+            if thread_id and not any(t["id"] == thread_id for t in threads):
+                raise NotFound("当前工作区找不到这段对话")
             turns = []
             if thread_id:
-                row(db, "SELECT id FROM free_thread WHERE id=? AND project_id=?",thread_id,project_id)
                 turns = [dict(r) for r in db.execute("SELECT id,text,reply,status,reason,provider,input_hash,attempt,manifest_relpath "
                                                      "FROM free_turn WHERE thread_id=? ORDER BY rowid",(thread_id,))]
                 for t in turns:
@@ -29,6 +38,8 @@ class FreeChatMixin:
                     if digest != t["input_hash"]:
                         raise Rejected("自由对话输入清单指纹不符")
                     t["methods"] = manifest["methodVersions"]
+                    if episode_id:
+                        t["basis"] = manifest["stageBasis"]
                     t["sources"] = [i for i in manifest["inputs"] if i["role"] in {"project_method","image","canvas","baseline"}]
             return dict(threads=threads, turns=turns)
 
@@ -42,7 +53,7 @@ class FreeChatMixin:
         return dict(assets=assets,canvases=canvases,providers=list(self.executors))
 
     def send_free_chat(self, project_id, text, provider, thread_id=None, previous=None, methods=(), images=(),
-                       canvas=None, canvas_revision=None, command_id=None, baseline=None):
+                       canvas=None, canvas_revision=None, command_id=None, baseline=None, episode_id=None, stage=None, source_version=None):
         if not isinstance(text,str) or not text.strip():
             raise Rejected("请输入对话内容")
         if not isinstance(provider,str) or provider not in self.executors:
@@ -54,22 +65,43 @@ class FreeChatMixin:
             raise Rejected("最多可附六张原图，请选择支持图片的执行器")
         payload = dict(project=project_id,thread=thread_id,previous=previous,text=text,methods=methods,images=images,
                        canvas=canvas,canvasRevision=canvas_revision,provider=provider)
+        if episode_id is not None or stage is not None or source_version is not None:
+            if not episode_id or stage not in ("story","script","plan","prompts","publish"):
+                raise Rejected("请选择本集的写作阶段")
+            payload.update(episodeId=episode_id, stage=stage, sourceVersion=source_version)
         if baseline is not None:
             payload["baseline"] = baseline
         with transaction(self.db_path) as db:
             def create():
                 row(db,"SELECT id FROM project WHERE id=?",project_id)
                 tid = thread_id or new_id()
+                stage_header = {}
+                stage_entries = []
+                if episode_id is not None:
+                    self._episode_in(db, episode_id, project_id)
+                    existing = db.execute("SELECT thread_id FROM episode_stage_thread WHERE episode_id=? AND stage=?",
+                                          (episode_id,stage)).fetchone()
+                    if (existing[0] if existing else None) != thread_id:
+                        raise Conflict("本阶段的对话已变化，请刷新")
+                    stage_header, stage_entries = self._stage_chat_inputs(db, episode_id, stage, source_version, tid)
+                    if provider != stage_header["creator"]["provider"]:
+                        raise Conflict("本集执行器已变化，请刷新")
+                    if any("data" in e for e in stage_entries) and not self.executors[provider].reads_images:
+                        raise Rejected("本次参考图需要支持图片的执行器")
+                elif thread_id and db.execute("SELECT 1 FROM episode_stage_thread WHERE thread_id=?", (tid,)).fetchone():
+                    raise Rejected("请在对应单集阶段继续这段对话")
                 if thread_id:
                     row(db,"SELECT id FROM free_thread WHERE project_id=? AND id=?",project_id,tid)
                 else:
                     db.execute("INSERT INTO free_thread VALUES(?,?,?)",(tid,project_id,text.strip()[:48]))
-                history = list(db.execute("SELECT id,status,text,reply FROM free_turn WHERE thread_id=? ORDER BY rowid",(tid,)))
+                    if episode_id:
+                        db.execute("INSERT INTO episode_stage_thread VALUES(?,?,?)", (tid,episode_id,stage))
+                history = list(db.execute("SELECT id,status,text,reply,manifest_relpath,input_hash FROM free_turn WHERE thread_id=? ORDER BY rowid",(tid,)))
                 if previous != (history[-1]["id"] if history else None):
                     raise Conflict("对话已有新内容，请刷新后发送")
                 if history and history[-1]["status"] in {"queued","running"}:
                     raise Conflict("请等待上一条回复，或先停止该次请求")
-                entries = []
+                entries = stage_entries
                 if baseline is not None:
                     if not isinstance(baseline,dict) or set(baseline) != {"kind","key","sha256","revision"}:
                         raise Rejected("基准引用缺少固定块或版本")
@@ -97,11 +129,16 @@ class FreeChatMixin:
                     entries.append(dict(role="image",name=f"{v['name']} · R{v['version_no']}",data=self.store.read_blob(v["sha256"])))
                 for h in history:
                     if h["status"]=="succeeded":
+                        if episode_id:
+                            prior, prior_hash = self.store.load_manifest(h["manifest_relpath"])
+                            if prior_hash != h["input_hash"]:
+                                raise Rejected("先前试写的输入清单指纹不符")
+                            entries.append(dict(role="trial_basis", name="此前回复的依据", text=dumps(prior["stageBasis"])))
                         entries.extend([dict(role="user",name="此前提问",text=h["text"]),dict(role="assistant",name="此前回复",text=h["reply"])])
                 entries.append(dict(role="request",name="本条消息",text=text))
                 turn, attempt = new_id(), new_id()
                 header = dict(projectId=project_id,threadId=tid,purpose="free_chat",provider=provider,methodVersions=list(methods),
-                              assetVersions=list(images),canvasEpisode=canvas,canvasRevision=canvas_revision)
+                              assetVersions=list(images),canvasEpisode=canvas,canvasRevision=canvas_revision, **stage_header)
                 digest, rel = self.store.freeze(turn,header,entries)
                 db.execute("INSERT INTO free_turn(id,thread_id,text,provider,status,attempt,input_hash,manifest_relpath) "
                            "VALUES(?,?,?,?,'queued',?,?,?)",(turn,tid,text,provider,attempt,digest,rel))
@@ -158,6 +195,7 @@ class FreeChatMixin:
                     images.append(path)
             prompt = prompt_from(entries,"根据本次选用的创作方法和资料，直接回答本条消息。将答复放入 reply 字段。","free_chat")
             request = ExecRequest(attempt,"free_chat","free_chat",prompt,REPLY_SCHEMA,"new",work,
+                                  model=manifest.get("creator",{}).get("model"), effort=manifest.get("creator",{}).get("effort"),
                                   timeout=int(self.get_setting("executor_timeout",600)),images=images)
             out = self.executors[t["provider"]].start(request)
             if out.ok:

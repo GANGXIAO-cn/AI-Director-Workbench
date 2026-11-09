@@ -56,6 +56,11 @@ CREATE TABLE IF NOT EXISTS kickoff(
 CREATE TABLE IF NOT EXISTS kickoff_preset(
   episode_id TEXT PRIMARY KEY REFERENCES episode(id), name TEXT NOT NULL, rev INTEGER NOT NULL, base_values TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS kickoff_method(episode_id TEXT PRIMARY KEY REFERENCES episode(id), method_pack TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS episode_cooperation(
+ episode_id TEXT PRIMARY KEY REFERENCES episode(id), mode TEXT NOT NULL CHECK(mode IN ('beginner','advanced','expert')));
+CREATE TABLE IF NOT EXISTS optional_stage_choice(
+ episode_id TEXT NOT NULL REFERENCES episode(id), stage TEXT NOT NULL CHECK(stage IN ('space','cast')),
+ reason TEXT NOT NULL, PRIMARY KEY(episode_id,stage));
 CREATE TABLE IF NOT EXISTS episode_story_skill(
   episode_id TEXT PRIMARY KEY REFERENCES episode(id), skill_commit TEXT NOT NULL, snapshot TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS episode_source(episode_id TEXT NOT NULL REFERENCES episode(id), kind TEXT NOT NULL, relpath TEXT NOT NULL, sha256 TEXT NOT NULL, PRIMARY KEY(episode_id,kind));
@@ -314,6 +319,9 @@ CREATE TABLE IF NOT EXISTS expert_batch(
   batch_id TEXT PRIMARY KEY REFERENCES image_batch(id), auth_id TEXT NOT NULL REFERENCES expert_auth(id));
 CREATE TABLE IF NOT EXISTS free_thread(
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES project(id), title TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS episode_stage_thread(
+ thread_id TEXT PRIMARY KEY REFERENCES free_thread(id), episode_id TEXT NOT NULL REFERENCES episode(id),
+ stage TEXT NOT NULL, UNIQUE(episode_id,stage));
 CREATE TABLE IF NOT EXISTS free_turn(
   id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES free_thread(id), text TEXT NOT NULL, reply TEXT,
   provider TEXT NOT NULL, status TEXT NOT NULL, reason TEXT, attempt TEXT NOT NULL, input_hash TEXT NOT NULL,
