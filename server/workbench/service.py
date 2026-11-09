@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import time
 
-from . import contracts, prompts, acting, shotrefs
+from . import contracts, prompts, acting, shotrefs, imagechoices
 from .db import dumps, initialize, new_id, transaction, connect
 from .executors.base import ExecRequest
 from .executors.cli import redact
@@ -1395,14 +1395,21 @@ class Core:
         statuses = self.prompt_review_status(adopted_id) if adopted_id else {}
         prompt = next((v["content"] for v in prompt_art.get("versions",[]) if v["id"]==adopted_id), {})
         entries = prompt.get("segments",{})
-        used = {ref.get("assetVersionId") for entry in entries.values() for ref in entry.get("refs",[])}
-        required = {a["id"] for a in self.episode_assets(episode_id) if "required" in a["marks"]}
+        assets = {asset["id"]: asset for asset in self.episode_assets(episode_id)}
+        required = [a["requirement"] for a in assets.values() if "requirement" in a]
+        used = {}
+        for segment_id, entry in entries.items():
+            for ref in entry.get("refs", []):
+                asset = assets.get(ref.get("assetVersionId"))
+                if asset and asset["kind"] == "image":
+                    used.setdefault(asset["sha256"], set()).add(segment_id)
         plan_art=next((a for a in view["artifacts"] if a["stage"]=="plan"),{})
-        adopted_plan=next((v["content"] for v in plan_art.get("versions",[]) if v["id"]==plan_art.get("adopted_version_id")),{})
+        adopted_plan=next((v["content"] for v in plan_art.get("versions",[]) if v["id"]==plan_art.get("adopted_version_id")), {})
         expected={s["id"] for s in adopted_plan.get("segments",[])}
+        missing_images = imagechoices.check_scope(required, adopted_plan, "full", expected, used)[1] if expected else []
         complete=bool(expected) and expected==set(statuses)
         view["productionStatus"] = dict(space=bool(spaces) and all(s=="confirmed" for s in spaces),
-                                        cast=cast_done, assets=complete and all(entries.get(s,{}).get("refs") for s in statuses) and required <= used,
+                                        cast=cast_done, assets=complete and all(entries.get(s,{}).get("refs") for s in statuses) and not missing_images,
                                         review=complete and all(s["ok"] for s in statuses.values()), package=bool(packaged))
         return view
 

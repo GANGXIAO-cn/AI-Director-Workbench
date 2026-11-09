@@ -1,3 +1,5 @@
+import { Wrench } from "lucide-react";
+import { isKickoffTopic } from "./topics";
 import { ProjectPresets } from "./ProjectPresets";
 import { useProjectRoute } from "./projectNavigation";
 import {specLabels,specChoices} from "./specs";
@@ -40,9 +42,9 @@ export default function Project({ id }: { id: string }) {
   return (
     <div>
       <div className="spread" style={{ padding: "12px 24px" }}>
-        <b>{project.name}</b>
+        <a href="#/projects">全部项目</a>
         <div className="row">
-          <a className="chip" href="#/sys/executors">⚒ 技能与分工</a>
+          <a className="chip" href="#/sys/executors"><Wrench size={14} aria-hidden="true"/> 技能与分工</a>
           <a className="chip" href={`#/p/${id}/preset`}>规格预设</a>
           <span className="chip"><span className="dot" />Claude Code</span><span className="chip"><span className="dot" />Codex</span>
         </div>
@@ -191,7 +193,7 @@ export function Kickoff({ projectId, prefill, onClose }: { projectId: string; pr
         <Pills value={source} onChange={setSource} options={[["idea", "新想法"], ["topic", "选题池"], ["import", "导入故事稿 / 剧本"]]} />
         {source === "idea" && <textarea value={idea} onChange={(e) => setIdea(e.target.value)} placeholder="一句话想法" />}
         {source === "topic" && <select value={topicId} onChange={(e) => setTopicId(e.target.value)}><option value="">选择选题卡</option>
-          {(topics.data ?? []).filter((t) => t.status === "候选" && !t.episode_id).map((t) => <option key={t.id} value={t.id}>{t.code} · {t.premise}</option>)}</select>}
+          {(topics.data ?? []).filter(isKickoffTopic).map((t) => <option key={t.id} value={t.id}>{t.code} · {t.premise}</option>)}</select>}
         {source === "import" && (p.imports.length ? <select value={importId} onChange={(e) => setImportId(e.target.value)}>
           {p.imports.map((i: any) => <option key={i.id} value={i.id} disabled={i.parse_status !== "parsed"}>{i.original_name}{i.parse_status !== "parsed" ? "（解析失败）" : ""}（{i.purpose === "script_source" ? "剧本" : "故事稿"}，作为故事来源）</option>)}</select>
           : <span className="muted small">本集没有导入材料。可在首页「导入故事稿 / 剧本」归位后再开工。</span>)}

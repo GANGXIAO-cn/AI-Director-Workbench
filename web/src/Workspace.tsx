@@ -127,7 +127,7 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
             {!canvasMode && stage!=="package" && <button className="btn narrow-chat" onClick={()=>setFocusChat(true)}>专注对话</button>}
             {["assets","prompts"].includes(stage) && <button className="btn" onClick={() => setShowPalettes(true)}>本集色卡</button>}
             {stage !== "package" && <button className="btn" onClick={() => setShowMethod(true)}>制作方法</button>}
-            {["story","script","plan","prompts","publish"].includes(stage) && <button className="btn" onClick={()=>setRequirements(true)}>本步需求与参考</button>}
+            {["story","script","plan","prompts","publish","assets","space","cast"].includes(stage) && <button className="btn" onClick={()=>setRequirements(true)}>{["space","cast","assets"].includes(stage)?"本集出图增强方法":"本步需求与参考"}</button>}
             <span className="title">{v.episode.display_code} · {v.episode.title || "未命名"}</span>
             <span className="muted small">{frameOrientation(v.kickoff.spec.aspectRatio)}</span>
             <span style={{ marginLeft: "auto" }} className="chip">◐ {v.kickoff.relation === "continue" ? "承接前集" : "独立成集"}</span>
@@ -137,11 +137,11 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
           {stage==="package"?<PackageView ctx={ctx} panel={packagePanel}/>:<StageView stage={stage} ctx={ctx} />}
         </div>
         {stage==="package" && <aside className="assistant package-aside" aria-label="出包设置" ref={setPackagePanel}/>}
-        {!canvasMode && stage!=="package" && <Assistant key={id + ":" + stage} composeRef={composeRef} view={v} stage={stage} sel={sel} setSel={setSel} reload={reload} focus={focus} batches={ctx.batches} onOpenBatch={setBatch} />}
+        {!canvasMode && stage!=="package" && <Assistant key={id + ":" + stage} composeRef={composeRef} openRequirements={()=>setRequirements(true)} view={v} stage={stage} sel={sel} setSel={setSel} reload={reload} focus={focus} batches={ctx.batches} onOpenBatch={setBatch} />}
       </div>
       {showPalettes && <EpisodePaletteSettings key={stage} eid={id} stage={stage} close={() => setShowPalettes(false)}/>}
       {showMethod && <StageMethods key={id+stage} pid={v.episode.project_id} eid={id} stage={stage} close={() => setShowMethod(false)} />}
-      {requirements && <StepRequirements key={stage} pid={v.episode.project_id} eid={id} stage={stage} close={()=>setRequirements(false)} toComposer={text=>{composeRef.current?.(text); if (window.matchMedia("(max-width: 1120px)").matches) setFocusChat(true);}}/>}
+      {requirements && <StepRequirements key={stage} pid={v.episode.project_id} eid={id} stage={["space","cast"].includes(stage)?"assets":stage} close={()=>setRequirements(false)} toComposer={text=>{composeRef.current?.(text); if (window.matchMedia("(max-width: 1120px)").matches) setFocusChat(true);}}/>}
       {batch && <BatchModal batch={batch} assets={ctx.assets} close={() => { setBatch(null); reload(); }} />}
     </div>
   );
@@ -741,7 +741,7 @@ function CastView({ ctx }: { ctx: Ctx }) {
         })}>保存本集身份基准</button></div></div>}
       <table className="table"><thead><tr><th>段</th><th>策略</th>{roles.map((r) => <th key={r}>{r}</th>)}</tr></thead>
         <tbody>{m.data.rows.map((row: any) => (
-          <tr key={row.segment}><td><b>{row.segment}</b></td><td>{row.strategy}</td>
+          <tr key={row.segment}><td><b>{row.segment}</b></td><td>{row.strategy==="grid"?"九宫格":"自由参考"}</td>
             {roles.map((r) => { const c = row.cells[r];
               const selected=ctx.assets.find(a=>a.id===(chosen[row.segment+"|"+r] ?? c?.assetVersionId));
               const observationKey=row.segment+"|"+r+"|"+(selected?.id || "");
@@ -892,7 +892,7 @@ function NeedsTable({ ctx }: { ctx: Ctx }) {
   const refs=adoptedReferences(ctx);
   return <><table className="table"><thead><tr><th>段</th><th>策略</th><th>镜号</th><th>素材用途</th><th>缺口</th></tr></thead>
     <tbody>{lay.segments.map((s: any) => { const used=refs[s.id]?.refs ?? [];const has=used.length>0 && used.every(r=>ctx.assets.some(a=>a.id===r.assetVersionId));
-      return <tr key={s.id}><td>{s.id}</td><td>{s.strategy}</td><td>{s.shots.join("、")}</td><td>{s.strategy === "grid" ? "本段九宫格" : "角色 / 场景 / 道具参考"}</td><td>{has ? <Tag tone="green">已引用 {used.length} 份</Tag> : <Tag tone="amber">待绑定参考</Tag>}</td></tr>; })}</tbody></table>
+      return <tr key={s.id}><td>{s.id}</td><td>{s.strategy==="grid"?"九宫格":"自由参考"}</td><td>{s.shots.join("、")}</td><td>{s.strategy === "grid" ? "本段九宫格" : "角色 / 场景 / 道具参考"}</td><td>{has ? <Tag tone="green">已引用 {used.length} 份</Tag> : <Tag tone="amber">待绑定参考</Tag>}</td></tr>; })}</tbody></table>
     {lay.segments.some((s:any)=>s.strategy==="grid") && <GridMethods eid={ctx.eid}/>}</>;
 }
 
@@ -1512,10 +1512,11 @@ function charDiff(a0: string, b0: string): { op: string; text: string }[] {
 function ShotEditor({ ctx, art, version, shotId, onSaved }: any) {
   const bms = useQuery<any[]>("episode_bookmarks", { episode_id: ctx.eid });
   const shots = version.content.shots;
+  const [confirmDelete,setConfirmDelete] = useState(false);
   const orig = shots.find((x: any) => x.id === shotId);
   const [sh, setSh] = useState<any>(orig);
   const act = useAction();
-  useEffect(() => setSh(orig), [shotId, version.id]);
+  useEffect(() => { setSh(orig); setConfirmDelete(false); }, [shotId, version.id]);
   if (!sh) return null;
   const save = (content: any, note: string) => act.run(async () => { const r = await cmd("save_manual", { artifact_id: art.id, base_version_id: version.id, content, note }); await ctx.reload(); onSaved(r.versionId); });
   const ref = sh.refs?.[0];
@@ -1566,7 +1567,10 @@ function ShotEditor({ ctx, art, version, shotId, onSaved }: any) {
         }}>保存为新草稿</button>
         <button className="btn" onClick={() => { const n = Math.max(...shots.map((x: any) => x.order)) + 1; const id = `K${String(n).padStart(2, "0")}`;
           save({ ...version.content, shots: [...shots, { ...sh, id, order: n, action: "新镜头", refs: [] }] }, `新增 ${id}`); }}>在本段新增镜头</button>
-        <button className="btn danger" onClick={() => save({ ...version.content, shots: shots.filter((x: any) => x.id !== sh.id) }, `删除 ${sh.id}`)}>删除镜头</button>
+        <button className="btn danger" onClick={()=>setConfirmDelete(true)}>删除镜头</button>
+        {confirmDelete && <Modal onClose={()=>setConfirmDelete(false)}><h2>从新草稿删除镜头 {sh.id}？</h2>
+          <button className="btn" autoFocus onClick={()=>setConfirmDelete(false)}>取消</button>
+          <button className="btn danger" disabled={act.busy} onClick={()=>{setConfirmDelete(false);save({...version.content,shots:shots.filter((x:any)=>x.id!==sh.id)},`删除 ${sh.id}`);}}>确认删除镜头</button></Modal>}
       </div>
       <ErrorLine error={act.error} />
     </div>

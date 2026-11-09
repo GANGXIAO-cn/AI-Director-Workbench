@@ -7,6 +7,20 @@ from helpers import Env
 from workbench.errors import Conflict, Rejected
 
 
+def test_material_status_checks_required_image_in_the_requested_segment(tmp_path):
+    env = Env(tmp_path)
+    wb = env.wb
+    case = env.full_episode(segments={"G01": [8000], "G02": [8000]}, deliver=False)
+    eid = case["eid"]
+    first = case["img"]["versionId"]
+    second = env.image(case["pid"], eid, name="第二段场景", rgb=(70, 80, 90))["versionId"]
+    prompts = env.prompts_for(case["plan"], {"G01": first, "G02": second})
+    env.save_adopt(eid, "prompts", prompts, "different-images")
+    for target, complete in [("G02", False), ("G01", True)]:
+        wb.mark_image(eid, first, "required", requirement=dict(reason="保留身份图", targetSegments=[target]))
+        assert wb.episode_view(eid)["productionStatus"]["assets"] is complete
+
+
 def test_episode_images_are_owned_by_the_upload_and_adoption_project(tmp_path):
     env = Env(tmp_path)
     wb = env.wb

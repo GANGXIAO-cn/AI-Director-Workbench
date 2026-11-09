@@ -197,7 +197,7 @@ export function ResourceBrowser({kind,episodeId,stage,projectId="",onChoose,meth
   </section>;
 }
 
-type Step = {route:string;goal:string;keep:string;format_note:string;mode:string;references:Excerpt[];revision?:number};
+type Step = {route:string;goal:string;keep:string;format_note:string;mode:string;references:Excerpt[];enhancements?:string[];revision?:number};
 const empty:Step={route:"短片",goal:"",keep:"",format_note:"",mode:"off",references:[]};
 const stageFields:Record<string,[string,string,string]>={
   story:["本步创作目标","作品形态、题材与目标时长","必须保留的内容与结局方向"],
@@ -225,6 +225,23 @@ export function VersionSourceText({role,text}:{role:string;text:string}) {
   }
   return <div className="field">{text}</div>;
 }
+type Enhancement = {id:string; title:string; where:string; when:string; stages:string[]};
+
+function EnhancementOptions({stage,selected,change}:{stage:string;selected:string[];change:(ids:string[])=>void}) {
+  const catalog = useQuery<Enhancement[]>("enhancement_catalog");
+  const [all,setAll] = useState(false);
+  const methods = catalog.data ?? [];
+  const visible = methods.filter(m=>all || selected.includes(m.id) || m.stages.includes(stage));
+  return <fieldset><legend>增强方法 · 已选 {selected.length} 项</legend>
+    <label><input type="checkbox" checked={all} onChange={e=>setAll(e.target.checked)}/>显示全部阶段的方法</label>
+    {catalog.error && <p className="error">{catalog.error}</p>}
+    {visible.map(m=><label key={m.id} className="row">
+      <input type="checkbox" checked={selected.includes(m.id)} onChange={e=>change(e.target.checked?[...selected,m.id]:selected.filter(id=>id!==m.id))}/>
+      <span>{m.id} · {m.title}<small className="muted" style={{display:"block"}}>{m.where} · {m.when}</small></span>
+    </label>)}
+    {catalog.data && !visible.length && <p>本阶段可以从全部方法中手动选择。</p>}
+  </fieldset>;
+}
 export function StepRequirements({pid,eid,stage,close,toComposer}:{pid:string;eid:string;stage:string;close:()=>void;toComposer:(text:string)=>void}) {
   const saved=useQuery<Partial<Step>>("step_config",{episode_id:eid,stage});
   const [draft,setDraft]=useState<Step|null>(null),[browse,setBrowse]=useState(false);
@@ -244,6 +261,8 @@ export function StepRequirements({pid,eid,stage,close,toComposer}:{pid:string;ei
     close();
   }
   return <Modal width={950} onClose={close}><h2>本步需求</h2><div className="col">
+    {saved.data && <EnhancementOptions stage={stage} selected={form.enhancements ?? []} change={enhancements=>change({enhancements})}/>}
+    {stage==="assets" ? <p className="muted small">保存后用于本集下一批图像。已建立的批次沿用各自确认的输入。</p> : <>
     <ProjectLibrary pid={pid} eid={eid} stage={stage}/>
     <label>创作路线 <select value={form.route} onChange={e=>change({route:e.target.value})}>{["短片","电影节 / 作者表达","流媒体 / 类型剧","自由自定","快速出片"].map(r=><option key={r}>{r}</option>)}</select></label>
     {(["goal","format_note","keep"] as const).map((k,i)=><label key={k}>{stageFields[stage][i]}<textarea value={form[k]} onChange={e=>change({[k]:e.target.value})}/></label>)}
@@ -253,11 +272,13 @@ export function StepRequirements({pid,eid,stage,close,toComposer}:{pid:string;ei
       {browse && <ResourceBrowser key={form.mode} kind="knowledge" recommended episodeId={eid} stage={stage} methodOnly={form.mode==="method"} initialQuery={form.goal} onChoose={r=>{change({references:[...form.references.filter(x=>x.path!==r.path||x.offset!==r.offset),r]});setBrowse(false);}}/>}
       {form.references.map((r,i)=><div key={r.path+r.offset}><SavedExcerpt record={r}/>
         <div className="row"><label>借鉴方式 <input value={r.reason??""} onChange={e=>change({references:form.references.map((entry,j)=>j===i?{...entry,reason:e.target.value}:entry)})}/></label><button className="btn" onClick={()=>change({references:form.references.filter((_,j)=>i!==j)})}>移除</button></div></div>)}</>}
+    </>}
     <ErrorLine error={act.error}/>{saved.error&&<span className="error">{saved.error}</span>}
     <div className="row"><button className="btn" disabled={!saved.data||act.busy} onClick={()=>act.run(()=>save(false))}>保存本步配置</button>
-      <button className="btn primary" disabled={!saved.data||act.busy} onClick={()=>act.run(()=>save(true))}>保存并带到创作对话</button><button className="btn" onClick={()=>setShowHistory(!showHistory)}>配置历史</button><button className="btn" onClick={close}>关闭</button></div>
+      {stage!=="assets" && <button className="btn primary" disabled={!saved.data||act.busy} onClick={()=>act.run(()=>save(true))}>保存并带到创作对话</button>}<button className="btn" onClick={()=>setShowHistory(!showHistory)}>配置历史</button><button className="btn" onClick={close}>关闭</button></div>
     {showHistory&&<div>{history.error&&<p className="error">{history.error}</p>}{history.data?.length===0&&<p>本步还没有配置版本。</p>}
       {history.data?.map(h=><details key={h.revision}><summary>第 {h.revision} 版 · {h.goal||h.route}</summary><p>{[h.format_note,h.keep].filter(Boolean).join(" · ")}</p>
+        {h.enhancements?.length ? <p>已选增强方法 · {h.enhancements.join("、")}</p> : null}
         {h.references.map(r=><div key={r.path+r.offset}><SavedExcerpt record={r}/><p>{r.reason}</p></div>)}
         {h.revision!==saved.data?.revision&&<button className="btn" disabled={act.busy} onClick={()=>act.run(async()=>{
           await cmd("restore_step_revision",{episode_id:eid,stage,revision:h.revision,expected_revision:saved.data?.revision ?? 0});

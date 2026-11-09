@@ -515,6 +515,10 @@ class ProductionMixin:
             extra.append(dict(role="citation", name=ref["title"], text=dumps(ref)))
         config = self.step_config(episode_id, stage)
         if config:
+            from .enhancements import entries, SCOPE
+            if config.get("enhancements"):
+                extra.append(dict(role="stage_contract", name="增强方法适用范围", text=SCOPE))
+                extra.extend(entries(config["enhancements"]))
             extra.append(dict(role="step_requirements", name="本步需求", text=dumps({k:v for k,v in config.items() if k != "references"})))
             for ref in config["references"]:
                 extra.append(dict(role="citation", name=ref["title"], text=dumps({k:v for k,v in ref.items() if k != "metadata"})))

@@ -429,6 +429,13 @@ class ImagesMixin:
                 spec["palettes"] = [stage_card(card, "assets") for card in palettes]
                 reference = "\n".join(card["visual"] + "\n" + card["image"] for card in palettes)
                 spec["items"] = [dict(item, prompt=item["prompt"] + "\n" + SCOPE + "\n" + reference) for item in items]
+            from .enhancements import entries as method_entries
+            methods = method_entries(self.step_config(episode_id, "assets").get("enhancements", []))
+            if methods:
+                spec["enhancements"] = [entry["methodSource"] for entry in methods]
+                guidance = "\n".join(entry["name"] + "\n" + entry["text"] for entry in methods)
+                spec["items"] = [dict(item, prompt=item["prompt"] + "\n本次选用的美术参考方法，服从本项目设定和当前画面要求。\n" + guidance)
+                                 for item in spec["items"]]
             input_hash = sha256_bytes(canonical(dict(spec, operation=operation, size=size)))
             spec["currency"] = prov.currency
             estimate = prov.price_cents * len(items) if prov.price_cents is not None else None

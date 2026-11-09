@@ -1,0 +1,960 @@
+{
+  "methods": [
+    {
+      "id": "00-A",
+      "title": "观众离人物多近",
+      "where": "制作方案 · 分镜",
+      "when": "用景别安排观众何时看清表情、动作或环境。",
+      "stages": [
+        "plan"
+      ],
+      "files": [
+        "film-expert-bridge/references/modules/shot_grammar.md",
+        "film-expert-bridge/references/library/general/景别速查库.md"
+      ]
+    },
+    {
+      "id": "00-B",
+      "title": "摄影机为什么要动",
+      "where": "制作方案 · 分镜",
+      "when": "镜头需要移动时，交代跟谁、为何移动。",
+      "stages": [
+        "plan"
+      ],
+      "files": [
+        "film-expert-bridge/references/modules/shot_grammar.md",
+        "film-expert-bridge/references/library/general/基础运镜库.md"
+      ]
+    },
+    {
+      "id": "00-C",
+      "title": "人物在画面里怎么站",
+      "where": "制作方案 · 分镜",
+      "when": "排多人同框位置、前后景及视线。",
+      "stages": [
+        "plan"
+      ],
+      "files": [
+        "film-expert-bridge/references/modules/shot_grammar.md",
+        "film-expert-bridge/references/library/general/构图速查库.md"
+      ]
+    },
+    {
+      "id": "00-D",
+      "title": "光从哪里来",
+      "where": "空间锁定 → 素材与选图",
+      "when": "确定主光方向，核对换角度后的明暗关系。",
+      "stages": [
+        "assets"
+      ],
+      "files": [
+        "film-expert-bridge/references/modules/shot_grammar.md",
+        "film-expert-bridge/references/library/general/布光速查库.md"
+      ]
+    },
+    {
+      "id": "00-E",
+      "title": "什么时候切镜",
+      "where": "制作方案 · 分镜",
+      "when": "用动作、遮挡或声音确定切往下一镜的时机。",
+      "stages": [
+        "plan"
+      ],
+      "files": [
+        "film-expert-bridge/references/modules/shot_grammar.md",
+        "film-expert-bridge/references/library/general/转场库.md"
+      ]
+    },
+    {
+      "id": "00-F",
+      "title": "特殊角度看世界",
+      "where": "制作方案 · 分镜",
+      "when": "选择主观、俯仰或贴地等非常规视角。",
+      "stages": [
+        "plan"
+      ],
+      "files": [
+        "film-expert-bridge/references/modules/shot_grammar.md",
+        "film-expert-bridge/references/library/general/运镜组合与特殊实例库.md"
+      ]
+    },
+    {
+      "id": "00-G",
+      "title": "复杂镜头怎么走",
+      "where": "制作方案 → 提示词",
+      "when": "把复合运镜写成起点、跟随对象、路径、落点。",
+      "stages": [
+        "plan",
+        "prompts"
+      ],
+      "files": [
+        "film-expert-bridge/references/modules/shot_grammar.md",
+        "film-expert-bridge/references/library/general/运镜组合与特殊实例库.md"
+      ]
+    },
+    {
+      "id": "01-A",
+      "title": "作者审美锚点与案例",
+      "where": "故事稿 · 本步需求",
+      "when": "记录本项目作者的偏好与禁忌，具体案例仅作参考。",
+      "stages": [
+        "story"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/作者审美锚点-念气无双.md"
+      ]
+    },
+    {
+      "id": "01-B",
+      "title": "找适合的导演语言",
+      "where": "故事稿 → 导演色卡",
+      "when": "按故事气质选择视觉方向，供后续美术引用。",
+      "stages": [
+        "story",
+        "assets"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/导演风格匹配库.md"
+      ]
+    },
+    {
+      "id": "01-C",
+      "title": "跨题材场景灵感",
+      "where": "故事稿 → 剧本",
+      "when": "跨类型故事需要具体场景时，选择两种类型元素怎样同场出现。",
+      "stages": [
+        "story",
+        "script"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/跨题材场景模板库.md"
+      ]
+    },
+    {
+      "id": "01-D",
+      "title": "导演视觉方向速查",
+      "where": "导演色卡 → 制作方案",
+      "when": "比较光色、构图与镜头倾向，确定本集视觉方向。",
+      "stages": [
+        "plan",
+        "assets"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/导演视觉倾向速查.md"
+      ]
+    },
+    {
+      "id": "01-E",
+      "title": "都市短剧场景参考",
+      "where": "剧本 · 分场",
+      "when": "都市短剧需要地点和生活动作时查场景参考。",
+      "stages": [
+        "script"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/都市真人短剧场景库.md"
+      ]
+    },
+    {
+      "id": "02-A",
+      "title": "古代宫廷人物",
+      "where": "故事稿角色交接 → 角色出镜",
+      "when": "宫廷题材按身份、礼制辨别人设与服装。",
+      "stages": [
+        "story",
+        "assets"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/古风宫廷九角色设定库.md"
+      ]
+    },
+    {
+      "id": "02-B",
+      "title": "古代市井职业",
+      "where": "故事稿角色交接 → 角色出镜",
+      "when": "市井职业用工具、动作和生活痕迹区分人物。",
+      "stages": [
+        "story",
+        "assets"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/古风市井职业设定库.md"
+      ]
+    },
+    {
+      "id": "02-C",
+      "title": "古风男性造型",
+      "where": "角色出镜 → 素材与选图",
+      "when": "古风男性角色确定发冠、衣装、轮廓和身份图。",
+      "stages": [
+        "assets"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/古风男性角色设定库.md"
+      ]
+    },
+    {
+      "id": "02-D",
+      "title": "现代男性造型",
+      "where": "角色出镜 → 素材与选图",
+      "when": "现代男性角色用职业、年龄、体态确定造型。",
+      "stages": [
+        "assets"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/现代男性角色设定库.md"
+      ]
+    },
+    {
+      "id": "02-E",
+      "title": "都市人物造型与穿搭",
+      "where": "角色出镜 → 素材与选图",
+      "when": "都市群像需要通过外观与穿搭辨认人物。",
+      "stages": [
+        "assets"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/现代都市人物造型设定库.md"
+      ]
+    },
+    {
+      "id": "02-F",
+      "title": "女性造型区分",
+      "where": "角色出镜 → 素材与选图",
+      "when": "用明确造型特征区分女性角色并挑选身份图。",
+      "stages": [
+        "assets"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/女性造型提示词库.md"
+      ]
+    },
+    {
+      "id": "02-G",
+      "title": "战斗身份",
+      "where": "剧本 → 角色出镜",
+      "when": "有战斗戏时先定武器、训练和角色身体限制。",
+      "stages": [
+        "script",
+        "assets"
+      ],
+      "files": [
+        "film-expert-bridge/references/modules/character-combat-identity.md"
+      ]
+    },
+    {
+      "id": "03-A",
+      "title": "古风环境体系",
+      "where": "剧本 → 空间锁定",
+      "when": "古风场景规划建筑、陈设及通行路线。",
+      "stages": [
+        "script",
+        "assets"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/古风场景提示词库.md"
+      ]
+    },
+    {
+      "id": "03-B",
+      "title": "都市环境体系",
+      "where": "剧本 → 空间锁定",
+      "when": "都市地点要符合职业、生活条件和场次用途。",
+      "stages": [
+        "script",
+        "assets"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/都市真人短剧场景库.md"
+      ]
+    },
+    {
+      "id": "03-C",
+      "title": "混合题材场景参考",
+      "where": "剧本 → 空间锁定",
+      "when": "把混合题材元素放进同一处可持续使用的场景。",
+      "stages": [
+        "script",
+        "assets"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/跨题材场景模板库.md"
+      ]
+    },
+    {
+      "id": "03-D",
+      "title": "法术属性规则",
+      "where": "故事稿 → 剧本",
+      "when": "异能戏先交代力量来源、代价和克制关系。",
+      "stages": [
+        "story",
+        "script"
+      ],
+      "files": [
+        "film-expert-bridge/references/modules/world-power-rules.md"
+      ]
+    },
+    {
+      "id": "03-E",
+      "title": "国漫大招体系",
+      "where": "故事稿 → 剧本",
+      "when": "角色使用大招时明确触发条件和剧情后果。",
+      "stages": [
+        "story",
+        "script"
+      ],
+      "files": [
+        "film-expert-bridge/references/modules/world-power-rules.md"
+      ]
+    },
+    {
+      "id": "03-F",
+      "title": "场景俯视图与空间规划",
+      "where": "空间锁定 → 制作方案",
+      "when": "用俯视关系确定入口、站位、遮挡与移动路线。",
+      "stages": [
+        "plan",
+        "assets"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/场景俯视图规范库.md"
+      ]
+    },
+    {
+      "id": "04-A",
+      "title": "每场戏该有多长",
+      "where": "剧本 · 分段与时长预算",
+      "when": "给每场戏分配时间，再检查台词和动作能否放下。",
+      "stages": [
+        "script"
+      ],
+      "files": [
+        "film-expert-bridge/references/modules/beat_rhythm.md"
+      ]
+    },
+    {
+      "id": "04-B",
+      "title": "这场戏到底要完成什么",
+      "where": "剧本 · 分场",
+      "when": "写明本场目标、阻碍及结束时发生的变化。",
+      "stages": [
+        "script"
+      ],
+      "files": [
+        "film-expert-bridge/references/modules/beat_rhythm.md"
+      ]
+    },
+    {
+      "id": "04-C",
+      "title": "人物怎么进出和站位",
+      "where": "剧本 → 空间锁定",
+      "when": "规划人物如何进场、换位、离场。",
+      "stages": [
+        "script",
+        "assets"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/场景俯视图规范库.md"
+      ]
+    },
+    {
+      "id": "04-D",
+      "title": "场与场怎么接",
+      "where": "剧本 → 制作方案",
+      "when": "设计上一场收尾与下一场开头的衔接。",
+      "stages": [
+        "script",
+        "plan"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/转场库.md"
+      ]
+    },
+    {
+      "id": "04-E",
+      "title": "动作戏先讲清因果",
+      "where": "剧本 · 分场",
+      "when": "动作戏先排清谁发起、谁反应、局势如何改变。",
+      "stages": [
+        "script"
+      ],
+      "files": [
+        "film-expert-bridge/references/modules/beat_rhythm.md"
+      ]
+    },
+    {
+      "id": "04-F",
+      "title": "拆一部参考片的方法",
+      "where": "参考片 · 逐镜与节拍 → 剧本",
+      "when": "拆参考片节拍，在改编稿里说明借了什么。",
+      "stages": [
+        "script"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/拉片参考片拆解路由.md"
+      ]
+    },
+    {
+      "id": "05-A",
+      "title": "台词像人说话",
+      "where": "剧本 · 台词",
+      "when": "修掉书面解释，安排停顿、打断和话外之意。",
+      "stages": [
+        "script"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/台词口播去AI味库.md"
+      ]
+    },
+    {
+      "id": "05-B",
+      "title": "每个人说话不一样",
+      "where": "剧本 → 表演设计",
+      "when": "给不同角色分配语气、用词和说话习惯。",
+      "stages": [
+        "script",
+        "plan"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/配音语气提示词库.md"
+      ]
+    },
+    {
+      "id": "05-C",
+      "title": "前后不能穿帮",
+      "where": "制作方案 → 提示词对照审查",
+      "when": "核对相邻镜头里的道具归属、衣着、伤势和时间。",
+      "stages": [
+        "plan",
+        "prompts"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/一致性硬控三锁库.md"
+      ]
+    },
+    {
+      "id": "05-D",
+      "title": "动作写得能拍",
+      "where": "剧本 → 表演设计",
+      "when": "把抽象动作改成能拍到的起势、接触与结果。",
+      "stages": [
+        "script",
+        "plan"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/动作专题库.md"
+      ]
+    },
+    {
+      "id": "05-E",
+      "title": "属性技能与特效表现",
+      "where": "表演设计 → 提示词",
+      "when": "有属性特效时明确动作触发、环境反应和可见结果。",
+      "stages": [
+        "plan",
+        "prompts"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/各系技能特效库.md"
+      ]
+    },
+    {
+      "id": "05-F",
+      "title": "生活化真人质感",
+      "where": "表演设计 → 素材与选图",
+      "when": "真人表演或造型需要自然的小动作和生活质感。",
+      "stages": [
+        "plan",
+        "assets"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/真人感去AI味提示词库.md"
+      ]
+    },
+    {
+      "id": "07-A",
+      "title": "角色身份参考图",
+      "where": "角色出镜 → 素材与选图",
+      "when": "需要锁定角色身份时制作或选择多视角参考图。",
+      "stages": [
+        "assets"
+      ],
+      "files": [
+        "film-expert-bridge/references/modules/reference-art.md"
+      ]
+    },
+    {
+      "id": "07-B",
+      "title": "主场景多角度图",
+      "where": "空间锁定 → 素材与选图",
+      "when": "同场景换机位时，用地标和门窗核对多角度场景图。",
+      "stages": [
+        "assets"
+      ],
+      "files": [
+        "film-lira-assets/references/scene-multi-angle.md"
+      ]
+    },
+    {
+      "id": "07-C",
+      "title": "故事板一致性",
+      "where": "制作方案 → 素材与选图",
+      "when": "用连续故事板核对镜头顺序、人物和场景。",
+      "stages": [
+        "plan",
+        "assets"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/image2故事板与一致性库.md"
+      ]
+    },
+    {
+      "id": "07-D",
+      "title": "白模分镜与空间草图",
+      "where": "空间锁定 → 素材与选图",
+      "when": "用二维白模示意图或线稿核对空间遮挡与构图。",
+      "stages": [
+        "assets"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/image2白模草图画线玩法库.md"
+      ]
+    },
+    {
+      "id": "07-E",
+      "title": "构图与透视",
+      "where": "制作方案 → 素材与选图",
+      "when": "核对前中后景、透视和主体在画面中的位置。",
+      "stages": [
+        "plan",
+        "assets"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/构图速查库.md"
+      ]
+    },
+    {
+      "id": "07-F",
+      "title": "灯光与材质",
+      "where": "素材与选图",
+      "when": "选图或修图时明确光线、色温与材质。",
+      "stages": [
+        "assets"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/布光速查库.md"
+      ]
+    },
+    {
+      "id": "07-G",
+      "title": "电影级画面质感",
+      "where": "素材与选图",
+      "when": "写实画面检查服装、皮肤、光感和画面质感。",
+      "stages": [
+        "assets"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/真实质感提示词库.md"
+      ]
+    },
+    {
+      "id": "07-H",
+      "title": "古风场景资产",
+      "where": "空间锁定 → 素材与选图",
+      "when": "古风地点挑选符合时代的场景与道具。",
+      "stages": [
+        "assets"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/古风场景提示词库.md"
+      ]
+    },
+    {
+      "id": "07-I",
+      "title": "静图能否直接微动",
+      "where": "素材与选图 → 提示词",
+      "when": "判断选定静图适合哪些局部微动。",
+      "stages": [
+        "assets",
+        "prompts"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/静图微动决策库.md"
+      ]
+    },
+    {
+      "id": "07-J",
+      "title": "导演风格与本机色卡",
+      "where": "导演色卡 → 素材与提示词",
+      "when": "把所选色卡的光色和构图用于对应场景。",
+      "stages": [
+        "assets",
+        "prompts"
+      ],
+      "files": [
+        "film-expert-bridge/references/visual/directorStyle.md"
+      ]
+    },
+    {
+      "id": "08-A",
+      "title": "微表情和真实反应",
+      "where": "制作方案 · 表演设计",
+      "when": "反应镜写出眼神、呼吸和细小动作。",
+      "stages": [
+        "plan"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/表演微表情库.md"
+      ]
+    },
+    {
+      "id": "08-B",
+      "title": "情绪变成可见行为",
+      "where": "制作方案 · 表演设计",
+      "when": "把人物情绪变成镜头里能辨认的行为。",
+      "stages": [
+        "plan"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/情绪表达提示词库.md"
+      ]
+    },
+    {
+      "id": "08-C",
+      "title": "台词能自然说完",
+      "where": "剧本 → 表演与台词读秒",
+      "when": "用实际台词、语速与停顿核对本镜时长。",
+      "stages": [
+        "script",
+        "plan"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/台词口播去AI味库.md"
+      ]
+    },
+    {
+      "id": "08-D",
+      "title": "配音怎么说",
+      "where": "表演设计 → 提示词",
+      "when": "标注说话人的重音、速度、用气与停顿。",
+      "stages": [
+        "plan",
+        "prompts"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/配音语气提示词库.md"
+      ]
+    },
+    {
+      "id": "08-E",
+      "title": "声音和配乐任务",
+      "where": "剧本 → 提示词 · 声音",
+      "when": "分开安排环境音、动作音、人声留白和音乐进出。",
+      "stages": [
+        "script",
+        "prompts"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/声音配乐库.md"
+      ]
+    },
+    {
+      "id": "08-F",
+      "title": "动作怎么表演",
+      "where": "制作方案 · 表演设计",
+      "when": "处理动作重心、受力、接触及身体反应。",
+      "stages": [
+        "plan"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/动作专题库.md"
+      ]
+    },
+    {
+      "id": "08-G",
+      "title": "真人表演校正",
+      "where": "制作方案 · 表演设计",
+      "when": "真人场景校正视线、迟疑和停顿。",
+      "stages": [
+        "plan"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/真人感去AI味提示词库.md"
+      ]
+    },
+    {
+      "id": "09-A",
+      "title": "导演顾问",
+      "where": "制作方案 · 分镜",
+      "when": "决定各镜目的、机位、运动和切镜理由。",
+      "stages": [
+        "plan"
+      ],
+      "files": [
+        "film-expert-bridge/references/modules/director.md"
+      ]
+    },
+    {
+      "id": "09-B",
+      "title": "叙事分镜与跨段接力",
+      "where": "制作方案 → 提示词",
+      "when": "按叙事变化拆段，写明上段末态与下段首态。",
+      "stages": [
+        "plan",
+        "prompts"
+      ],
+      "files": [
+        "film-expert-bridge/references/modules/narrative-storyboard-handoff.md"
+      ]
+    },
+    {
+      "id": "09-C",
+      "title": "多人站位连续性",
+      "where": "空间锁定 → 分镜与提示词",
+      "when": "多人对话或移动时保持轴线、站位和朝向。",
+      "stages": [
+        "plan",
+        "assets",
+        "prompts"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/调度分镜图规范库.md"
+      ]
+    },
+    {
+      "id": "09-D",
+      "title": "故事分镜图设计",
+      "where": "制作方案 → 素材与选图",
+      "when": "将叙事镜头组织成可核对的故事分镜图。",
+      "stages": [
+        "plan",
+        "assets"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/故事分镜图规范库.md"
+      ]
+    },
+    {
+      "id": "09-E",
+      "title": "特殊运镜",
+      "where": "制作方案 → 提示词",
+      "when": "选择特殊运镜后写清运动轨迹和停止位置。",
+      "stages": [
+        "plan",
+        "prompts"
+      ],
+      "files": [
+        "film-expert-bridge/references/modules/shot_grammar.md"
+      ]
+    },
+    {
+      "id": "09-F",
+      "title": "静图微动视频",
+      "where": "提示词 · 静图微动",
+      "when": "已有参考图时指定局部运动和需要稳定的区域。",
+      "stages": [
+        "prompts"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/静图微动决策库.md"
+      ]
+    },
+    {
+      "id": "09-G",
+      "title": "生成废片返修",
+      "where": "提示词 · 修订",
+      "when": "作者提供失败现象或外部样片反馈时，定位并修改对应段落。",
+      "stages": [
+        "prompts"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/general/导演审片返修库.md"
+      ]
+    },
+    {
+      "id": "09-H",
+      "title": "打斗动作与镜头增强",
+      "where": "剧本 → 表演设计 → 分镜",
+      "when": "有打斗戏时将攻防因果转为连续动作与镜头。",
+      "stages": [
+        "script",
+        "plan"
+      ],
+      "files": [
+        "film-expert-bridge/references/modules/combat.md",
+        "film-expert-bridge/references/modules/combat-execution.md"
+      ]
+    },
+    {
+      "id": "09-I",
+      "title": "兵器怎么打",
+      "where": "表演设计 → 分镜",
+      "when": "兵器戏检查距离、握法、攻击线与收招。",
+      "stages": [
+        "plan"
+      ],
+      "files": [
+        "film-expert-bridge/references/modules/combat.md",
+        "film-expert-bridge/references/modules/combat-execution.md"
+      ]
+    },
+    {
+      "id": "09-J",
+      "title": "徒手怎么打",
+      "where": "表演设计 → 分镜",
+      "when": "徒手戏安排步法、拳脚落点和受击反应。",
+      "stages": [
+        "plan"
+      ],
+      "files": [
+        "film-expert-bridge/references/modules/combat.md",
+        "film-expert-bridge/references/modules/combat-execution.md"
+      ]
+    },
+    {
+      "id": "09-K",
+      "title": "战场怎么利用",
+      "where": "空间锁定 → 动作分镜",
+      "when": "在打斗中安排地形、障碍与可用退路。",
+      "stages": [
+        "plan",
+        "assets"
+      ],
+      "files": [
+        "film-expert-bridge/references/modules/combat.md",
+        "film-expert-bridge/references/modules/combat-execution.md"
+      ]
+    },
+    {
+      "id": "09-L",
+      "title": "特殊技能怎么接战斗",
+      "where": "剧本 → 动作分镜",
+      "when": "将能力触发、攻防变化和环境结果接为一条动作链。",
+      "stages": [
+        "script",
+        "plan"
+      ],
+      "files": [
+        "film-expert-bridge/references/modules/combat.md",
+        "film-expert-bridge/references/modules/combat-execution.md"
+      ]
+    },
+    {
+      "id": "09-M",
+      "title": "打斗自检",
+      "where": "制作方案与提示词 · 复核",
+      "when": "有打斗段时检查距离、方向、碰撞与动作接续。",
+      "stages": [
+        "plan",
+        "prompts"
+      ],
+      "files": [
+        "film-expert-bridge/references/library/combat/打戏生成自检清单.md"
+      ]
+    },
+    {
+      "id": "09-N",
+      "title": "大招完整五段链",
+      "where": "剧本 → 表演设计 → 提示词",
+      "when": "按前摇、聚能、释放、对抗和结果组织大招。",
+      "stages": [
+        "script",
+        "plan",
+        "prompts"
+      ],
+      "files": [
+        "film-expert-bridge/references/modules/ultimate.md"
+      ]
+    },
+    {
+      "id": "09-O",
+      "title": "属性招式专项",
+      "where": "美术选图 → 提示词",
+      "when": "选择具体属性后确定材质、光效和环境反应。",
+      "stages": [
+        "assets",
+        "prompts"
+      ],
+      "files": [
+        "film-expert-bridge/references/modules/ultimate.md"
+      ]
+    },
+    {
+      "id": "09-P",
+      "title": "国漫级奇观设计",
+      "where": "制作方案 → 提示词",
+      "when": "有大尺度奇观时安排远近层次、力量尺度与结局。",
+      "stages": [
+        "plan",
+        "prompts"
+      ],
+      "files": [
+        "film-expert-bridge/references/modules/ultimate.md"
+      ]
+    },
+    {
+      "id": "09-Q",
+      "title": "Seedance 2.5 精细适配",
+      "where": "提示词 · Seedance 2.5 格式",
+      "when": "目标模型为 Seedance 2.5 时整理多参考素材、分秒动作和提示词格式。",
+      "stages": [
+        "prompts"
+      ],
+      "files": [
+        "film-cinedance/references/seedance-25-prompt-format.md"
+      ]
+    }
+  ],
+  "files": {
+    "film-expert-bridge/references/modules/shot_grammar.md": "c5cca00a87c43557e61a7a93c960fea242d9f09bb7c69bedbf652febf7941314",
+    "film-expert-bridge/references/library/general/景别速查库.md": "df5299606b34ef5ffe52f6d8fd99e3fa14c163ad789f89131f7cb68dcb3c44c4",
+    "film-expert-bridge/references/library/general/基础运镜库.md": "894e829c8caf038cd526a2bdcef90de34523077092d7a4b7776278b9a8a6bf6a",
+    "film-expert-bridge/references/library/general/构图速查库.md": "13b30147a0f28499da3ac42052ce4488798ce0f026981ad21e7482c6251d9774",
+    "film-expert-bridge/references/library/general/布光速查库.md": "c2d613b64d59b1f08cab015fb55da62e68381040cd2e375412a544bbbd3696f1",
+    "film-expert-bridge/references/library/general/转场库.md": "1455d34ebcd26ca1866b39095bcc171c29879e40d06b5ca03d87d3c6c6b1ab1d",
+    "film-expert-bridge/references/library/general/运镜组合与特殊实例库.md": "0458e37e8757b3e4d46172e2211680eecd1b748c384ad90a1591618825a2de50",
+    "film-expert-bridge/references/library/general/作者审美锚点-念气无双.md": "21cb511e765ced72d1731f12a9c151f5ad2834146578f81cad13ee274b9a9f81",
+    "film-expert-bridge/references/library/general/导演风格匹配库.md": "b969729a6a872c5a3c0a06e172545546b760ac6bb9de74a65d18a0fa51805693",
+    "film-expert-bridge/references/library/general/跨题材场景模板库.md": "348f33535a89f721651eadaa4c494ce74870b06f9093511c2dba60df0e425c17",
+    "film-expert-bridge/references/library/general/导演视觉倾向速查.md": "9b44375b7093ca6fb4220d5fedb4ff6b7b08162ca238214f5b0bd1d77fc62e2a",
+    "film-expert-bridge/references/library/general/都市真人短剧场景库.md": "7f6c72e04832766d2f428afa461a88d2b9f0e57e7a7454dd5f9ffcde17511f0c",
+    "film-expert-bridge/references/library/general/古风宫廷九角色设定库.md": "c383a9ace503c11bcd9d9d8cc8680ebb2364a17579ae7d9e6baaa66e435c2b5a",
+    "film-expert-bridge/references/library/general/古风市井职业设定库.md": "9cd31db53e2e128ffc57cce5a7adb85caa62f8e425718de54738b17f07ae3ca0",
+    "film-expert-bridge/references/library/general/古风男性角色设定库.md": "ad1bc8e63217f2b7b4d17206030229bb6ff5db517ebd4fe77b33b83fb570f311",
+    "film-expert-bridge/references/library/general/现代男性角色设定库.md": "1e16af7c1419f768afd3b69e49c5e5d667ced70611546544e0337495973297fe",
+    "film-expert-bridge/references/library/general/现代都市人物造型设定库.md": "f72240e2a952478f57914fe8c0eab1001e3809f5bfbcdbcb0acadfe2c475e4b3",
+    "film-expert-bridge/references/library/general/女性造型提示词库.md": "afc016b55b3f123148c79bd135befb3c07c19383454707bea11843924ab9ccb2",
+    "film-expert-bridge/references/modules/character-combat-identity.md": "15a53c77df35e3650824578009c630b4ec0293efd55fcbcfe6e2d193d6043367",
+    "film-expert-bridge/references/library/general/古风场景提示词库.md": "2e68fef3ebb4cd8daed6b8e274a0ac0b7120569d7064e2f692e47b2f5340043c",
+    "film-expert-bridge/references/modules/world-power-rules.md": "b95dd94c6a832f5b9d34206e341a3e8901d87376c479bdfde5566f66a94343af",
+    "film-expert-bridge/references/library/general/场景俯视图规范库.md": "548f8106084e3c7d5c97937870a0fe1e5bd278cb9a959000d89dc52429d295c9",
+    "film-expert-bridge/references/modules/beat_rhythm.md": "4e887197ab51e120525c4a5b946d7e78f496d3ee1659430e4578c57ef332f7a6",
+    "film-expert-bridge/references/library/general/拉片参考片拆解路由.md": "fea7a674cdc5f7fb1e6cf7c163446f60e821ebdc749d215bf748ce962041864e",
+    "film-expert-bridge/references/library/general/台词口播去AI味库.md": "58fe40d911a6b834bb2fb1257d2abfc42a5518b5bec41317aa688a1eb42455f9",
+    "film-expert-bridge/references/library/general/配音语气提示词库.md": "575a8a0191a08eebed50aadc9ad5af279cdd9954f8e060201761b5f6658f87da",
+    "film-expert-bridge/references/library/general/一致性硬控三锁库.md": "96586653ab6cabf131bd7a5d67c6b05cadb39ceeeaddb2b986faa546d2cefafb",
+    "film-expert-bridge/references/library/general/动作专题库.md": "1df06c942cb32f7f62d0f1f324493def6f807fa5c157afc26bbb3dbee9feeb0c",
+    "film-expert-bridge/references/library/general/各系技能特效库.md": "1a7137e3e2c05bbe205c079895af5a7e127d7dd7dd715f73cf86401b3cbe2867",
+    "film-expert-bridge/references/library/general/真人感去AI味提示词库.md": "57a5a4f1e6923b3565d7bf0ff93ee5df5ecae5ae8a01488e9cb6103b73b01ca8",
+    "film-expert-bridge/references/modules/reference-art.md": "cf2854e6c3324ad3818d248308e42c4799ac8a095ebded7ab6b1c05396466bf2",
+    "film-lira-assets/references/scene-multi-angle.md": "3cdf4739905cd443716bfdc87953c91cd3b5207e69dbf9d2c177108d6c6c2bd5",
+    "film-expert-bridge/references/library/general/image2故事板与一致性库.md": "9cc53138ab81c6b1d3f4affa9c870f581e289d0e5d57156fe06bab0dd09f5c3b",
+    "film-expert-bridge/references/library/general/image2白模草图画线玩法库.md": "c613f74089b597e10b0e7a421e946418274e9e2fb155b649c78c35be3fceac7f",
+    "film-expert-bridge/references/library/general/真实质感提示词库.md": "72309217becf7ab069f90f7c1c163362231a425757578f242e78668a5afb91b6",
+    "film-expert-bridge/references/library/general/静图微动决策库.md": "7df8c4e0fad8f08c6f5a06403144b93680a4c43295d4609be0d041c2e6d52608",
+    "film-expert-bridge/references/visual/directorStyle.md": "b3729e4490a15a9916210c7c9aa3abc8f8e603a9db91bfc3f01bfc3a5a4fd46a",
+    "film-expert-bridge/references/library/general/表演微表情库.md": "1e163203c9f0be8e5245c4da0e24ed7e8abc19a5f077d44665e3e0a546db6b9a",
+    "film-expert-bridge/references/library/general/情绪表达提示词库.md": "d377d9e8d39e7a9dde45abfae63f87ca88ceda0cbb5f253060a10aeb5a1ef170",
+    "film-expert-bridge/references/library/general/声音配乐库.md": "138af1fb9b9470431e3d36c0072a1b01298ba533cce499a82021a855c4749b2d",
+    "film-expert-bridge/references/modules/director.md": "f9eabc0b905317fdbcea0b78f23f489f2fde325e5b772bcbc4064b63a0851ad1",
+    "film-expert-bridge/references/modules/narrative-storyboard-handoff.md": "3e9d09f7d9a5faf663c4fcb2c1d859b2e14e32e9987db2c5665af899a42b900c",
+    "film-expert-bridge/references/library/general/调度分镜图规范库.md": "62902f70e9137bd50373076ca33afeaecf2ed1d03f4bd346ee6cc66e4a7fb593",
+    "film-expert-bridge/references/library/general/故事分镜图规范库.md": "230948b39df2604f0aa76db955028d6d8dd8479feebb002eeada882d8584b92b",
+    "film-expert-bridge/references/library/general/导演审片返修库.md": "5afc31944b6c2686d33574ed31174089fee53242105c72626a491896155f918d",
+    "film-expert-bridge/references/modules/combat.md": "9641e8b8618d52a14c9721e5689f99364ff91d54b5507e8fd1a1bdf988c625da",
+    "film-expert-bridge/references/modules/combat-execution.md": "ca964cdfab52f14cb62ff4bf06706708bca3e5312996557fd041de6d84c62a4d",
+    "film-expert-bridge/references/library/combat/打戏生成自检清单.md": "0df315763f05e410203a3476827c30d11e301c71e2d72b347ca06938014b8d35",
+    "film-expert-bridge/references/modules/ultimate.md": "4de4152b414235516d32d1b6c538660c2f5dc24714e57ede1c7bc3c28bf488e7",
+    "film-cinedance/references/seedance-25-prompt-format.md": "40c3135d8fedeeb1561c1afd2beef78896154e492dc92cba2b571e36b08236cb"
+  }
+}

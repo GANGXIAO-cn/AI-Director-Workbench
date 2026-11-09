@@ -11,7 +11,7 @@ import { ProjectPresets } from "./ProjectPresets";
 import { Fragment, useEffect, useState } from "react";
 import Expert from "./Expert";
 import { blob, cmd, q, setCliPath, upload } from "./api";
-import { ErrorLine, PROVIDER_LABEL, Pills, Tag, fmtMs, useAction, usePoll, useQuery } from "./ui";
+import { ErrorLine, Modal, PROVIDER_LABEL, Pills, Tag, fmtMs, useAction, usePoll, useQuery } from "./ui";
 
 const CATS: Record<string, string> = { character: "角色", relationship: "关系", space: "固定空间", rule: "世界规则", signature: "招牌行为", prop: "道具" };
 
@@ -89,19 +89,22 @@ function Library({ id, p }: any) {
   const [qText, setQ] = useState("");
   const [status, setStatus] = useState("");
   const lib = useQuery<any[]>("library", { project_id: id, q: qText, status: status || null });
-  const [detail, setDetail] = useState<any>(null);
+  const [detailId,setDetailId] = useState("");
+  const detail = lib.data?.find(item=>item.id===detailId);
+  const [limits,setLimits] = useState<string|null>(null);
+  const labels: Record<string,string> = {pending:"待审核",approved:"可复用",limited:"限条件",retired:"停用",rejected:"未通过"};
   const [target, setTarget] = useState("");
   const act = useAction();
   return (
     <div>
       <div className="spread"><div><h1>复用资产库</h1><div className="muted small">检索、看图、复制到本集；本集图审核后再登记。九宫格只归本集。</div></div>
         <div className="row"><input placeholder="名称 / 用途" value={qText} onChange={(e) => setQ(e.target.value)} />
-          <select value={status} onChange={(e) => setStatus(e.target.value)}><option value="">全部状态</option>{["pending", "approved", "limited", "retired"].map((s) => <option key={s}>{s}</option>)}</select></div></div>
+          <select value={status} onChange={(e) => setStatus(e.target.value)}><option value="">全部状态</option>{["pending", "approved", "limited", "retired"].map((s) => <option key={s} value={s}>{labels[s]}</option>)}</select></div></div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(200px,1fr))", gap: 12, marginTop: 16 }}>
         {(lib.data ?? []).map((e) => (
-          <div key={e.id} className={`card ${detail?.id === e.id ? "sel" : "line"}`} style={{ cursor: "pointer" }} onClick={() => setDetail(e)}>
+          <div key={e.id} className={`card ${detail?.id === e.id ? "sel" : "line"}`} style={{ cursor: "pointer" }} onClick={() => {setDetailId(e.id);setLimits(null);}}>
             <img src={blob(e.sha256)} style={{ width: "100%", borderRadius: 8 }} />
-            <div className="spread" style={{ marginTop: 6 }}><b>{e.name}</b><Tag tone={e.status === "approved" ? "green" : e.status === "pending" ? "amber" : e.status === "retired" ? "" : "blue"}>{({ pending: "待审核", approved: "可复用", limited: "限条件", retired: "停用", rejected: "未通过" } as any)[e.status]}</Tag></div>
+            <div className="spread" style={{ marginTop: 6 }}><b>{e.name}</b><Tag tone={e.status === "approved" ? "green" : e.status === "pending" ? "amber" : e.status === "retired" ? "" : "blue"}>{labels[e.status]}</Tag></div>
             <div className="muted tiny">v{e.version_no} · {e.width}×{e.height} · {e.usage}</div>
           </div>))}
         {(lib.data ?? []).length === 0 && <div className="muted">库中还没有条目。</div>}
@@ -113,7 +116,14 @@ function Library({ id, p }: any) {
           <div className="small">被使用：{detail.usedBy.length ? detail.usedBy.map((u: any) => u.episode_id.slice(0, 6)).join("、") : "暂无"}</div>
           <div className="row" style={{ marginTop: 8 }}>
             {detail.status === "pending" && <><button className="btn" onClick={() => act.run(async () => { await cmd("review_library", { entry_id: detail.id, status: "approved" }); lib.reload(); })}>核准可复用</button>
-              <button className="btn" onClick={() => act.run(async () => { const l = prompt("限制条件"); if (l) { await cmd("review_library", { entry_id: detail.id, status: "limited", limits: l }); lib.reload(); } })}>限条件</button></>}
+              <button className="btn" onClick={()=>setLimits(detail.limits || "")}>限条件</button>
+              {limits!==null && <Modal onClose={()=>setLimits(null)}><h2>限定“{detail.name}”的使用条件</h2>
+                <label>限制条件<textarea autoFocus value={limits} onChange={e=>setLimits(e.target.value)}/></label>
+                <button className="btn" onClick={()=>setLimits(null)}>取消</button>
+                <button className="btn primary" disabled={!limits.trim() || act.busy} onClick={()=>act.run(async()=>{
+                  await cmd("review_library",{entry_id:detail.id,status:"limited",limits:limits.trim()});
+                  setLimits(null);await lib.reload();
+                })}>保存限制条件</button><ErrorLine error={act.error}/></Modal>}</>}
             {["approved", "limited"].includes(detail.status) && <>
               <select value={target} onChange={(e) => setTarget(e.target.value)}><option value="">复制到哪一集</option>{(p?.episodes ?? []).map((e: any) => <option key={e.id} value={e.id}>{e.display_code}</option>)}</select>
               <button className="btn primary" disabled={!target} onClick={() => act.run(async () => { await cmd("copy_to_episode", { entry_id: detail.id, episode_id: target }); lib.reload(); })}>复制到本集</button>

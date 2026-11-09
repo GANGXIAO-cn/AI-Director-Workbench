@@ -1,18 +1,26 @@
+import { Type, Image, LockKeyhole, WandSparkles, Link2 } from "lucide-react";
 import { budgetCents } from "./budget";
 import { RequiredImage } from "./RequiredImage";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useEffect, useRef, useState } from "react";
 import { blob, cmd, q } from "./api";
-import { ErrorLine, Tag, useAction } from "./ui";
+import { ErrorLine, Modal, Tag, useAction } from "./ui";
 
 /** J15 本集素材 · 生成画布: inputs → generate node → candidates → downstream use.
  *  Layout/wiring is saved per episode; every generation still goes through the paid-batch confirmation. */
 type Node = { id: string; type: "text" | "reference" | "lock" | "generate" | "usage"; x: number; y: number; title: string; data: any };
 type Edge = { from: string; to: string; kind: "input" | "ref" | "pending" };
 const W: Record<string, number> = { text: 200, reference: 190, lock: 190, generate: 250, usage: 210 };
-const TYPE_LABEL: Record<string, string> = { text: "▤ 文本", reference: "▣ 参考图", lock: "▣ 锁定图", generate: "✦ 生成", usage: "✦ 下游用途" };
+const NODE_TYPES = {
+  text: {label:"文本", icon:Type}, reference: {label:"参考图", icon:Image},
+  lock: {label:"锁定图", icon:LockKeyhole}, generate: {label:"生成", icon:WandSparkles}, usage: {label:"下游用途", icon:Link2}
+};
+function NodeLabel({type}:{type:Node["type"]}) {
+  const {label, icon:Icon} = NODE_TYPES[type];
+  return <><Icon size={14} aria-hidden="true"/> {label}</>;
+}
 const PRESETS: [string, string, string][] = [["身份图", "generate", "正面全身，中性站姿，无剧情动作，纯色浅底；识别点必须清楚；不裁切。"],
-  ["2×2 身份卡","generate","同一角色四格身份对照：正面全身、侧面全身、背面、面部近景；服装、尺度与识别点一致。"],
+  ["2×2 身份卡","generate","同一角色四格身份对照：正面脸、侧面脸、正面全身、背面全身。四格保持同一角色、服装、配色和身份状态。"],
   ["多角度", "generate", "同一角色正面、侧面、背面三视图，比例一致，纯色浅底。"],
   ["状态派生", "generate", "以锁定图为准，只改本段需要的状态（光线、湿乱、持物），空间关系不变。"],
   ["局部重画", "edit", "只改指定格，其余格保持不变。"]];
@@ -33,6 +41,7 @@ export default function Canvas({ ctx, providers, openBatch }: { ctx: any; provid
   const [required,setRequired] = useState<any>(null);
   const [cand, setCand] = useState<string | null>(null);
   const [link, setLink] = useState({ to: "", kind: "input" });
+  const [removeNode,setRemoveNode] = useState<Node|null>(null);
   const [compare, setCompare] = useState(false);
   const act = useAction();
   const drag = useRef<{ id: string; clientX: number; clientY: number; x: number; y: number } | null>(null);
@@ -100,17 +109,26 @@ export default function Canvas({ ctx, providers, openBatch }: { ctx: any; provid
     });
     save({...doc,nodes});
   };
+  function locate(n?:Node) {
+    if(!n) return;
+    setSel(n.id);
+    viewport.current?.scrollTo({left:Math.max(0,n.x*zoom-80),top:Math.max(0,n.y*zoom-70)});
+  }
   const width=Math.max(1300,...doc.nodes.map(n=>n.x+W[n.type]+120));
   const height=Math.max(740,...doc.nodes.map(n=>n.y+400));
   return (
     <div ref={board} className="canvas-board" style={{ position: "relative" }}>
       <div className="row" style={{ marginBottom: 8, flexWrap:"wrap" }}>
-        {(["text", "reference", "lock", "generate", "usage"] as const).map((t) => <button key={t} className="btn ghost" onClick={() => add(t)}>＋ {TYPE_LABEL[t]}</button>)}
+        {(["text", "reference", "lock", "generate", "usage"] as const).map((t) => <button key={t} className="btn ghost" onClick={() => add(t)}>＋ <NodeLabel type={t}/></button>)}
         <button className="btn" onClick={arrange}>整理布局</button><button className="btn" disabled={!undo.current.length} onClick={()=>{const prev=undo.current.pop(); if(prev) save(prev,false);}}>撤销</button>
         <button className={`btn ${cut?"primary":""}`} aria-pressed={cut} onClick={()=>setCut(!cut)}>剪断连线</button>
         <label>缩放 <select value={zoom} onChange={e=>setZoom(Number(e.target.value))}>{[0.5,0.75,1,1.25,1.5].map(z=><option key={z} value={z}>{z*100}%</option>)}</select></label>
-        <select aria-label="定位节点" value={sel ?? ""} onChange={e=>{setSel(e.target.value);const n=doc.nodes.find(n=>n.id===e.target.value);if(n)viewport.current?.scrollTo({left:Math.max(0,n.x*zoom-80),top:Math.max(0,n.y*zoom-70)});}}>
+        <select aria-label="定位节点" value={sel ?? ""} onChange={e=>locate(doc.nodes.find(n=>n.id===e.target.value))}>
           <option value="">定位节点</option>{doc.nodes.map(n=><option key={n.id} value={n.id}>{n.title}</option>)}</select>
+        <select aria-label="跳到画布分区" value="" onChange={e=>locate(doc.nodes.find(n=>n.type===e.target.value))}>
+          <option value="">跳到分区</option>{(Object.keys(NODE_TYPES) as Node["type"][]).map(type=>
+            <option key={type} value={type} disabled={!doc.nodes.some(n=>n.type===type)}>{NODE_TYPES[type].label}区</option>)}
+        </select>
         <button className="btn" onClick={()=>act.run(async()=>{if(document.fullscreenElement) await document.exitFullscreen();else await board.current?.requestFullscreen();})}>全屏</button>
         <a className="btn" href={location.href} target="_blank" rel="noreferrer">独立窗口</a>
       </div>
@@ -141,7 +159,7 @@ export default function Canvas({ ctx, providers, openBatch }: { ctx: any; provid
               onClick={(e) => { e.stopPropagation(); setSel(n.id); }}>
               <button className="canvas-port" aria-label={n.title+" 输出连线"} draggable onDragStart={e=>e.dataTransfer.setData("application/x-adw-node",n.id)} title="拖至目标节点连接">●</button>
               <div className="spread tiny" style={{ cursor: "move" }} onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); drag.current = { id: n.id, clientX: e.clientX, clientY: e.clientY, x: n.x, y: n.y }; }}>
-                <span className="muted">{TYPE_LABEL[n.type]}</span>
+                <span className="muted"><NodeLabel type={n.type}/></span>
                 {b && <Tag tone={b.state === "completed" ? "green" : b.state === "awaiting_authorization" ? "amber" : "blue"}>{b.state === "completed" ? "待评估" : b.state === "awaiting_authorization" ? "待确认" : b.state}</Tag>}
                 {(n.type === "lock" || n.type === "reference") && a && <Tag tone={a.marks.includes("adopted") ? "green" : ""}>{a.marks.includes("adopted") ? "已采用" : `v${a.version_no}`}</Tag>}
               </div>
@@ -172,7 +190,7 @@ export default function Canvas({ ctx, providers, openBatch }: { ctx: any; provid
             {doc.nodes.filter((x) => x.id !== node.id).map((x) => <option key={x.id} value={x.id}>{x.title}</option>)}</select>
           <select value={link.kind} onChange={(e) => setLink({ ...link, kind: e.target.value })} style={{ fontSize: "0.92rem" }}><option value="input">实际输入</option><option value="ref">只作参考</option><option value="pending">待采用后接入</option></select>
           <button className="btn" disabled={!link.to} onClick={() => { wire(node.id,link.to,link.kind as Edge["kind"]); setLink({ to: "", kind: "input" }); }}>连线</button>
-          <button className="btn danger" onClick={() => { if(!confirm("从画布移除这个节点和它的连线？原素材保留。"))return; save({ nodes: doc.nodes.filter((x) => x.id !== node.id), edges: doc.edges.filter((e) => e.from !== node.id && e.to !== node.id) }); setSel(null); }}>删除</button>
+          <button className="btn danger" onClick={()=>setRemoveNode(node)}>删除</button>
         </div>}
         <div className="row tiny" style={{ position: "absolute", left: 12, bottom: 12, zIndex: 3, background: "#16171a", padding: "6px 10px", borderRadius: 8 }}>
           <span style={{ color: "#22d3ee" }}>— 实际输入（写入本集清单）</span><span style={{ color: "#f5b13d" }}>- - 待采用后才能接入</span><span className="muted">灰线：只作参考</span></div>
@@ -198,6 +216,13 @@ export default function Canvas({ ctx, providers, openBatch }: { ctx: any; provid
             <button className="btn primary" disabled={act.busy} onClick={() => generate(node)}>{node.data.operation === "edit" ? "局部重画 1 张" : `生成 ${node.data.count} 张`} ›</button>
           </div>
         </div>)}
+      {removeNode && <Modal onClose={()=>setRemoveNode(null)}><h2>移除节点“{removeNode.title}”及其连线？</h2>
+        <button className="btn" autoFocus onClick={()=>setRemoveNode(null)}>取消</button>
+        <button className="btn danger" onClick={()=>{
+          const id=removeNode.id;
+          save({...doc,nodes:doc.nodes.filter(n=>n.id!==id),edges:doc.edges.filter(e=>e.from!==id && e.to!==id)});
+          setRemoveNode(null);setSel(null);
+        }}>确认移除节点</button></Modal>}
       {required && <RequiredImage ctx={ctx} asset={required} close={()=>setRequired(null)}/>}
       {saveError && <div className="row"><ErrorLine error={{ message: saveError }} /><button className="btn" onClick={async () => { await saves.current; await load(); setSaveError(null); }}>重新载入已保存画布</button></div>}
       <ErrorLine error={act.error} />

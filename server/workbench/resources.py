@@ -428,6 +428,10 @@ class ResourcesMixin:
         self.put_setting(f"palette:{episode_id}:{stage}",dict(mode=mode,cards=cards))
         return self.episode_palettes(episode_id,stage)
 
+    def enhancement_catalog(self):
+        from .enhancements import catalog
+        return [{k: item[k] for k in ("id","title","when","where","stages")} for item in catalog()["methods"]]
+
     def step_config(self, episode_id, stage):
         return self.get_setting(f"step:{episode_id}:{stage}", {})
 
@@ -439,8 +443,8 @@ class ResourcesMixin:
             return [json.loads(r[0]) for r in rows]
 
     def save_step_config(self, episode_id, stage, route="", goal="", keep="", format_note="", mode="off", references=None,
-                         expected_revision=None):
-        if stage not in ("story","script","plan","prompts","publish") or mode not in ("off","match","method"):
+                         expected_revision=None, enhancements=None):
+        if stage not in ("story","script","plan","prompts","publish","assets") or mode not in ("off","match","method"):
             raise Rejected("不支持的阶段或资料模式")
         with connect(self.db_path) as db:
             self._episode_in(db,episode_id)
@@ -473,6 +477,12 @@ class ResourcesMixin:
                     entry["match"]=dict(offset=match["offset"],text=term)
                 refs.append(entry)
         config=dict(route=route,goal=goal,keep=keep,format_note=format_note,mode=mode,references=refs)
+        if enhancements is not None:
+            from .enhancements import entries
+            entries(enhancements)
+            config["enhancements"] = enhancements
+        elif "enhancements" in saved:
+            config["enhancements"] = saved["enhancements"]
         if not all(isinstance(config[k],str) for k in ("route","goal","keep","format_note")):
             raise Rejected("本步需求各项须为文本")
         with transaction(self.db_path) as db:

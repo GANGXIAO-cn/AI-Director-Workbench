@@ -238,7 +238,7 @@ async function main() {
     assert.equal(await page.locator(".modal").getByRole("link",{name:"打开第 1 张原图"}).getAttribute("href"),"/api/blob/"+scene.sha256);
     await page.locator(".modal").getByRole("button",{name:"关闭",exact:true}).click();
     await page.getByRole("button",{name:"画布",exact:true}).click();
-    await page.getByRole("button",{name:"＋ ✦ 生成",exact:true}).click();
+    await page.getByRole("button",{name:"＋ 生成",exact:true}).click();
     await page.getByPlaceholder(/对这个生成节点写要求/).fill("站台灯下雨滴");
     const target=page.getByLabel("用于段",{exact:true});
     await target.fill("G01");

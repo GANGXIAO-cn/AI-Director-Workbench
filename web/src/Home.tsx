@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { isKickoffTopic } from "./topics";
 import { FileInput, PencilLine, Plus, PackageOpen, Film, Palette, NotebookPen, Ratio, ChevronDown, ArrowUp, type LucideIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { blob, cmd, upload } from "./api";
@@ -8,7 +9,7 @@ import { ErrorLine, Modal, PROVIDER_LABEL, go, useAction, useQuery } from "./ui"
 
 const TABS: [string, string, LucideIcon][] = [["import", "导入故事稿 / 剧本", FileInput], ["idea", "从一个想法开始", PencilLine],
   ["episode", "给项目开一集", Plus], ["delivery", "图文交付", PackageOpen], ["reference", "从参考片写剧本", Film]];
-const CHIPS = ["/ 从已成稿选题开一集", "/ 选题研究", "/ 承接上一集开新一集", "/ 审一份已有故事稿", "/ 修改进行中的一段"];
+const CHIPS = ["/ 从候选选题开一集", "/ 选题研究", "/ 承接上一集开新一集", "/ 审一份已有故事稿", "/ 修改进行中的一段"];
 async function ensureProject(pid: string, name: string) {
   if (pid && !pid.startsWith("__new")) return pid;
   const config = pid.startsWith("__new:") ? pid.slice(6) : "_template";
@@ -305,9 +306,9 @@ function Popover({ configs, listNotice, kind, close, projects, projectId, setPro
     <div className="pop col" style={style}><h3>从选题池取卡</h3>
       {sourceCards.error && <span className="error">{sourceCards.error}</span>}
       {!!sourceCards.data?.length && <><label>项目原始选题池<select value={sourceCode} onChange={e=>setSourceCode(e.target.value)}><option value="">选择原卡（保留原文与来源）</option>{sourceCards.data.filter((c:any)=>!topics.some((t:any)=>t.code===c.code)).map((c:any)=><option key={c.code} value={c.code}>{c.code} · {c.status} · {c.premise}</option>)}</select></label><button className="btn" disabled={!sourceCode || act.busy} onClick={()=>act.run(()=>takeCard(sourceCards.data.find((c:any)=>c.code===sourceCode)))}>选用原卡</button></>}
-      {topics.filter((t: any) => ["候选","已成稿"].includes(t.status)).map((t: any) =>
-        <button key={t.id} className="btn ghost" onClick={() => pickTopic(t)}>{t.code} · {t.premise} · {t.episode_id ? "打开对应集" : "选用"}</button>)}
-      {!topics.some((t: any) => ["候选","已成稿"].includes(t.status)) && <span className="muted small">当前没有可选卡片，可直接新建。</span>}
+      {topics.filter(isKickoffTopic).map((t: any) =>
+        <button key={t.id} className="btn ghost" onClick={() => pickTopic(t)}>{t.code} · {t.premise} · 选用</button>)}
+      {!topics.some(isKickoffTopic) && <span className="muted small">当前没有可选卡片，可直接新建。</span>}
       <div className="row"><input placeholder="选题编号" value={topicCode} onChange={e => setTopicCode(e.target.value)} /><input placeholder="故事前提" value={premise} onChange={e => setPremise(e.target.value)} /></div>
       <div className="row"><button className="btn primary" disabled={!projectId || !topicCode.trim() || !premise.trim() || act.busy} onClick={() => act.run(() => {
         if (topics.some((t: any) => t.code === topicCode.trim())) throw new Error("该选题编号已存在，请选择原卡或换一个编号");

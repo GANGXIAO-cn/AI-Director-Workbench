@@ -16,9 +16,9 @@ export function artifactFor(view: any, stage: string) {
 }
 
 /** 导演助手: clarification, progress, draft, review and image-batch cards, plus the composer. */
-export default function Assistant({ view, stage, sel, setSel, reload, focus, batches, onOpenBatch, composeRef }: {
+export default function Assistant({ view, stage, sel, setSel, reload, focus, batches, onOpenBatch, composeRef, openRequirements }: {
   view: any; stage: string; sel: Selection; setSel: (s: Selection) => void; reload: () => void; focus?: string | null;
-  batches: any[]; onOpenBatch: (b: any) => void; composeRef?:Ref<(draft:string)=>void>;
+  batches: any[]; onOpenBatch: (b: any) => void; openRequirements: () => void; composeRef?:Ref<(draft:string)=>void>;
 }) {
   const {focusChat,setFocusChat} = useDisplay();
   const {go, active} = useProjectRoute();
@@ -121,6 +121,7 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
         <textarea ref={input} maxLength={500} placeholder="输入你的想法，继续完善这一集" value={text} onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send(); }} />
         <div className="row small" style={{flexWrap:"wrap"}}>
+          <button className="btn ghost" onClick={openRequirements}>阶段技能</button>
           <span className="muted tiny">⌘ / Ctrl + 回车发送</span>
           <select aria-label="创作执行器" value={provider} onChange={e => setSelected({provider:e.target.value})}>
             {Object.keys(catalog.data?.text ?? {[provider]:{}}).map(p => <option key={p} value={p}>{PROVIDER_LABEL[p] ?? p}</option>)}</select>
@@ -167,8 +168,9 @@ function Message({ m, task, reload, art }: { m: any; task: any; reload: () => vo
         <div className="row"><a className="btn" onClick={()=>{if (focusChat) setFocusChat(false);}} href={`#${hash.split("#")[1].split("?")[0]}?v=${payload.versionId}`}>定位</a></div>
       </div>);
   }
-  if (m.role === "system") return (
-    <div className="mcard"><div className="small">{m.text.startsWith("独立审查") ? <>独立审查 · 另开会话 <Tag tone={m.text.includes("pass") ? "green" : "red"}>{m.text.includes("pass") ? "通过" : "退回"}</Tag></> : m.text}</div>
-      <div className="muted tiny" style={{ marginTop: 4 }}>{m.text}</div></div>);
+  if (m.role === "system") {
+    const review = m.run_id && art?.versions.flatMap((v: any) => v.reviews).find((r: any) => r?.run_id === m.run_id);
+    return <div className="mcard small">{review ? <>独立审查 · 另开会话 <Tag tone={review.original_decision === "pass" ? "green" : "red"}>{review.original_decision === "pass" ? "通过" : review.original_decision === "uncertain" ? "待确认" : "退回"}</Tag> · {review.issues.length} 条意见</> : m.text}</div>;
+  }
   return <div className="msg"><div className="who"><i className="codex" />助手</div><div>{m.text}</div></div>;
 }
