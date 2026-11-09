@@ -21,7 +21,7 @@ function parse(hash: string): Route {
   const parts = path.split("/").filter(Boolean);
   if (parts[0] === "p" && parts[1]) return { page: "project", id: parts[1], sub: parts[2], arg: parts[3] };
   if (parts[0] === "e" && parts[1]) return { page: "episode", id: parts[1], stage: parts[2] ?? "story" };
-  if (parts[0] === "sys") return { page: "sys", sub: parts[1] ?? "executors" };
+  if (parts[0] === "sys") return { page: "sys", sub: parts[1] === "settings" ? (parts[2] ?? "executors") : (parts[1] ?? "executors") };
   return { page: "home", tab: parts[0] };
 }
 
@@ -103,7 +103,7 @@ export default function App() {
     }
   }
   const projectPage = route.page === "project" || route.page === "episode";
-  const navActive = route.page === "episode" ? "episode" : route.page === "sys" ? route.sub
+  const navActive = route.page === "episode" ? "episode" : route.page === "sys" ? (route.sub === "tasks" ? "tasks" : "settings")
     : route.page === "project" ? (["library","topics"].includes(route.sub || "") ? route.sub! : "project")
     : route.tab || "idea";
   return <div className="project-desktop">

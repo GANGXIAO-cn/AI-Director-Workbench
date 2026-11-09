@@ -311,10 +311,7 @@ kbd { border-radius: 4px; background: var(--card2); padding: 2px 5px; }
   .ws .actionbar { max-width: calc(100vw - 72px); left: calc(50vw + 22px); flex-wrap: wrap; }
   .modal { max-width: calc(100vw - 24px); }
 }
-.settings-home { max-width: 660px; }
-.settings-home section { margin: 24px 0; }
-.setting-link { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--line); color: var(--ink2); }
-.setting-link:hover { color: var(--white); }
+
 
 .story-compare h3 { margin-top: 15px; }
 .story-candidates { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
@@ -443,3 +440,27 @@ kbd { border-radius: 4px; background: var(--card2); padding: 2px 5px; }
 @media (max-width: 900px) {
   .project-overview .grid2 { grid-template-columns: minmax(0,1fr); }
 }
+
+.settings-page { max-width: 1560px; }
+.settings-layout { display:grid; grid-template-columns: 184px minmax(0,1fr); gap:32px; margin-top:20px; }
+.settings-menu { align-self:start; display:grid; gap:20px; padding-right:12px; border-right:1px solid var(--line); }
+.settings-menu h2 { margin:0 10px 5px; font-size:.85rem; color:var(--muted); }
+.settings-menu a { display:block; padding:8px 10px; border-radius:6px; color:var(--ink2); }
+.settings-menu a:hover, .settings-menu a[aria-current] { color:var(--white); background:var(--panel); }
+.settings-menu a[aria-current] { box-shadow:inset 2px 0 #5896ff; }
+.settings-panel { min-width:0; overflow-wrap:anywhere; }
+.settings-panel h1 { font-size:1.22rem; }
+.settings-panel .grid3 { grid-template-columns:repeat(auto-fit,minmax(min(235px,100%),1fr)); }
+.settings-panel input,.settings-panel select { max-width:100%; min-width:0; }
+.settings-panel input[aria-label="资料路径"] { flex:1; }
+.settings-panel .table { display:block; overflow-x:auto; }
+@media (max-width:1000px) {
+  .settings-layout { display:block; }
+  .settings-menu { display:flex; flex-wrap:wrap; gap:4px 14px; padding:0 0 12px; margin-bottom:16px; border-right:0; border-bottom:1px solid var(--line); }
+  .settings-menu div { display:contents; }
+  .settings-menu h2 { display:none; }
+  .settings-menu a { padding:6px 8px; }
+}
+
+.connection-result { padding:8px 10px; border-left:2px solid var(--blue); background:var(--panel); }
+.connection-result p { margin:4px 0 0; }

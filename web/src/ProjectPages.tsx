@@ -1,3 +1,4 @@
+import { ResourceBrowser } from "./Resources";
 import {ExecutorConnection} from "./ExecutorConnection";
 import { ProjectBaselines } from "./ProjectBaselines";
 import { TopicResearch } from "./TopicResearch";
@@ -498,18 +499,22 @@ function RefFilm({ id, packId, p }: any) {
 
 // ---------------------------------------------------------------- system pages
 export function SystemPage({ sub }: { sub: string }) {
-  return <div className="page">{sub === "settings" ? <SettingsHome/> : sub === "about" ? <About/> : sub === "providers" ? <Providers/> : sub === "packager" ? <PackagerStatus/> : sub === "images" ? <ImageConnections/> : sub === "display" ? <DisplaySettings/> : sub === "skills" ? <Skills /> : sub === "tasks" ? <Tasks /> : sub === "storage" ? <Storage /> : <Executors />}</div>;
-}
-
-function SettingsHome() {
-  const groups: [string,[string,string][]][] = [
-    ["执行", [["执行器连接与型号","#/sys/executors"],["我的模型服务","#/sys/providers"],["图像通道","#/sys/images"],["H3 打包器","#/sys/packager"],["任务记录","#/sys/tasks"]]],
-    ["制作资料", [["剧本知识库与索引","#/knowledge"],["导演风格与色卡","#/palette"],["方法包版本","#/sys/skills"]]],
-    ["本机工作台", [["服务、数据与备份","#/sys/storage"],["界面与快捷键","#/sys/display"],["关于导演工作台","#/sys/about"]]],
+  if (sub === "tasks") return <div className="page"><Tasks/></div>;
+  const groups:[string,[string,string][]][] = [
+    ["执行与生成", [["executors","执行器连接与型号"],["providers","我的模型服务"],["images","图像通道"],["packager","H3 打包器"]]],
+    ["制作资料", [["knowledge","剧本知识库与索引"],["palette","色卡资料位置"],["skills","方法包版本"]]],
+    ["本机工作台", [["storage","服务、数据与备份"],["display","界面与快捷键"],["about","关于导演工作台"]]],
   ];
-  return <section className="settings-home"><h1>设置</h1>{groups.map(([name, links])=><section key={name}>
-    <h2>{name}</h2>{links.map(([label, href])=><a key={href} className="setting-link" href={href}>{label}<span aria-hidden="true">→</span></a>)}
-  </section>)}</section>;
+  const panels:Record<string,React.ReactNode> = {executors:<Executors/>,providers:<Providers/>,images:<ImageConnections/>,
+    packager:<PackagerStatus/>,knowledge:<ResourceBrowser kind="knowledge" settingsOnly/>,palette:<ResourceBrowser kind="palette" settingsOnly/>,
+    skills:<Skills/>,storage:<Storage/>,display:<DisplaySettings/>,about:<About/>};
+  const current=Object.prototype.hasOwnProperty.call(panels,sub)?sub:"executors";
+  return <div className="page settings-page"><h1>设置</h1><div className="settings-layout">
+    <nav className="settings-menu" aria-label="设置分类">{groups.map(([group,items])=><div key={group}>
+      <h2>{group}</h2>{items.map(([key,label])=><a key={key} href={"#/sys/settings/"+key}
+        aria-current={current===key?"page":undefined}>{label}</a>)}</div>)}</nav>
+    <section className="settings-panel" key={current} aria-label="设置内容">{panels[current]}</section>
+  </div></div>;
 }
 
 declare const __ADW_BUILD__: {version:string; builtAt:string; commit:string|null; modified:boolean|null};
@@ -551,15 +556,15 @@ function Executors() {
   const cat = useQuery<any>("model_catalog");
   const [paths, setPaths] = useState<Record<string,string>>({});
   const act = useAction();
-  const states: Record<string,string> = {available:"可用", unavailable:"不可用", auth_unknown:"登录待验证", simulated:"模拟执行器"};
+
   return (
     <div>
-      <h1>执行与分工</h1><div className="muted small" style={{ margin: "6px 0 16px" }}>逐步配置；单模型不取消必需审核。执行器不可用或隔离未通过时明确暂停，不悄悄降级。</div>
-      <button className="btn" disabled={act.busy} onClick={() => act.run(async () => {await Promise.all([probe.reload(), cat.reload()]);})}>重新检测本机连接</button><ErrorLine error={probe.error||cat.error?{message:probe.error||cat.error||""}:null}/>
+      <h1>执行器连接与型号</h1><p className="muted">工作台沿用本机 CLI 的登录账号。点“验证连接”可检查登录状态，Google CLI 通过读取可用型号验证。验证不会发起生成任务。</p>
+      <button className="btn" disabled={act.busy} onClick={() => act.run(async () => {await Promise.all([probe.reload(), cat.reload()]);})}>重新检测本机程序</button>{!probe.data&&!probe.error&&<p role="status">正在检测本机 CLI…</p>}<ErrorLine error={probe.error||cat.error?{message:probe.error||cat.error||""}:null}/>
       <div className="grid3">{Object.entries(probe.data ?? {}).map(([k, v]: any) => (
-        <div key={k} className={`card ${v.status === "available" ? "line" : "amber"}`}>
-          <div className="spread"><b>{PROVIDER_LABEL[k] ?? k}</b><Tag tone={v.status === "available" ? "green" : "amber"}>{states[v.status] ?? "待检测"}</Tag></div>
-          <div className="small" style={{ margin: "6px 0" }}>{v.version ?? "未检测到版本"} · 登录 {v.authenticated === true ? "是" : v.authenticated === false ? "否" : "待验证"}{v.accountLabel ? " · "+v.accountLabel : ""} · 代理 {v.proxy ? "已传入" : "无"}</div>
+        <div key={k} className={`card ${v.version ? "line" : "amber"}`}>
+          <div className="spread"><b>{PROVIDER_LABEL[k] ?? k}</b><Tag tone={v.version?"green":"amber"}>{v.status==="simulated"?"模拟执行器":v.version?"已检测到程序":"程序不可用"}</Tag></div>
+          <div className="small" style={{ margin: "6px 0" }}>{v.version ?? "未检测到版本"} · 代理 {v.proxy ? "已传入" : "无"}</div>
           <div className="muted tiny mono">{v.executable ?? "未找到"}</div>
           <div className="small">独审隔离　{v.isolation === "session" ? "支持独立会话" : "待验证"}</div>
           {v.missing_flags?.length > 0 && <div className="small">缺少参数　{v.missing_flags.join("、")}</div>}
@@ -569,14 +574,14 @@ function Executors() {
             <button className="btn" disabled={act.busy} onClick={() => act.run(async () => {
               await setCliPath(k, paths[k] ?? v.configured ?? ""); await probe.reload();
             })}>保存路径</button></label>}
-          {cat.data?.text[k]?.connection && <ExecutorConnection key={cat.data.text[k].connection.revision} provider={k} settings={cat.data.text[k].connection}
-            models={cat.data.text[k].models} reload={async()=>{await Promise.all([cat.reload(),probe.reload()]);}}/>}
+          {cat.data?.text[k]?.connection && <ExecutorConnection key={[v.executable,v.configured,v.checkedAt,cat.data.text[k].connection.revision].join(":")} provider={k} probe={v} pathDirty={(paths[k] ?? v.configured ?? "")!==(v.configured ?? "")} settings={cat.data.text[k].connection}
+            models={cat.data.text[k].models} reload={cat.reload}/>}
         </div>))}</div>
       <h2 style={{ marginTop: 20 }}>型号与强度（能力元数据）</h2>
       <table className="table"><thead><tr><th>执行器</th><th>型号</th><th>可选强度</th><th>状态</th><th>来源</th></tr></thead>
         <tbody>{Object.entries(cat.data?.text ?? {}).flatMap(([prov, c]: any) => c.models.map((m: any) => (
           <tr key={prov + m.id}><td>{PROVIDER_LABEL[prov]}</td><td>{m.label}</td><td>{m.efforts.map((e: any) => e ?? "默认").join(" / ")}</td><td><Tag tone={m.status === "verified" ? "green" : "amber"}>{m.status}</Tag></td><td className="muted small">{m.source}</td></tr>)))}</tbody></table>
-      <a className="btn" href="#/sys/images">查看图像通道</a>
+
       <ErrorLine error={act.error} />
     </div>
   );

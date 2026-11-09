@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { BookOpen, Boxes, Clapperboard, FileClock, FolderOpen, HardDrive, Images, ListChecks, Menu,
-  MessagesSquare, NotebookPen, Palette, PanelLeftClose, PanelsTopLeft, PencilLine, Plug, SlidersHorizontal, Settings,
-  Workflow, type LucideIcon } from "lucide-react";
+import { BookOpen, Boxes, Clapperboard, FileClock, FolderOpen, Images, ListChecks, Menu,
+  MessagesSquare, NotebookPen, Palette, PanelLeftClose, PanelsTopLeft, PencilLine, Settings,
+  type LucideIcon } from "lucide-react";
 
 import { resourceOwner } from "./projectNavigation";
 
@@ -44,8 +44,7 @@ export function SideNav({active, projects, projectId, episode, hash}:{
   items.push(["knowledge","剧本知识库","#/knowledge",BookOpen],["palette","导演风格与色卡","#/palette",Palette],
     ["deliveries","本地交付包","#/deliveries",Boxes]);
   if (episode || workspace) items.push(["episode","导演工作区",episode?hash:workspace,MessagesSquare]);
-  const system:NavItem[]=[["settings","设置","#/sys/settings",Settings],["tasks","任务记录","#/sys/tasks",ListChecks],["executors","执行与分工","#/sys/executors",Plug],
-    ["skills","技能包","#/sys/skills",Workflow],["storage","服务与存储","#/sys/storage",HardDrive],["display","界面与快捷键","#/sys/display",SlidersHorizontal]];
+  const system:NavItem[]=[["tasks","任务记录","#/sys/tasks",ListChecks],["settings","设置","#/sys/settings",Settings]];
   const link=([key,label,href,Icon]:NavItem)=><a key={key} className={"nav"+(active===key?" on":"")} href={href}
     aria-label={label} aria-current={active===key?"page":undefined} title={label} onClick={()=>setOpened(false)}>
     <Icon size={17} aria-hidden="true"/><span>{label}</span></a>;

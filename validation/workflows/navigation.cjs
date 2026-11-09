@@ -31,7 +31,8 @@ async function main() {
     await page.getByRole("heading",{name:"导演风格与色卡",exact:true}).waitFor();
     await link("剧本知识库").click();
     await page.getByRole("heading",{name:"剧本知识库",exact:true}).waitFor();
-    await link("界面与快捷键").click();
+    await link("设置").click();
+    await page.getByRole("navigation",{name:"设置分类"}).getByRole("link",{name:"界面与快捷键"}).click();
     await page.getByRole("heading",{name:"界面与快捷键"}).waitFor();
     assert.equal(await page.getByRole("checkbox",{name:"专注对话"}).isChecked(),true);
     await btn("放大字号").click();
@@ -100,7 +101,8 @@ async function main() {
     await btn("重新检查打包器").click();
     await page.getByText(packageId,{exact:false}).waitFor();
     await page.screenshot({path:path.join(out,"19_H3打包器与此版本出包记录.png")});
-    await link("界面与快捷键").click();
+    await link("设置").click();
+    await page.getByRole("navigation",{name:"设置分类"}).getByRole("link",{name:"界面与快捷键"}).click();
     await heading.waitFor();
     await page.screenshot({path:path.join(out,"18_统一导航与界面设置.png")});
     assert.deepEqual(faults,[]);

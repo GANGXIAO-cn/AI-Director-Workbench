@@ -9,7 +9,7 @@ type Excerpt = ScriptRow & {offset:number; length:number; text:string; metadata:
 type Color = {hex:string; name_zh?:string; ratio?:number; code?:string; emotion?:string};
 type Card = {id:string; name:string; english:string; category:string; summary:string; cover:string; palette:{primary:Color[]; emotional:Color[]}};
 type Detail = Card & {body:string; prompts:Record<string,string>; stills:string[]; sources:string; collectionGuide?:string};
-type Props = {kind:Kind; episodeId?:string; stage?:string; projectId?:string; onChoose?:(e:Excerpt)=>void; methodOnly?:boolean; initialQuery?:string; recommended?:boolean};
+type Props = {kind:Kind; settingsOnly?:boolean; episodeId?:string; stage?:string; projectId?:string; onChoose?:(e:Excerpt)=>void; methodOnly?:boolean; initialQuery?:string; recommended?:boolean};
 
 function Swatches({colors}:{colors:Color[]}) {
   return <div className="swatches">{colors.map((c,i)=><span key={i} title={(c.name_zh||c.emotion||c.code||"")+" "+c.hex} style={{backgroundColor:c.hex, flex:c.ratio || 1}} />)}</div>;
@@ -122,7 +122,7 @@ function AddScript({root,categories,close,saved}:{root:string;categories:string[
         <button className="btn" onClick={close}>取消</button></div></div></Modal>;
 }
 
-export function ResourceBrowser({kind,episodeId,stage,projectId="",onChoose,methodOnly=false,initialQuery="",recommended=false}:Props) {
+export function ResourceBrowser({kind,settingsOnly=false,episodeId,stage,projectId="",onChoose,methodOnly=false,initialQuery="",recommended=false}:Props) {
   const books=kind==="knowledge";
   const [adding,setAdding]=useState(false);
   const [indexResult,setIndexResult]=useState<IndexResult|null>(null);
@@ -136,10 +136,10 @@ export function ResourceBrowser({kind,episodeId,stage,projectId="",onChoose,meth
   const selectedKind=methodOnly?"method":docKind;
   const [reason,setReason]=useState("借鉴写法与结构");
   const act=useAction();
-  const scripts=useQuery<{rows:ScriptRow[];total:number;categories:string[]}>(books?"browse_scripts":null,{query:bodySearch?"":query,category,page,kind:selectedKind,recommended:recommended&&!bodySearch,episode_id:episodeId,stage});
-  const palettes=useQuery<{rows:Card[];total:number;categories:string[]}>(books?null:"browse_palettes",{query,category,page});
+  const scripts=useQuery<{rows:ScriptRow[];total:number;categories:string[]}>(books&&!settingsOnly?"browse_scripts":null,{query:bodySearch?"":query,category,page,kind:selectedKind,recommended:recommended&&!bodySearch,episode_id:episodeId,stage});
+  const palettes=useQuery<{rows:Card[];total:number;categories:string[]}>(books||settingsOnly?null:"browse_palettes",{query,category,page});
   const detail=useQuery<Detail>(cardId?"palette_detail":null,{card_id:cardId});
-  const projects=useQuery<{id:string;name:string}[]>(!books&&!projectId?"list_projects":null);
+  const projects=useQuery<{id:string;name:string}[]>(!books&&!projectId&&!settingsOnly?"list_projects":null);
   const [pid,setPid]=useState(projectId || new URLSearchParams(location.hash.split("?")[1]).get("project") || "");
   const listing=books?scripts:palettes;
   const pages=Math.max(1,Math.ceil((listing.data?.total ?? 0)/(books?40:24)));
@@ -148,16 +148,24 @@ export function ResourceBrowser({kind,episodeId,stage,projectId="",onChoose,meth
     if(match && match.offset>=part.offset && match.offset+Array.from(match.text).length<=part.offset+Array.from(part.text).length) part.match=match;
     setExcerpt(part);
   });
-  return <section className="resource-browser">
-    <h2>{books?"剧本知识库":"导演风格与色卡"}</h2>
-    <details><summary>本机资料位置</summary><div className="row"><input aria-label="资料路径" value={path ?? mounts.data?.[kind] ?? ""} onChange={e=>setPath(e.target.value)} placeholder={books?"含 knowledgeIndex.sqlite 的目录":"色卡目录或 ZIP"}/>
-      <button className="btn" disabled={act.busy} onClick={()=>act.run(async()=>{await cmd("mount_resource",{kind,path:path ?? mounts.data?.[kind]});await mounts.reload();setPath(null);setPage(1);await listing.reload();})}>挂载并刷新</button></div></details>
-    {books && !recommended && <div className="row">
-      <button className="btn" disabled={act.busy||!mounts.data?.knowledge} onClick={()=>setAdding(true)}>添加剧本</button>
+  const mountControl = <div className="row"><input aria-label="资料路径" value={path ?? mounts.data?.[kind] ?? ""} onChange={e=>setPath(e.target.value)} placeholder={books?"含 knowledgeIndex.sqlite 的目录":"色卡目录或 ZIP"}/>
+      <button className="btn" disabled={act.busy} onClick={()=>act.run(async()=>{await cmd("mount_resource",{kind,path:path ?? mounts.data?.[kind]});await mounts.reload();setPath(null);setPage(1);await listing.reload();})}>挂载并刷新</button></div>;
+  const indexControl = <>
       <button className="btn" disabled={act.busy||!mounts.data?.knowledge} onClick={()=>act.run(async()=>{
         setIndexResult(await cmd<IndexResult>("refresh_script_index",{expected_path:mounts.data?.knowledge}));setPage(1);await scripts.reload();
       })}>{act.busy?"处理中…":"更新所选目录索引"}</button>
       {indexResult&&<span role="status">索引新增 {indexResult.added}、更新 {indexResult.changed}、移出 {indexResult.removed} · 共 {indexResult.documents} 份，正文加速 {indexResult.indexedDocuments} 份</span>}
+    </>;
+  if (settingsOnly) return <section><h1>{books?"剧本知识库与索引":"色卡资料位置"}</h1>
+    <p className="muted">选择{books?"含 knowledgeIndex.sqlite 的本机目录":"导演色卡目录或 ZIP 文件"}。</p>
+    {mountControl}{books&&<div className="row">{indexControl}</div>}
+    {mounts.error&&<p className="error">{mounts.error}</p>}<ErrorLine error={act.error}/></section>;
+  return <section className="resource-browser">
+    <h2>{books?"剧本知识库":"导演风格与色卡"}</h2>
+    <details><summary>本机资料位置</summary>{mountControl}</details>
+    {books && !recommended && <div className="row">
+      <button className="btn" disabled={act.busy||!mounts.data?.knowledge} onClick={()=>setAdding(true)}>添加剧本</button>
+      {indexControl}
     </div>}
     {!books && <button className="btn" onClick={()=>setAdding(true)}>添加我的色卡</button>}
     {adding && (books?<AddScript root={mounts.data?.knowledge ?? ""} categories={scripts.data?.categories ?? []} close={()=>setAdding(false)} saved={(result,title)=>{

@@ -16,7 +16,15 @@ async function main() {
     assert.match(data,/adw-workflows-[^/]+\/data$/);
     const [project]=await q("list_projects");
     const eid=project.recent[0].id;
-    await page.goto(base+"/#/sys/executors");
+    await page.goto(base+"/#/sys/settings");
+    const menu=page.getByRole("navigation",{name:"设置分类"});
+    const nav=page.getByRole("navigation",{name:"主导航"});
+    await menu.getByRole("link",{name:"色卡资料位置"}).click();
+    await page.getByLabel("资料路径").waitFor();
+    assert.equal(await nav.getByRole("link",{name:"设置",exact:true}).getAttribute("aria-current"),"page");
+    await page.reload();
+    await page.getByLabel("资料路径").waitFor();
+    await menu.getByRole("link",{name:"执行器连接与型号"}).click();
     const settings=page.locator(".grid3 .card");
     const providers=[
       ["Codex","codex","codex","studio-model","high","ChatGPT · 已登录"],
@@ -30,6 +38,8 @@ async function main() {
       await card.getByText(/local-fixture-2/).waitFor();
       await card.getByRole("button",{name:"刷新本机型号"}).click();
       await card.getByRole("status").waitFor();
+      await card.getByRole("button",{name:"验证连接"}).click();
+      await card.getByText(provider==="antigravity"?/Google CLI 已返回可用型号/:/本机登录已验证/).waitFor();
       await card.getByLabel("默认型号").selectOption(model);
       if(effort) await card.getByLabel("默认强度").selectOption(effort);
       await card.getByLabel("连接代理").selectOption("off");
