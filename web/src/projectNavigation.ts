@@ -13,3 +13,10 @@ export function useProjectList() {
   }, [projects.reload]);
   return projects;
 }
+
+
+export function resourceOwner(projects:{id:string}[], current?:string) {
+  if (current) return current;
+  const last = localStorage.getItem("lastProject");
+  return projects.find(p=>p.id===last)?.id ?? (projects.length===1 ? projects[0].id : undefined);
+}

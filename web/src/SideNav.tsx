@@ -3,6 +3,8 @@ import { BookOpen, Boxes, Clapperboard, FileClock, FolderOpen, HardDrive, Images
   MessagesSquare, NotebookPen, Palette, PanelLeftClose, PanelsTopLeft, PencilLine, Plug, SlidersHorizontal, Settings,
   Workflow, type LucideIcon } from "lucide-react";
 
+import { resourceOwner } from "./projectNavigation";
+
 type EpisodeLink = { id:string; display_code:string; title:string; created_at:number };
 type ProjectLink = { id:string; name:string; recentVisible:boolean; recent:EpisodeLink[] };
 type NavItem = [id:string, label:string, href:string, icon:LucideIcon];
@@ -23,9 +25,7 @@ export function SideNav({active, projects, projectId, episode, hash}:{
     document.addEventListener("keydown",close,true); document.addEventListener("pointerdown",outside);
     return ()=>{document.removeEventListener("keydown",close,true);document.removeEventListener("pointerdown",outside);};
   },[opened]);
-  let last:string|null = null;
-  try {last=localStorage.getItem("lastProject");} catch { /* optional */ }
-  const owner = projectId || projects.find(p=>p.id===last)?.id || projects[0]?.id;
+  const owner = resourceOwner(projects,projectId);
   const recent = projects.filter(p=>p.recentVisible).flatMap(p=>p.recent || []).sort((a,b)=>b.created_at-a.created_at).slice(0,5);
   useEffect(()=>{
     if (episode && projectId) {
@@ -38,8 +38,9 @@ export function SideNav({active, projects, projectId, episode, hash}:{
     if (saved?.startsWith("#/e/")) workspace = saved;
   } catch { /* use recent episodes */ }
   const items:NavItem[] = [["idea","创作","#/",PencilLine],["projects","项目","#/projects",FolderOpen]];
-  if (owner) items.push(["project","项目主页","#/p/"+owner,PanelsTopLeft],["library","资产库","#/p/"+owner+"/library",Images],
-    ["topics","选题池","#/p/"+owner+"/topics",NotebookPen]);
+  if (owner) items.push(["project","项目主页","#/p/"+owner,PanelsTopLeft]);
+  items.push(["library","资产库",owner ? "#/p/"+owner+"/library" : "#/library",Images],
+    ["topics","选题池",owner ? "#/p/"+owner+"/topics" : "#/topics",NotebookPen]);
   items.push(["knowledge","剧本知识库","#/knowledge",BookOpen],["palette","导演风格与色卡","#/palette",Palette],
     ["deliveries","本地交付包","#/deliveries",Boxes]);
   if (episode || workspace) items.push(["episode","导演工作区",episode?hash:workspace,MessagesSquare]);

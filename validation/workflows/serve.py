@@ -141,6 +141,16 @@ if __name__ == "__main__":
         env.wb.set_cast(seed["eid"],"G01","阿福","ok",image)
     else:
         seed = env.full_episode(segments={"G01": [8000]})
+    if os.environ.get("ADW_TEST_PROJECT_CONTEXT"):
+        second_pid, second_eid = env.new_episode(name="码头项目")
+        for pid,eid,usage,color in [(seed["pid"],seed["eid"],"守夜",(10,20,50)),(second_pid,second_eid,"登船",(20,60,80))]:
+            asset = env.image(pid,eid,name="同名道具",category="prop",rgb=color)
+            entry = env.wb.submit_reuse(asset["versionId"],usage)
+            if usage=="守夜":
+                env.wb.review_library(entry["entryId"],"approved")
+            env.wb.add_topic(pid,"卡01",usage+"时发现雨伞")
+        env.wb.create_batch(seed["eid"],"fake-image","generate",
+            [dict(prompt="门牌号",target=dict(name="门牌视图",category="scene"))],"64x64")
     if os.environ.get("ADW_TEST_CAST"):
         from manuscript_samples import pdf_sample, word_sample
         fixture = env.wb.store.root.parent

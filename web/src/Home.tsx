@@ -6,7 +6,7 @@ import { FileInput, PencilLine, Plus, PackageOpen, Film, Palette, NotebookPen, R
 import { useEffect, useRef, useState } from "react";
 import { blob, cmd, upload, importManuscript } from "./api";
 import {OpenProjectFolder, SaveProjectFolder} from "./ProjectFolders";
-import type { useProjectList } from "./projectNavigation";
+import { resourceOwner, type useProjectList } from "./projectNavigation";
 import { ErrorLine, Modal, PROVIDER_LABEL, go, useAction, useQuery } from "./ui";
 
 const TABS: [string, string, LucideIcon][] = [["import", "导入故事稿 / 剧本", FileInput], ["idea", "从一个想法开始", PencilLine],
@@ -48,9 +48,11 @@ export default function Home({ tab, projects }: { tab?: string; projects: Return
   const act = useAction();
   const list = projects.data ?? [];
   useEffect(() => { if (!projectId && projects.data) setProjectId(list.find((p) => p.id === localStorage.getItem("lastProject"))?.id ?? list[0]?.id ?? "__new"); }, [projectId, projects.data]);
-  useEffect(() => {
-    if (tab && ["library", "topics"].includes(tab) && projectId && !projectId.startsWith("__new")) go(`#/p/${projectId}/${tab}`);
-  }, [tab, projectId]);
+  const resourceTab = tab==="library" || tab==="topics";
+  const owner = resourceOwner(list);
+  useEffect(()=>{
+    if (resourceTab && owner) go(`#/p/${owner}/${tab}`);
+  },[resourceTab,owner,tab]);
   const configName = configs.data?.find(c => "__new:" + c.configId === projectId)?.name;
   const projectLabel = list.find(p => p.id === projectId)?.name ?? (configName ? `新项目（${configName}）` : creating ? "新项目" : "选择项目");
   const projectReady = creating || (existing && project.data?.project.id === projectId);
@@ -69,7 +71,7 @@ export default function Home({ tab, projects }: { tab?: string; projects: Return
   const kickoffMode = ["idea","episode","import"].includes(mode);
   const prefill = { style: styleNote, ratio, creator, reviewer, mode: runMode, predecessorId: previous };
   const selectProject = (pid: string) => {
-    setPictures([]); localStorage.setItem("lastProject",pid); setProjectId(pid); setRecognized([]); setTopic(null); setPrevious(""); setRatio(""); setStyleNote(""); setTargetEpisode("");
+    setPictures([]); localStorage.setItem("lastProject",pid); dispatchEvent(new Event("projects-changed")); setProjectId(pid); setRecognized([]); setTopic(null); setPrevious(""); setRatio(""); setStyleNote(""); setTargetEpisode("");
   };
   const selectMode = (value: string) => { if (value !== mode) {setTopic(null); setPrevious("");} setMode(value); setPop(""); act.clear(); };
   const openKickoff = (pid:string, values:Record<string,unknown>) => {
@@ -132,6 +134,9 @@ export default function Home({ tab, projects }: { tab?: string; projects: Return
       go(`#/e/${destination.id}/delivery`);
     }
   });
+  if (resourceTab) return <main className="main page"><h1>{tab==="library" ? "选择要查看资产库的项目" : "选择要查看选题池的项目"}</h1>
+    {listNotice}{list.map(p=><a className="setting-link" key={p.id} href={`#/p/${p.id}/${tab}`}>{p.name}</a>)}
+    {projects.data && !list.length && <a href="#/">创建项目</a>}</main>;
   if (tab==="projects" || tab==="deliveries") return <div className="app"><main className="main page"><h1>{tab==="projects"?"项目":"本地交付包"}</h1>
     {listNotice}{tab==="projects" && <OpenProjectFolder/>}
     {tab==="projects"?<div className="director-grid">{list.map(p=><ProjectCard p={p} key={p.id}/>)}</div>:list.map(p=><section key={p.id}><h2>{p.name}</h2>{p.deliveries?.length?p.deliveries.map((d:any)=><p key={d.id}><a href={`#/e/${d.episode_id}/delivery`}>{d.display_code} · {d.title || p.name} · {d.scope==="full"?"整集":"限定段落"} · {new Date(d.created_at*1000).toLocaleString()}</a></p>):<p>暂无交付记录</p>}</section>)}</main></div>;

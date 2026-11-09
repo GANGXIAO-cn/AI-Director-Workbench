@@ -414,18 +414,29 @@ function RefFilm({ id, packId, p }: any) {
 
 // ---------------------------------------------------------------- system pages
 export function SystemPage({ sub }: { sub: string }) {
-  return <div className="page">{sub === "settings" ? <SettingsHome/> : sub === "providers" ? <Providers/> : sub === "packager" ? <PackagerStatus/> : sub === "images" ? <ImageConnections/> : sub === "display" ? <DisplaySettings/> : sub === "skills" ? <Skills /> : sub === "tasks" ? <Tasks /> : sub === "storage" ? <Storage /> : <Executors />}</div>;
+  return <div className="page">{sub === "settings" ? <SettingsHome/> : sub === "about" ? <About/> : sub === "providers" ? <Providers/> : sub === "packager" ? <PackagerStatus/> : sub === "images" ? <ImageConnections/> : sub === "display" ? <DisplaySettings/> : sub === "skills" ? <Skills /> : sub === "tasks" ? <Tasks /> : sub === "storage" ? <Storage /> : <Executors />}</div>;
 }
 
 function SettingsHome() {
   const groups: [string,[string,string][]][] = [
     ["执行", [["执行器连接与型号","#/sys/executors"],["我的模型服务","#/sys/providers"],["图像通道","#/sys/images"],["H3 打包器","#/sys/packager"],["任务记录","#/sys/tasks"]]],
     ["制作资料", [["剧本知识库与索引","#/knowledge"],["导演风格与色卡","#/palette"],["方法包版本","#/sys/skills"]]],
-    ["本机工作台", [["服务、数据与备份","#/sys/storage"],["界面与快捷键","#/sys/display"]]],
+    ["本机工作台", [["服务、数据与备份","#/sys/storage"],["界面与快捷键","#/sys/display"],["关于导演工作台","#/sys/about"]]],
   ];
   return <section className="settings-home"><h1>设置</h1>{groups.map(([name, links])=><section key={name}>
     <h2>{name}</h2>{links.map(([label, href])=><a key={href} className="setting-link" href={href}>{label}<span aria-hidden="true">→</span></a>)}
   </section>)}</section>;
+}
+
+declare const __ADW_BUILD__: {version:string; builtAt:string; commit:string|null; modified:boolean|null};
+
+function About() {
+  const {version,builtAt,commit,modified}=__ADW_BUILD__;
+  return <section><h1>关于导演工作台</h1><dl className="shortcuts">
+    <dt>工作台版本</dt><dd>{version}</dd>
+    <dt>本页构建时间</dt><dd><time dateTime={builtAt}>{new Date(builtAt).toLocaleString("zh-CN",{hour12:false})}</time></dd>
+    <dt>源码提交</dt><dd>{commit ?? "未取得提交号"}{modified ? "（含本地前端改动）" : ""}</dd>
+  </dl></section>;
 }
 
 function PackagerStatus() {

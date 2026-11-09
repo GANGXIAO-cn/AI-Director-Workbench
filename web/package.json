@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prepreview": "npm run build",
+    "preview": "vite preview",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b"
   },
