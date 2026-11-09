@@ -264,13 +264,13 @@ export function StepRequirements({pid,eid,stage,close,toComposer}:{pid:string;ei
     {stage==="assets" ? <p className="muted small">保存后用于本集下一批图像。已建立的批次沿用各自确认的输入。</p> : <>
     <ProjectLibrary pid={pid} eid={eid} stage={stage}/>
     <label>创作路线 <select value={form.route} onChange={e=>change({route:e.target.value})}>{["短片","电影节 / 作者表达","流媒体 / 类型剧","自由自定","快速出片"].map(r=><option key={r}>{r}</option>)}</select></label>
+    </>}
     <label>参考与知识库 <select value={form.mode} onChange={e=>{change({mode:e.target.value});setBrowse(false);}}>
       <option value="off">不调用</option><option value="match">匹配剧本与方法书</option><option value="method">只查方法书</option></select></label>
     {form.mode!=="off" && <><button className="btn" onClick={()=>setBrowse(!browse)}>{browse?"收起资料":"选择参考片段"}</button>
       {browse && <ResourceBrowser key={form.mode} kind="knowledge" recommended episodeId={eid} stage={stage} methodOnly={form.mode==="method"} initialQuery={form.goal} onChoose={r=>{change({references:[...form.references.filter(x=>x.path!==r.path||x.offset!==r.offset),r]});setBrowse(false);}}/>}
       {form.references.map((r,i)=><div key={r.path+r.offset}><SavedExcerpt record={r}/>
         <div className="row"><label>借鉴方式 <input value={r.reason??""} onChange={e=>change({references:form.references.map((entry,j)=>j===i?{...entry,reason:e.target.value}:entry)})}/></label><button className="btn" onClick={()=>change({references:form.references.filter((_,j)=>i!==j)})}>移除</button></div></div>)}</>}
-    </>}
     <ErrorLine error={act.error}/>{saved.error&&<span className="error">{saved.error}</span>}
     <div className="row"><button className="btn" disabled={!saved.data||!definition.data||act.busy} onClick={()=>act.run(()=>save(false))}>保存本步配置</button>
       {stage!=="assets" && toComposer && <button className="btn primary" disabled={!saved.data||!definition.data||act.busy} onClick={()=>act.run(()=>save(true))}>保存并带到创作对话</button>}<button className="btn" onClick={()=>setShowHistory(!showHistory)}>配置历史</button><button className="btn" onClick={close}>关闭</button></div>

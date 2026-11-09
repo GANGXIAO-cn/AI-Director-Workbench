@@ -52,6 +52,10 @@ def line_diff(a: str, b: str) -> list[dict]:
 
 
 class ProductionMixin:
+    def stage_checklist(self, episode_id, stage, version_id=None, delivery_id=None, scope="full", segments=None):
+        from .checklist import stage_checklist
+        return stage_checklist(self,episode_id,stage,version_id,delivery_id,scope,segments)
+
     media_probe = staticmethod(ffprobe)
     cut_detector = staticmethod(ffmpeg_cuts)
 

@@ -520,6 +520,13 @@ class ImagesMixin:
                 spec["items"] = [dict(item, prompt=item["prompt"] + "\n" + SCOPE + "\n" + reference) for item in spec["items"]]
             from .enhancements import entries as method_entries
             config = self.step_config(episode_id, "assets")
+            if config.get("references"):
+                spec["citations"] = [{k: v for k, v in ref.items() if k != "metadata"}
+                                     for ref in config["references"]]
+                excerpts = "\n\n".join(f"《{ref['title']}》 · {ref['reason']}\n{ref['text']}"
+                                       for ref in spec["citations"])
+                spec["items"] = [dict(item, prompt=item["prompt"] + "\n本批选用的知识库段落\n" + excerpts)
+                                 for item in spec["items"]]
             definition = config.get("form")
             if definition:
                 notes = [f"{label}：{config[key]}" for key,label in definition["fields"].items() if config.get(key)]

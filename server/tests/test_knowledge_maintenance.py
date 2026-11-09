@@ -2,6 +2,7 @@
 import csv
 import json
 import subprocess
+from unittest.mock import patch
 
 import pytest
 
@@ -88,6 +89,52 @@ def test_index_rollback_on_bad_document(tmp_path):
     assert wb.browse_scripts("窗台")["total"]==1 and wb.browse_scripts("新字")["total"]==0
     with pytest.raises(Rejected,match="挂载目录已改变"):
         wb.refresh_script_index(str(tmp_path))
+
+
+def test_asset_recommendations_and_batch_citation(tmp_path):
+    env = Env(tmp_path / "app")
+    wb = env.wb
+    _, eid = env.new_episode(idea="雨停之后两个人在站台告别")
+    root = tmp_path / "library"
+    library(root)
+    wb.mount_resource("knowledge", str(root))
+    # Two teaching excerpts have different applications. Titles give no ranking hints.
+    samples = {
+        "08-方法/片段甲.md": "逆光剪影要保留人物肩线与背景之间的明暗分界。",
+        "08-方法/片段乙.md": "对白停顿时，让对手的表演交代没有说出口的话。",
+        "07-用户授权作品/场次丙.md": "她在逆光剪影中收起雨伞。",
+        "10-小说/故事丁.md": "他第一次在墙上看见自己的逆光剪影。",
+    }
+    for name, body in samples.items():
+        path = root / name
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(body)
+    wb.refresh_script_index(str(root))
+    asset_rows = wb.browse_scripts("逆光剪影", recommended=True, episode_id=eid, stage="assets")["rows"]
+    assert {r["title"] for r in asset_rows} == {"片段甲", "场次丙"}
+    selected, = wb.browse_scripts("逆光剪影", kind="method", recommended=True, episode_id=eid, stage="assets")["rows"]
+    assert selected["title"] == "片段甲" and selected["match"]["text"] == "逆光剪影"
+    script = wb.browse_scripts("", recommended=True, episode_id=eid, stage="script")["rows"]
+    assert script[0]["title"] == "片段乙"
+    ref = wb.script_excerpt(selected["path"], selected["matchOffset"], expected_sha256=selected["sha256"])
+    ref.update(reason="借鉴人物轮廓的用光", match=selected["match"])
+    wb.save_step_config(eid, "assets", mode="method", references=[ref], enhancements=["07-A"])
+    args = dict(episode_id=eid, provider="fake-image", operation="generate", size="64x64",
+                budget_cents=4, items=[dict(prompt="站台上的背影", inputs=[])])
+    batch = wb.create_batch(**args)
+    wb.save_step_config(eid, "assets", mode="off", enhancements=[])
+    later = wb.create_batch(**args)
+    assert "citations" not in wb.batch_view(later["batchId"])["spec"]
+    spec = wb.batch_view(batch["batchId"])["spec"]
+    citation, = spec["citations"]
+    for key in ("title", "path", "offset", "text", "sha256", "reason", "match"):
+        assert citation[key] == ref[key]
+    assert spec["enhancements"]
+    wb.authorize_batch(batch["batchId"], batch["summaryHash"], "authorize-fixture")
+    with patch.object(env.images, "submit", wraps=env.images.submit) as sent:
+        wb.execute_batch(batch["batchId"])
+    prompt = sent.call_args.args[0]["prompt"]
+    assert ref["text"] in prompt and ref["reason"] in prompt and samples["08-方法/片段乙.md"] not in prompt
 
 
 def test_body_search_without_fts_and_pinned_citation(tmp_path):

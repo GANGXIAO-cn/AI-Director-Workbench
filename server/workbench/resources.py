@@ -184,7 +184,7 @@ class ResourcesMixin:
             with connect(self.db_path) as db:
                 kickoff=self._kickoff(db,episode_id)
                 source=self._source_text(db,kickoff) or ""
-            vocabulary={"story":"故事 因果 动机","script":"剧本 表演 对白","plan":"分镜 摄影 剪辑","prompts":"镜头 场景","publish":"标题 文案"}
+            vocabulary={"story":"故事 因果 动机","script":"剧本 表演 对白","plan":"分镜 摄影 剪辑","assets":"构图 光影 色彩","prompts":"镜头 场景","publish":"标题 文案"}
             query=" ".join(filter(None,[plain_query, source[:60], vocabulary.get(stage,"")]))
         where = ["category NOT LIKE '90-%'"]
         args = []

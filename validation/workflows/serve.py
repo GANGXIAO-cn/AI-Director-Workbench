@@ -40,6 +40,24 @@ if __name__ == "__main__":
         first = env.wb.create_task(eid,"script","切换前的原版任务")["runId"]
         env.drain(first)
         (fixture/"method-test.json").write_text(json.dumps(dict(impact=impact,first=first,pid=pid,eid=eid)))
+    elif os.environ.get("ADW_TEST_LAYOUT_CONTROLS"):
+        pid,eid=env.new_episode(name="站台灯光与人物轮廓")
+        env.image(pid,eid,"侧光参考")
+    elif os.environ.get("ADW_TEST_STAGE_CHECKLIST"):
+        pid,eid=env.new_episode(name="车站检查清单")
+        wb=env.wb
+        wb.save_step_config(eid,"story",enhancements=["00-A"])
+        env.adopt_story(eid)
+        wb.save_step_config(eid,"story",enhancements=["08-C"],expected_revision=1)
+        env.script(eid)
+        plan=env.plan86({"G01":[5000],"G02":[6000]})
+        env.save_adopt(eid,"plan",plan)
+        image=env.image(pid,eid)["versionId"]
+        vid,_=env.save_adopt(eid,"prompts",env.prompts_for(plan,image))
+        env.review_segments(vid,["G01"])
+        wb.set_optional_stage(eid,"space",True,"本集使用已有站台布局")
+        deliver=wb.deliver(eid,"trial","trial-station",segments=["G01"])
+        wb.package(deliver["deliveryId"],["G01"],"zip-station")
     elif os.environ.get("ADW_TEST_ACTIVITY_LOG"):
         pid,eid=env.new_episode(name="回执核对")
         from workbench.images import ImageOutcome

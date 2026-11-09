@@ -1,3 +1,4 @@
+import { StageChecklist } from "./StageChecklist";
 import { StageTrial } from "./StageTrial";
 import { VersionCompare } from "./VersionCompare";
 import { EpisodeCooperation, OptionalStage, RevisionBar } from "./Cooperation";
@@ -63,7 +64,8 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
     window.addEventListener("keydown",exit);
     return ()=>window.removeEventListener("keydown",exit);
   },[active,chatOnly,setFocusChat]);
-  const focus = new URLSearchParams(hash.split("?")[1]).get("v");
+  const routeParams=new URLSearchParams(hash.split("?")[1]);
+  const focus = routeParams.get("v");
   const pendingStoryRun = new URLSearchParams(hash.split("?")[1]).get("run");
   const view = useQuery<any>("episode_view", { episode_id: id },[stage,pendingStoryRun]);
   const assets = useQuery<any[]>("episode_assets", { episode_id: id },[stage]);
@@ -76,8 +78,9 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
   const [showPalettes, setShowPalettes] = useState(false);
   const [showMethod, setShowMethod] = useState(false);
   const [trialRoute,setTrialRoute] = useState("");
-  useEffect(()=>setTrialRoute(""),[id,stage]);
+  useEffect(()=>{setTrialRoute("");setCheckStage("");},[id,stage]);
   const [requirements,setRequirements]=useState(false);
+  const [checkStage,setCheckStage]=useState("");
   const composeRef=useRef<((draft:string)=>void)|null>(null);
   const batchParam = new URLSearchParams(hash.split("?")[1] ?? "").get("batch");
   useEffect(() => { if (batchParam) setBatch({ id: batchParam }); }, [batchParam]);
@@ -122,13 +125,14 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
   };
   return (
     <div className="app episode-workspace">
-      {!canvasMode && hasRequirements && <nav className="stage-views" aria-label="本阶段工作区">
-        <button className="pill" aria-pressed={chatOnly && !requirements} onClick={()=>setFocusChat(true)}>创作对话</button>
+      <nav className="stage-views" aria-label="本阶段工作区">
+        {!canvasMode && hasRequirements && <><button className="pill" aria-pressed={chatOnly && !requirements} onClick={()=>setFocusChat(true)}>创作对话</button>
         <button className="pill" aria-label={needsLabel} title={needsLabel} aria-haspopup="dialog" onClick={()=>setRequirements(true)}>本步需求</button>
         <button className="pill" aria-pressed={!chatOnly && !requirements} onClick={()=>{
           setFocusChat(false); requestAnimationFrame(()=>documentPanel.current?.focus({preventScroll:true}));
-        }}>成果文档</button>
-      </nav>}
+        }}>成果文档</button></>}
+        <button className="pill" onClick={()=>setCheckStage(stage)}>过关清单</button>
+      </nav>
       <div className={"ws"+(chatOnly?" chat-only":"")+(canvasMode?" canvas-only":"")} style={{flex:1, gridTemplateColumns: canvasMode || chatOnly ? "minmax(0, 1fr)" : `${cols[0]}px minmax(0, 1fr) ${cols[1]}px`}}>
         {!canvasMode && <div className="catalog">
           <div className="spread" style={{ padding: "0 8px 12px" }}><b>目录</b><a className="muted" href={`#/p/${v.episode.project_id}`}>⇤</a></div>
@@ -161,6 +165,12 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
       </div>
       {trialRoute===id+":"+stage && <StageTrial key={trialRoute} projectId={v.episode.project_id} episodeId={id} stage={stage}
         artifacts={v.artifacts} currentVersion={focus} provider={v.kickoff.executor_plan.create.provider} close={()=>setTrialRoute("")} reload={reload}/>}
+      {checkStage===stage && <StageChecklist eid={id} stage={stage}
+        version={["story","script","plan","prompts","publish","review"].includes(stage)?focus:null}
+        delivery={stage==="package" ? routeParams.get("delivery") : null}
+        scope={stage==="delivery" ? routeParams.get("scope") || (v.kickoff.spec.packaging==="trial"?"trial":"full") : "full"}
+        segments={stage==="delivery" ? routeParams.getAll("segment") : []}
+        close={()=>setCheckStage("")}/>}
       {showPalettes && <EpisodePaletteSettings key={stage} eid={id} stage={stage} close={() => setShowPalettes(false)}/>}
       {showMethod && <StageMethods key={id+stage} pid={v.episode.project_id} eid={id} stage={stage} close={() => setShowMethod(false)} />}
       {requirements && <StepRequirements key={stage} pid={v.episode.project_id} eid={id} stage={["space","cast"].includes(stage)?"assets":versionStage} close={()=>{setRequirements(false); if (stage==="review") void reload();}} toComposer={stage==="review"?undefined:text=>{composeRef.current?.(text); if (window.matchMedia("(max-width: 1120px)").matches) setFocusChat(true);}}/>}
@@ -1490,8 +1500,14 @@ function PublishView({ ctx }: { ctx: Ctx }) {
 
 // ---------------------------------------------------------------- 10 交付核验 (J12, J19, J55)
 function DeliveryView({ ctx }: { ctx: Ctx }) {
-  const [scope, setScope] = useState<"full" | "trial">(ctx.view.kickoff.spec.packaging==="trial"?"trial":"full");
-  const [segs, setSegs] = useState<string[]>([]);
+  const { hash, go }=useProjectRoute();
+  const params=new URLSearchParams(hash.split("?")[1]);
+  const scope=params.get("scope") || (ctx.view.kickoff.spec.packaging==="trial" ? "trial" : "full");
+  const segs=params.getAll("segment");
+  function setScope(value:string) {params.set("scope",value);go(hash.split("?")[0]+"?"+params);}
+  function setSegs(values:string[]) {
+    params.delete("segment");values.forEach(id=>params.append("segment",id));go(hash.split("?")[0]+"?"+params);
+  }
   const problems = useQuery<any>("delivery_problems", { episode_id: ctx.eid, scope, segments: scope === "trial" ? segs : null }, [scope, segs.join()]);
   const [deliveries, setDeliveries] = useState<any[]>([]);
   const [verify, setVerify] = useState<Record<string, any>>({});
@@ -1576,7 +1592,7 @@ function PackageView({ ctx,panel }: { ctx: Ctx; panel?:HTMLElement|null }) {
     media.addEventListener("change",changed);
     return ()=>media.removeEventListener("change",changed);
   },[]);
-  const { hash } = useProjectRoute();
+  const { hash, go } = useProjectRoute();
   const [deliveries, setDeliveries] = useState<any[]>([]);
   const [did, setDid] = useState("");
   const [segs, setSegs] = useState<string[]>([]);
@@ -1633,7 +1649,7 @@ function PackageView({ ctx,panel }: { ctx: Ctx; panel?:HTMLElement|null }) {
     <div>
       <div className="stagehead"><div><h1>H3 出包</h1><div className="muted small">交给本地打包器离线导出 ZIP；更换清单、素材或范围后重新验包</div></div></div>
       {!d ? <div className="muted">{requestedDelivery ? "未找到指定交付，请从本集交付记录重新选择。" : "先完成图文交付。"}</div> : <>
-        <div className="row"><select value={did} onChange={(e) => { const next = deliveries.find(x => x.id === e.target.value); setDid(e.target.value);setBatch(emptyPackageParams);setIndividual({});setTarget(""); setSegs(next?.segments ?? []); setOut(null); }}>{deliveries.map((x) => <option key={x.id} value={x.id}>{x.scope === "full" ? "整集" : "试验"} {x.id.slice(0, 8)}</option>)}</select>
+        <div className="row"><select value={did} onChange={e=>go(`#/e/${ctx.eid}/package?delivery=${encodeURIComponent(e.target.value)}`)}>{deliveries.map((x) => <option key={x.id} value={x.id}>{x.scope === "full" ? "整集" : "试验"} {x.id.slice(0, 8)}</option>)}</select>
           <button className="btn" onClick={()=>act.run(()=>navigator.clipboard.writeText(d.html))}>复制图文页路径</button>
           <details className="small"><summary>图文页位置</summary><code>{d.html}</code></details></div>
         <p>{d.scope==="full"?"整集图文已交付":"试验图文已交付"} · {d.segments.length} 段</p>

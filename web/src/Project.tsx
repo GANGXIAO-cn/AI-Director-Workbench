@@ -43,7 +43,7 @@ export default function Project({ id }: { id: string }) {
   const addEpisode = (code:string,facts:string) => setKick({displayCode:code || nextCode(),leftoverFacts:facts.split("\n").map(x=>x.trim()).filter(Boolean)});
   return (
     <div>
-      <div className="spread" style={{ padding: "12px 24px" }}>
+      <div className="spread project-heading">
         <a href="#/projects">全部项目</a>
         <div className="row">
           <a className="chip" href="#/sys/executors"><Wrench size={14} aria-hidden="true"/> 技能与分工</a>
@@ -51,9 +51,9 @@ export default function Project({ id }: { id: string }) {
           <span className="chip"><span className="dot" />Claude Code</span><span className="chip"><span className="dot" />Codex</span>
         </div>
       </div>
-      <div className="page" style={{ paddingTop: 8 }}>
+      <div className="page project-overview">
         <div className="spread">
-          <div><h1 style={{ fontSize: "2rem" }}>{project.name}</h1>
+          <div><h1>{project.name}</h1>
             <div className="muted small" style={{ marginTop: 6 }}>{episodes.length} 集 · 各集规格可以不同 · 进行中 {inProduction} 集</div></div>
           <div className="row">
             <button className="btn" onClick={() => setAdding(true)} disabled={act.busy}>＋ 新增一集</button>
@@ -65,31 +65,31 @@ export default function Project({ id }: { id: string }) {
           if (kick) addEpisode(c, f);
           else act.run(async () => { await cmd("create_episode", { project_id: id, display_code: c, leftover_facts: f.split("\n").map((x) => x.trim()).filter(Boolean) }); o.reload(); });
         }} />}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, margin: "18px 0" }}>
+        <div className="project-todos">
           {todos.map((t: any, i: number) => (
             <div key={i} className={`card ${t.kind === "closure" ? "cyan" : "amber"}`}>
               <div className="row"><Tag tone={t.kind === "closure" ? "cyan" : "amber"}>{t.kind === "closure" ? "下一步" : "缺口"}</Tag><b>{t.title}</b></div>
-              <div className="muted small" style={{ margin: "8px 0" }}>{t.kind === "closure" ? "可逐条查看出处，写进设定或只留台账。" : "只阻塞依赖它的段；其他段可以继续。"}</div>
+              <div className="muted small project-card-detail">{t.kind === "closure" ? "可逐条查看出处，写进设定或只留台账。" : "只阻塞依赖它的段；其他段可以继续。"}</div>
               <a className="btn primary" href={t.kind === "closure" ? `#/p/${id}/closure/${t.objectId}` : t.kind==="reconcile" ? `#/e/${t.episodeId}/assets?batch=${t.objectId}` : `#/e/${t.episodeId}/space`}>{t.action} ›</a>
             </div>))}
           {todos.length === 0 && <div className="card"><b>没有待办</b><div className="muted small" style={{ marginTop: 6 }}>可以新增一集，或查看已交付的集。</div></div>}
           <div className="card">
             <div className="spread"><b>设定 · {settings.total} 条</b><a className="btn" href={`#/p/${id}/settings`}>查看设定 ›</a></div>
-            <div className="row" style={{ margin: "8px 0" }}><Tag tone="red">必须守住 {settings.required}</Tag><Tag tone="blue">可变着用 {settings.variable}</Tag></div>
+            <div className="row project-card-detail"><Tag tone="red">必须守住 {settings.required}</Tag><Tag tone="blue">可变着用 {settings.variable}</Tag></div>
             <div className="muted tiny">各集只读引用；改动只对之后的集生效</div>
           </div>
         </div>
         <div className="grid2">
           {episodes.map((e: any) => <EpisodeCard key={e.id} e={e} projectId={id} onKick={() => setKick({ episodeId: e.id })} reload={o.reload} />)}
         </div>
-        <div className="row" style={{ marginTop: 20 }}>
+        <div className="row project-links">
           {[["free", "自由对话"], ["library", "复用资产库"], ["knowledge", "知识库"], ["topics", "选题池"], ["baseline", "制作基准"], ["expert", "专家模式授权"]].map(([k, l]) => (
             <a key={k} className="btn ghost" href={`#/p/${id}/${k}`}>{l}</a>))}
         </div>
         <ErrorLine error={act.error} />
       </div>
       {kick && <Kickoff projectId={id} prefill={kick} onClose={() => { setKick(null); o.reload(); }} />}
-      {activeEpisode && <a className="chip" style={{position:"fixed",right:24,bottom:24}} href={`#/e/${activeEpisode.id}/story`}>导演助手 · {activeEpisode.display_code}</a>}
+      {activeEpisode && <a className="chip project-assistant-link" href={`#/e/${activeEpisode.id}/story`}>导演助手 · {activeEpisode.display_code}</a>}
     </div>
   );
 }
@@ -103,7 +103,7 @@ function AddEpisode({ code, onClose, onAdd }: any) {
       <p className="muted small">新集读取已确认设定；开工时再选独立成集或承接前集。</p>
       <div className="formrow"><span className="muted">集号</span><input value={c} onChange={(e) => setC(e.target.value)} /></div>
       <div className="formrow"><span className="muted">本集遗留事实</span><textarea placeholder="（可选）每行一条，例：厨房门上了锁" value={f} onChange={(e) => setF(e.target.value)} /></div>
-      <div className="row" style={{ justifyContent: "flex-end" }}><button className="btn" onClick={onClose}>取消</button>
+      <div className="row actions-end"><button className="btn" onClick={onClose}>取消</button>
         <button className="btn" onClick={() => onAdd(c, f, false)}>只新增</button>
         <button className="btn primary" onClick={() => onAdd(c, f, true)}>新增并去开工</button></div>
     </Modal>
@@ -130,7 +130,7 @@ function EpisodeCard({ e, projectId, onKick, reload }: { e: any; projectId: stri
           <button className="btn" onClick={() => act.run(async () => { await cmd("record_leftovers", { episode_id: e.id, facts: facts.split("\n").map((x: string) => x.trim()).filter(Boolean), expected_revision: e.revision }); setEditing(false); reload(); })}>保存遗留</button></div>}
         <ErrorLine error={act.error} />
         <div style={{ margin: "10px 0" }}><SegBar total={11} done={e.progress} now={!delivered && !!e.kickoff_id} /></div>
-        <div className="row" style={{ justifyContent: "flex-end" }}>
+        <div className="row actions-end">
           {!e.kickoff_id && <button className="btn primary" onClick={onKick}>开工</button>}
           {e.kickoff_id && !delivered && <button className="btn" onClick={()=>setImporting(true)}>我有故事稿</button>}
           {e.kickoff_id && !delivered && <a className="btn primary" href={`#/e/${e.id}/${e.adopted.story ? (e.adopted.plan ? "assets" : "script") : "story"}`}>{e.adopted.story ? "开始制作" : "继续"}</a>}

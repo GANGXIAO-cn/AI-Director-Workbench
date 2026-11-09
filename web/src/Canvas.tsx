@@ -124,7 +124,7 @@ export default function Canvas({ ctx, providers, openBatch }: { ctx: any; provid
     <button className="btn" onClick={()=>load().catch(err=>setSaveError(err.message))}>重新读取画布</button></div> : <p>正在读取画布…</p>;
   return (
     <div ref={board} className="canvas-board">
-      <div className="row" style={{ marginBottom: 8, flexWrap:"wrap" }}>
+      <div className="row canvas-tools">
         {(["text", "reference", "lock", "generate", "usage"] as const).map((t) => <button key={t} className="btn ghost" onClick={() => add(t)}>＋ <NodeLabel type={t}/></button>)}
         <button className="btn" onClick={arrange}>整理布局</button><button className="btn" disabled={!undo.current.length} onClick={()=>{const prev=undo.current.pop(); if(prev) save(prev,false);}}>撤销</button>
         <button className={`btn ${cut?"primary":""}`} aria-pressed={cut} onClick={()=>setCut(!cut)}>剪断连线</button>
@@ -148,7 +148,7 @@ export default function Canvas({ ctx, providers, openBatch }: { ctx: any; provid
         onPointerMove={e=>{if(pan.current){const p=pan.current;e.currentTarget.scrollTo(p.left+p.x-e.clientX,p.top+p.y-e.clientY);}else onMove(e);}}
         onPointerUp={()=>{pan.current=null;onUp();}} onPointerCancel={()=>{pan.current=null;onUp();}}>
         <div style={{position:"relative",width,height,zoom}} onClick={e=>{if(e.target===e.currentTarget)setSel(null);}}>
-        <div className="card" style={{ position: "absolute", left: 12, top: 12, width: 230, zIndex: 3, padding: 10 }}>
+        <div className="card canvas-batch-card">
           <b className="small">本集生成记录</b>
           {ctx.batches.slice(-4).map((b: any) => <div key={b.id} className="spread tiny" style={{ marginTop: 4 }}><span>{b.id.slice(0, 6)} {b.spec.items[0]?.target?.name ?? b.operation} · {b.count} 张</span>
             <Tag tone={b.state === "completed" ? "green" : b.state === "pending_reconcile" ? "amber" : "blue"}>{b.state === "completed" ? "已完成" : b.state === "pending_reconcile" ? "待核对" : b.state === "awaiting_authorization" ? "待确认" : b.state}</Tag></div>)}
@@ -164,7 +164,7 @@ export default function Canvas({ ctx, providers, openBatch }: { ctx: any; provid
           const b = n.type === "generate" ? batchOf(n) : null;
           const a = assetOf(n.data.assetVersionId);
           return (
-            <div key={n.id} className={`card ${sel === n.id ? "sel" : ""}`} data-node={n.id} style={{ position: "absolute", left: n.x, top: n.y, width: W[n.type], padding: 10, zIndex: 2, border: sel === n.id ? "1.5px solid var(--white)" : "1px solid var(--line)" }}
+            <div key={n.id} className={`card canvas-node ${sel === n.id ? "sel" : "line"}`} data-node={n.id} style={{ left: n.x, top: n.y, width: W[n.type] }}
               onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();wire(e.dataTransfer.getData("application/x-adw-node"),n.id);}}
               onClick={(e) => { e.stopPropagation(); setSel(n.id); }}>
               <button className="canvas-port" aria-label={n.title+" 输出连线"} draggable onDragStart={e=>e.dataTransfer.setData("application/x-adw-node",n.id)} title="拖至目标节点连接">●</button>
@@ -173,17 +173,17 @@ export default function Canvas({ ctx, providers, openBatch }: { ctx: any; provid
                 {b && <Tag tone={b.state === "completed" ? "green" : b.state === "awaiting_authorization" ? "amber" : "blue"}>{b.state === "completed" ? "待评估" : b.state === "awaiting_authorization" ? "待确认" : b.state}</Tag>}
                 {(n.type === "lock" || n.type === "reference") && a && <Tag tone={a.marks.includes("adopted") ? "green" : ""}>{a.marks.includes("adopted") ? "已采用" : `v${a.version_no}`}</Tag>}
               </div>
-              <input value={n.title} onChange={(e) => patch(n.id, { title: e.target.value }, false)} onBlur={() => save(doc)} style={{ width: "100%", fontWeight: 700, background: "transparent", border: 0, padding: "4px 0" }} />
-              {n.type === "text" && <textarea value={n.data.body} onChange={(e) => patch(n.id, { data: { body: e.target.value } }, false)} onBlur={() => save(doc)} style={{ minHeight: 90, fontSize: "0.92rem" }} />}
+              <input value={n.title} onChange={(e) => patch(n.id, { title: e.target.value }, false)} onBlur={() => save(doc)} className="canvas-node-title" />
+              {n.type === "text" && <textarea value={n.data.body} onChange={(e) => patch(n.id, { data: { body: e.target.value } }, false)} onBlur={() => save(doc)} className="small canvas-node-body" />}
               {(n.type === "reference" || n.type === "lock") && <>
-                {a ? <img src={blob(a.sha256)} style={{ width: "100%", borderRadius: 6 }} /> : <div className="muted tiny">选择素材</div>}
-                <select value={n.data.assetVersionId ?? ""} onChange={(e) => patch(n.id, { data: { assetVersionId: e.target.value } })} style={{ width: "100%", marginTop: 4, fontSize: "0.85rem" }}>
+                {a ? <img src={blob(a.sha256)} className="canvas-node-preview" /> : <div className="muted tiny">选择素材</div>}
+                <select value={n.data.assetVersionId ?? ""} onChange={(e) => patch(n.id, { data: { assetVersionId: e.target.value } })} className="tiny canvas-node-select">
                   <option value="">选择本集素材…</option>{ctx.assets.filter((x: any) => x.kind === "image").map((x: any) => <option key={x.id} value={x.id}>{x.name} v{x.version_no}</option>)}</select>
                 <div className="muted tiny" style={{ marginTop: 4 }}>{n.type === "reference" ? "只作画风与同框比例参考" : "空间与身份以此为准"}</div></>}
               {n.type === "generate" && <>
                 <div className="row" style={{ flexWrap: "nowrap", gap: 4 }}>{candidates(n).length ? candidates(n).map((c: any, i: number) => (
                   <div key={c.id} style={{ flex: 1, cursor: "pointer", outline: cand === c.id ? "2px solid #22d3ee" : "none", borderRadius: 6 }} onClick={(e) => { e.stopPropagation(); setSel(n.id); setCand(c.id); }}>
-                    <img src={blob(c.sha256)} style={{ width: "100%", borderRadius: 6, filter: compare && i > 0 ? "grayscale(1)" : undefined }} />
+                    <img src={blob(c.sha256)} className="canvas-node-preview" style={{filter: compare && i > 0 ? "grayscale(1)" : undefined}} />
                     <div className="tiny">{String.fromCharCode(65 + i)}{c.marks.includes("required") ? " · 必用" : c.marks.includes("backup") ? " · 补选" : ""}</div></div>))
                   : <div className="muted tiny">还没有候选。连接输入后在下方写要求并生成。</div>}</div>
                 <div className="tiny" style={{ color: "var(--cyan)", marginTop: 4 }}>当前已连输入：{inputsOf(n).filter(x => x.e.kind !== "pending" && (x.n.type === "text" || x.n.data.assetVersionId)).map(x => x.n.title).join("、") || "无"}</div>
@@ -191,7 +191,7 @@ export default function Canvas({ ctx, providers, openBatch }: { ctx: any; provid
               {n.type === "usage" && <UsageNode n={n} doc={doc} assetOf={assetOf} ctx={ctx} />}
             </div>);
         })}
-        {node && <div className="row" style={{ position: "absolute", left: node.x, top: Math.max(0, node.y - 44), zIndex: 4, background: "#1c1d21", border: "1px solid var(--line)", borderRadius: 10, padding: 4 }}>
+        {node && <div className="row canvas-node-tools" style={{left: node.x, top: Math.max(0, node.y - 44)}}>
           {node.type === "generate" && PRESETS.map(([l, op, text]) => <button key={l} className="btn ghost" onClick={() => patch(node.id, { data: { operation: op, prompt: text } })}>{l}</button>)}
           {node.type === "generate" && <button className="btn ghost" onClick={() => setCompare(!compare)}>看图评估</button>}
           {["generate","reference","lock"].includes(node.type) && <button className="btn ghost" disabled={!selectedPicture || !!selectedPicture.grid || act.busy} onClick={()=>act.run(async()=>{

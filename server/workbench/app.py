@@ -98,7 +98,7 @@ QUERIES = {
     "asset_version", "library", "image_providers", "batch_view", "episode_batches", "compare_cells", "image_references",
     "prompt_signals", "prompt_review_status", "publish_settings", "compose_publish", "delivery_problems", "delivery_view", "verify_delivery",
     "enhancement_catalog", "closure_view", "similar", "project_baselines", "source_styles", "source_topics", "topics", "group_view", "model_catalog", "validate_selection", "regress_pack", "pack_versions", "compare_packs", "stage_methods", "custom_methods", "custom_method_text", "project_stage_methods", "script_plan_budget", "acting_review",
-    "storage_status", "packager_status", "project_todos", "project_overview", "adoption_preview", "expert_view", "expert_history", "expert_preview", "canvas_view", "ref_questions", "activity_log", "task_records", "run_manifest", "run_methods", "version_sources", "probe",
+    "storage_status", "packager_status", "project_todos", "project_overview", "adoption_preview", "expert_view", "expert_history", "expert_preview", "canvas_view", "ref_questions", "activity_log", "stage_checklist", "task_records", "run_manifest", "run_methods", "version_sources", "probe",
 }
 ASYNC = {"execute_batch", "expert_run", "ask_cut"}
 
