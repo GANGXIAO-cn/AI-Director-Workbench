@@ -31,6 +31,12 @@ elif args==["login","status"]:
     print("Logged in using ChatGPT")
 elif args==["auth","status","--json"]:
     print(json.dumps(dict(loggedIn=True,email="studio@example.invalid")))
+elif "--input-format" in args:
+    init = json.loads(sys.stdin.read())
+    assert init["request"] == {"subtype":"initialize"}
+    models = [dict(value="sonnet",displayName="Sonnet",description="Sonnet 5.5 · Fixture",supportedEffortLevels=["medium"]),
+              dict(value="claude-fable-5-1[1m]",displayName="Fable",description="Fable 5.1 · Fixture",supportedEffortLevels=["high"])]
+    print(json.dumps(dict(type="control_response",response=dict(request_id=init["request_id"],subtype="success",response=dict(models=models)))))
 elif args==["models"]:
     print("gemini-local-test    Google 本地测试型号")
 else:

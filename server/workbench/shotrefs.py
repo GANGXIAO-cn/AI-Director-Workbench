@@ -81,8 +81,12 @@ def image_review(read_text, asset, ref, tag):
     contents = review.get('observed')
     if not isinstance(contents, str) or not contents.strip():
         raise ValueError(tag + '：缺显眼人物、物体及状态的看图观察')
-    if review.get('conflicts') != []:
-        raise ValueError(tag + '：图片仍有冲突或未完成核对，须换图或取得干净参考')
+    accepted={item['issue_key'] for item in asset.get('accepted_image_issues',[])}
+    provisional={item['issue_key'] for item in asset.get('provisional_image_issues',[])}
+    conflicts=review.get('conflicts')
+    if not isinstance(conflicts,list) or any(not isinstance(c,dict) or not (c.get('acceptedIssue') in accepted or c.get('provisionalIssue') in provisional) for c in conflicts):
+        detail='；'.join(str(c.get('text','未说明冲突')) if isinstance(c,dict) else str(c) for c in conflicts) if isinstance(conflicts,list) else '缺少冲突核对记录'
+        raise ValueError(tag + '：图片仍有冲突或未完成核对：'+detail+'；请先核对已采用用途及本段正文，优先修正引用用途或具体差异')
     evidence = read_text(review.get('evidence_path'))
     if contents not in evidence:
         raise ValueError(tag + '：观察与本集看图记录不符')
@@ -158,6 +162,28 @@ def check_shot_references(read_text, data):
             'scope': '核对分镜登记、引用范围及看图记录；画面内容由实际看图确认'}
 
 
+def check_binding_structure(read_text, data):
+    """Verify inherited references mechanically, without approving image contents."""
+    board = read_board(read_text, data)
+    assets = {a['id']: a for a in data['assets']}
+    for segment in data['segments']:
+        sid = segment['id']; shots = board[sid]
+        if set().union(*(shot.roles for shot in shots.values())) != set(segment['on_screen_roles']):
+            raise ValueError(sid+'：逐镜角色与本段出镜登记不一致')
+        seen = set()
+        for ref in segment['references']:
+            aid = ref['asset_id']; scope = ref.get('shots')
+            if aid not in assets or aid in seen:
+                raise ValueError(sid+'：引用素材不存在或重复')
+            seen.add(aid)
+            if not isinstance(scope,list) or not scope or any(not isinstance(k,str) or k not in shots for k in scope) or len(scope)!=len(set(scope)):
+                raise ValueError(sid+'：作用镜头为空、重复或不属于本段')
+            roles = {role for role,source in segment['identity_bindings'].items() if source==aid}
+            if set(identity_shots(shots,roles))-set(scope):
+                raise ValueError(sid+'：身份引用遗漏已登记的出镜镜头')
+    return dict(status='passed',scope='仅校验继承的角色、素材和镜头绑定结构；不重新评估图片',shots=sum(map(len,board.values())))
+
+
 def suggestions(read_text, data):
     board = read_board(read_text, data)
     return {s['id']: {rid: identity_shots(board[s['id']], {rid})
@@ -231,7 +257,7 @@ def board_rows(plan):
 
 
 def segment_packet(wb, db, eid, plan, matrix, sid, entry, *, draft=False):
-    """Build the one-segment source-format check using the adopted board and recorded observations."""
+    """Package adopted bindings; historical observations remain optional evidence."""
     from . import timeline
     rows = [r for r in board_rows(plan) if r["段ID"] == sid]
     segment = next((s for s in timeline.layout(plan)["segments"] if s["id"] == sid), None)
@@ -250,6 +276,9 @@ def segment_packet(wb, db, eid, plan, matrix, sid, entry, *, draft=False):
         vid = ref["assetVersionId"]
         asset = wb.asset_version(vid, db)
         item = dict(id=vid, name=asset["name"], type=asset["kind"], category=asset["category"], sha256=asset["sha256"])
+        item["accepted_image_issues"]=[dict(r) for r in db.execute("SELECT * FROM accepted_image_issue WHERE asset_version_id=?",(vid,))]
+        from .progress_expert import provisional_image_issues
+        item["provisional_image_issues"]=provisional_image_issues(db,eid,vid)
         if asset["category"] == "identity":
             item["category"] = "character"
             item["depicts_roles"] = asset.get("roles") or [r for r,c in cells.items() if c.get("assetVersionId")==vid and c["status"]=="ok"]
@@ -266,11 +295,10 @@ def segment_packet(wb, db, eid, plan, matrix, sid, entry, *, draft=False):
         if ref.get("visualReviewId"):
             row = db.execute("SELECT details FROM shot_image_observation WHERE id=? AND episode_id=? AND segment=? AND asset_version_id=?",
                              (ref["visualReviewId"],eid,sid,vid)).fetchone()
-            if row is None and draft:
+            if row is None:
+                # Missing legacy evidence is not a binding failure. Never fabricate it.
                 refs.append(binding)
                 continue
-            if row is None:
-                raise ValueError(sid+"：看图记录不属于本集本段和当前图片")
             review = json.loads(row["details"])
             name = f"参考{i}看图记录.txt"
             files[name] = review["observed"] + "\n"
@@ -305,9 +333,9 @@ def evidence_page(episode, packets):
             page.append("<figure><h3>"+escape(ref["label"]+" · "+asset["name"])+"</h3>")
             if asset["type"] == "image":
                 url = escape(quote(asset["path"]))
-                review = ref["visual_review"]
+                review = ref.get("visual_review", {})
                 page.append(f'<a href="{url}"><img src="{url}" alt="{escape(asset["name"])}"></a>')
-                page.append("<p>看图观察 · "+escape(review["observed"])+"</p>")
+                page.append("<p>看图观察 · "+escape(review.get("observed", "未登记历史观察；沿用已采用的素材绑定"))+"</p>")
                 for field, label in (("prominent_props","图内显眼道具"),("other_uses","非出镜镜头的附加用途")):
                     if review.get(field):
                         page.append("<p>"+label+" · "+escape("；".join(k+"="+v for k,v in sorted(review[field].items())))+"</p>")
@@ -316,18 +344,19 @@ def evidence_page(episode, packets):
     return "\n".join([*page,'<a href="00_图文对照.html">返回图文对照</a></main></html>'])
 
 
-def export_packets(root, manifest, put):
-    plans = json.loads((root / manifest["prompt_review"]["plan"]).read_bytes())
-    packets = {p["segment"]["id"]:p["shotReferences"] for entry in plans if entry["role"]=="plan_segment"
-               for p in [json.loads(entry["text"])] if "shotReferences" in p}
+def export_packets(root, manifest, put, *, packets=None):
+    if packets is None:  # historical packages retain their original review evidence
+        plans = json.loads((root / manifest["prompt_review"]["plan"]).read_bytes())
+        packets = {p["segment"]["id"]:p["shotReferences"] for entry in plans if entry["role"]=="plan_segment"
+                   for p in [json.loads(entry["text"])] if "shotReferences" in p}
     index = {}
     for ordinal, segment in enumerate(manifest["segments"], 1):
         sid = segment["id"]
         if sid not in packets:
-            raise ValueError(sid+" 缺少第二遍实际送审的逐镜引用记录")
+            raise ValueError(sid+" 缺少当前分镜的逐镜引用记录")
         packet = packets[sid]
         source = packet["manifest"]
-        check_shot_references(packet["files"].__getitem__, source)
+        check_binding_structure(packet["files"].__getitem__, source)
         folder = f"逐镜引用/{ordinal:03d}"
         for name,text in packet["files"].items():
             put(folder+"/"+name,text.encode())
@@ -335,6 +364,8 @@ def export_packets(root, manifest, put):
         put(path,json.dumps(source,ensure_ascii=False,indent=2).encode())
         index[sid] = path
         for ref, reviewed in zip(segment["references"],source["segments"][0]["references"],strict=True):
+            if ref.get("shots"):
+                ref["windows"] = list(ref["shots"])
             ref["shots"] = reviewed["shots"]
     manifest["workbench"]["shotReferencePackets"] = index
     put("逐镜引用索引.json",json.dumps(index,ensure_ascii=False,indent=2).encode())
@@ -358,7 +389,7 @@ def verify_export(read, episode, sid, packet):
         if raw != packet["files"][name]:
             raise ValueError(sid+" 联合表或看图观察与实际送审记录不一致")
         return raw
-    check_shot_references(text,data)
+    check_binding_structure(text,data)
     assets = {a["id"]:a for a in episode["assets"]}
     refs = next(s["references"] for s in episode["segments"] if s["id"]==sid)
     audited = data["segments"][0]["references"]

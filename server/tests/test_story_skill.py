@@ -11,6 +11,8 @@ def test_projects_share_story_method_and_only_receive_their_own_materials(tmp_pa
     for config, name, cue in (("_template", "雨城悬疑", "夜班修表师收到一只倒走的钟"),
                               ("puggy", "PUGGY ROOM", "MILO发现最后一辆车要开走了")):
         pid = wb.create_project(config, name)["projectId"]
+        if config == "puggy":
+            wb.sync_project_methods(pid,"load-project-methods")
         eid = wb.create_episode(pid, "E01")["episodeId"]
         if source == "import":
             imp = wb.import_file(pid, "来稿.md", cue.encode(), "story_source", episode_id=eid)
@@ -26,7 +28,7 @@ def test_projects_share_story_method_and_only_receive_their_own_materials(tmp_pa
         assert cue in req.prompt
         manifest = wb.run_manifest(task["runId"])["manifest"]
         files = wb.store.manifest_texts(manifest)
-        assert manifest["methodPack"]["id"] == "short-film@v7"
+        assert manifest["methodPack"]["id"] == "unified-film@draft"
         assert "storySkillCommit" not in manifest
         assert list(req.workdir.iterdir()) == []
         versions.append([(f["name"], f["sha256"]) for f in files if f["role"] == "method"])
@@ -35,6 +37,8 @@ def test_projects_share_story_method_and_only_receive_their_own_materials(tmp_pa
             assert not any(f["role"] == "project_method" for f in files)
         else:
             assert "MILO" in req.prompt and "LEO" in req.prompt
-            assert any(f["role"] == "project_method" for f in files)
+            method, = [f for f in files if f["role"] == "project_method"]
+            assert "机制看事件，不看标签" in method["text"]
+            assert any(f["role"] == "project_settings" for f in files)
         assert env.art(eid, "story")["versions"][0]["source_run_id"] == task["runId"]
     assert versions[0] == versions[1]

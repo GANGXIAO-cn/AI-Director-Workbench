@@ -1,9 +1,14 @@
+import { ImageAPISettings } from "./ImageAPISettings";
+import {ExecutorDefaults} from "./ExecutorDefaults";
+import { SeriesArchive } from "./SeriesArchive";
+import {useStoryImport} from "./storyExcerpt";
+import { FILM_STAGES } from "./workflow";
 import { ResourceBrowser } from "./Resources";
 import {ExecutorConnection} from "./ExecutorConnection";
 import { ProjectBaselines } from "./ProjectBaselines";
 import { TopicResearch } from "./TopicResearch";
 import { FreeChat } from "./FreeChat";
-import { UploadedMethods } from "./UploadedMethods";
+import { UploadedMethods, ProjectMethodSync } from "./UploadedMethods";
 import { MethodChanges, FrozenMethods } from "./MethodChanges";
 import { Providers } from "./Providers";
 import { DisplaySettings } from "./DisplayPreferences";
@@ -14,7 +19,7 @@ import { ProjectPresets } from "./ProjectPresets";
 import { Fragment, useEffect, useState } from "react";
 import Expert from "./Expert";
 import { blob, cmd, commandId, q, setCliPath, upload } from "./api";
-import { ErrorLine, Modal, PROVIDER_LABEL, Pills, Tag, fmtMs, useAction, usePoll, useQuery } from "./ui";
+import { ErrorLine, Modal, PROVIDER_LABEL, pickable, Pills, Tag, fmtMs, useAction, usePoll, useQuery } from "./ui";
 
 const CATS: Record<string, string> = { character: "角色", relationship: "关系", space: "固定空间", rule: "世界规则", signature: "招牌行为", prop: "道具" };
 
@@ -44,6 +49,7 @@ export function ProjectPage({ id, sub, arg }: { id: string; sub: string; arg?: s
 
 // ---------------------------------------------------------------- J31 设定
 function Settings({ id, p, reload }: any) {
+  const reasonDefault=new URLSearchParams(location.hash.split("?")[1] || "").get("reason_default") || undefined;
   const [cat, setCat] = useState("all");
   const [edit, setEdit] = useState<any>(null);
   const [impact, setImpact] = useState<any>(null);
@@ -56,6 +62,7 @@ function Settings({ id, p, reload }: any) {
       <div className="spread"><div><h1>设定（一份，只往前生效）</h1><div className="muted small">{p.settings.length} 条 · 修订 {p.settings_revision} · 已完成集保持开工/交付时记录</div></div></div>
       <div className="row" style={{ margin: "14px 0" }}><button className={`pill ${cat === "all" ? "on" : ""}`} onClick={() => setCat("all")}>全部</button>
         {Object.entries(CATS).map(([k, l]) => <button key={k} className={`pill ${cat === k ? "on" : ""}`} onClick={() => setCat(k)}>{l}</button>)}</div>
+      <ProjectMethodSync key={id} pid={id}/>
       {list.length === 0 && <div className="card muted">项目设定为空。首集交付后点「整理本集设定」，由你逐条写进设定。</div>}
       {list.map((s: any) => (
         <div key={s.key} className="card line" style={{ marginBottom: 8 }}>
@@ -69,9 +76,9 @@ function Settings({ id, p, reload }: any) {
           <b>修改 {edit.key}</b>
           <textarea value={edit.content} onChange={(e) => setEdit({ ...edit, content: e.target.value })} />
           <div className="row"><Pills value={edit.strength} onChange={(v: string) => setEdit({ ...edit, strength: v })} options={[["required", "必须守住"], ["variable", "可变着用"]]} />
-            <input style={{ flex: 1 }} placeholder="修改理由（必填）" value={edit.reason} onChange={(e) => setEdit({ ...edit, reason: e.target.value })} /></div>
+            <input style={{ flex: 1 }} placeholder={reasonDefault ? "可不填" : "修改理由（必填）"} value={edit.reason} onChange={(e) => setEdit({ ...edit, reason: e.target.value })} /></div>
           <div className="row" style={{ marginTop: 8 }}><button className="btn" onClick={() => setEdit(null)}>取消</button>
-            <button className="btn primary" onClick={() => act.run(async () => { setImpact(await cmd("propose_setting_change", { project_id: id, key: edit.key, content: edit.content, strength: edit.strength, reason: edit.reason })); setEdit(null); reload(); })}>确认写入新修订</button></div>
+            <button className="btn primary" onClick={() => act.run(async () => { setImpact(await cmd("propose_setting_change", { project_id: id, key: edit.key, content: edit.content, strength: edit.strength, reason: edit.reason, reason_default:reasonDefault })); setEdit(null); reload(); })}>确认写入新修订</button></div>
         </div>)}
       {impact && (
         <div className="card amber" style={{ marginTop: 12 }}>
@@ -107,8 +114,8 @@ function LibraryUpload({projectId,previous,done,close}:{projectId:string;previou
     <label className="field">图片分类 <select value={category} disabled={!!previous} onChange={e=>{setCategory(e.target.value);setRequest(commandId());}}>
       {Object.entries(assetCategories).map(([key,label])=><option key={key} value={key}>{label}</option>)}
       {previous && !assetCategories[category] && <option value={category}>{category}</option>}</select></label>
-    <label className="field">用途 <input value={usage} onChange={e=>{setUsage(e.target.value);setRequest(commandId());}}/></label>
-    <ErrorLine error={act.error}/><div className="row"><button className="btn primary" disabled={act.busy||!file||!usage.trim()} onClick={()=>act.run(save)}>保存到资产库</button>
+    <label className="field">用途 <input placeholder="可不填" value={usage} onChange={e=>{setUsage(e.target.value);setRequest(commandId());}}/></label>
+    <ErrorLine error={act.error}/><div className="row"><button className="btn primary" disabled={act.busy||!file} onClick={()=>act.run(save)}>保存到资产库</button>
       <button className="btn" disabled={act.busy} onClick={close}>取消</button></div></Modal>;
 }
 
@@ -204,6 +211,7 @@ function Knowledge({ id }: { id: string }) {
   return (
     <div>
       <h1>知识库</h1><div className="row"><a className="btn" href="#/knowledge">浏览全局剧本知识库</a><a className="btn" href={`#/palette?project=${id}`}>选择导演色卡</a></div><div className="muted small" style={{ margin: "6px 0 16px" }}>自有资料为主（台账、机制、本机案例、导入的灵感材料）；推荐有依据，引用留记录。无平台数据也可开工。</div>
+      <SeriesArchive digest={records.data?.find(r=>r.kind==="series_catalog")?.sha256}/>
       <section className={records.data?.length===0 ? "card first-use" : ""}>
         <h2>项目已导入资料</h2>
         {records.data?.length===0 && <p>这个项目还没有资料。可先导入一份 UTF-8 文本，供本项目检索和引用。</p>}
@@ -213,7 +221,7 @@ function Knowledge({ id }: { id: string }) {
             if(file) act.run(async()=>{setImported(await upload("knowledge",file,{projectId:id,kind:kind||undefined}));await records.reload();});
           }}/></label></div>
         {records.error && <p className="error">{records.error}</p>}
-        {records.data?.map(r=><p key={r.id}>{r.title} · {r.source} · {r.sha256.slice(0,12)}</p>)}
+        {records.data?.filter(r=>r.kind!=="series_catalog").map(r=><p key={r.id}>{r.title} · {r.source} · {r.sha256.slice(0,12)}</p>)}
       </section>
       {imported.map((r, i) => <div key={i} className="small" style={{ margin: "4px 0" }}>{r.name} · <Tag tone={r.status === "readable" ? "green" : r.status === "duplicate" ? "" : r.status === "corrupt" ? "red" : "amber"}>{({ readable: "可读", duplicate: "重复", corrupt: "损坏", needs_category: "需指定分类" } as any)[r.status]}</Tag></div>)}
       <ProjectLibrary pid={id}/><HistoricalChecks pid={id}/>
@@ -248,6 +256,7 @@ function ProjectStageMethods({ id, stage }: { id: string; stage: "topic" | "grou
 }
 
 function Topics({ id }: { id: string }) {
+  const storyImport=useStoryImport();
   const { go } = useProjectRoute();
   const source=useQuery<any[]>("source_topics",{project_id:id});
   const overview=useQuery<any>("project_view",{project_id:id});
@@ -269,8 +278,16 @@ function Topics({ id }: { id: string }) {
   const list=(t.data ?? []).filter(c=>matches(c.status,[c.code,c.premise,c.mechanism,c.motivation]));
   return (
     <div>
-      <h1>选题池与研究</h1><div className="muted small" style={{ margin: "6px 0 16px" }}>状态流转：加入池只建候选；开工进入开发中；送审为待审稿；独审完成并采用后为已成稿；交付后为已制作。</div>
-      <TopicResearch key={id} projectId={id} poolChanged={t.reload}/>
+      <h1>选题池与研究</h1><div className="muted small" style={{ margin: "6px 0 16px" }}>候选题保存在当前项目。可以从共享知识库找素材，也可以直接加入自己的故事前提。</div>
+      <TopicResearch key={id} projectId={id} poolChanged={t.reload} onOriginal={async part=>{
+        const overview=await q<any>("project_overview",{project_id:id});
+        const codes=overview.episodes.map((e:any)=>String(e.display_code));
+        const prefix=codes[0]?.replace(/\d+/g,"")||"E";
+        const displayCode=prefix+String(1+Math.max(0,...codes.map((c:string)=>Number(c.replace(/\D/g,""))||0))).padStart(2,"0");
+        const importId=await storyImport(id,part);
+        sessionStorage.setItem("kickoff-prefill:"+id,JSON.stringify({projectId:id,displayCode,importId,goal:"按所选原文剧情改编本集故事稿。"}));
+        go("#/p/"+id);
+      }}/>
       <ProjectStageMethods id={id} stage="topic" />
       <label>搜索选题 <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="编号、前提或机制"/></label>
       {cards.length>1 && <details><summary>比较两张选题卡</summary><div className="grid2">
@@ -294,7 +311,9 @@ function Topics({ id }: { id: string }) {
           {x.status==="候选" && overview.data && <button className="btn" onClick={()=>{const eps=overview.data.episodes;const code=(eps[0]?.display_code.replace(/\d+/g,"")||"E")+String(1+Math.max(0,...eps.map((e:any)=>Number(e.display_code.replace(/\D/g,""))||0))).padStart(2,"0");sessionStorage.setItem("kickoff-prefill:"+id,JSON.stringify({projectId:id,displayCode:code,topicId:x.id}));go(`#/p/${id}`);}}>从本卡开工</button>}
           {x.status === "候选" && <button className="btn ghost" style={{ marginTop: 8 }} onClick={() => act.run(async () => { await cmd("drop_topic", { topic_id: x.id }); t.reload(); })}>弃用</button>}
         </div>))}</div>
-      <h2>项目原始选题池</h2>{source.error&&<p className="error">{source.error}</p>}
+      {t.error&&<p className="error">{t.error}</p>}
+      {t.data&&source.data&&!cards.length&&<p className="muted">这个项目还没有选题卡。</p>}
+      {originals.length>0&&<h2>项目原始选题池</h2>}{source.error&&<p className="error">{source.error}</p>}
       {originals.filter(c=>matches(c.status,[c.code,c.title,c.premise,c.mechanisms.join(" ")])).map(c=><details className="card" key={c.code}><summary>{c.code} · {c.title}</summary><p>{c.premise}</p><p>机制：{c.mechanisms?.join("、")} · 来源：{c.path} · {c.status}</p>{c.comparison && <p>相近旧题 · {c.comparison}</p>}{c.payoff && <p>结尾 · {c.payoff}</p>}
         {t.data?.some(x=>x.code===c.code) ? <span>本项目已有同号卡</span> : <button className="btn" onClick={()=>act.run(async()=>{await cmd("take_source_topic",{project_id:id,code:c.code,sha256:c.sha256});await t.reload();})}>加入本项目候选</button>}</details>)}
       <h2 style={{ marginTop: 20 }}>加入候选</h2>
@@ -446,7 +465,7 @@ function RefFilm({ id, packId, p }: any) {
             {cur.start_ms > 0 && <div style={{ marginTop: 10 }}>
               <div className="row">
                 <input className="input" style={{ flex: 1 }} placeholder={`例如：${fmtMs(cur.start_ms)} 是切镜吗？`} value={askText} onChange={(e) => setAskText(e.target.value)} />
-                <select className="input" value={askBy} onChange={(e) => setAskBy(e.target.value)}>{Object.keys(PROVIDER_LABEL).map((k) => <option key={k} value={k}>{PROVIDER_LABEL[k]}</option>)}</select>
+                <select className="input" value={askBy} onChange={(e) => setAskBy(e.target.value)}>{pickable(Object.keys(PROVIDER_LABEL),askBy).map((k) => <option key={k} value={k}>{PROVIDER_LABEL[k]}</option>)}</select>
                 <button className="btn" disabled={!askText.trim()} onClick={() => act.run(async () => { await cmd("ask_cut", { pack_id: packId, at_ms: cur.start_ms, question: askText, provider: askBy }); setAskText(""); asks.reload(); })}>问模型</button></div>
               {(asks.data ?? []).filter((a: any) => a.at_ms === cur.start_ms).map((a: any) => (
                 <div key={a.id} className="card" style={{ marginTop: 8 }}>
@@ -542,13 +561,22 @@ function PackagerStatus() {
 
 function ImageConnections() {
   const providers = useQuery<any>("image_providers");
+  const defaults=useQuery<any>("system_image_channel");
+  const act=useAction();
   return <section><h1>图像通道</h1><button className="btn" onClick={providers.reload}>刷新通道状态</button>
+    {defaults.data && providers.data && Object.keys(providers.data).length>0 && <section className="card"><label>系统默认生图通道 <select value={defaults.data.provider ?? ""} disabled={act.busy} onChange={e=>{const provider=e.target.value;act.run(async()=>{await cmd("save_system_image_channel",{provider});await defaults.reload();});}}>
+      {Object.entries(providers.data).map(([key,item]:any)=><option key={key} value={key}>{item.capabilities.label || key}</option>)}</select></label>
+      <p className="muted small">新集的手动和专家出图都使用此通道。07 工作单可以单独指定本集通道。</p></section>}
+    <ErrorLine error={act.error}/>{defaults.error && <p className="error">{defaults.error}</p>}
     {providers.error && <p className="error">{providers.error}</p>}{providers.data && (Object.keys(providers.data).length
       ? <table className="table"><thead><tr><th>通道</th><th>声明支持的操作</th><th>尺寸</th><th>验证状态</th></tr></thead>
-        <tbody>{Object.entries(providers.data).map(([key,item]:any)=><tr key={key}><td>{key}</td>
+        <tbody>{Object.entries(providers.data).map(([key,item]:any)=><tr key={key}><td>{item.capabilities.label || key}</td>
           <td>{item.capabilities.operations.map((op:string)=>({generate:"生成",edit:"编辑"}[op] || op)).join(" / ")}</td>
           <td>{item.capabilities.sizes.join(" / ")}</td><td>{({simulated:"隔离测试通道",pending_verification:"待实际调用验证"}[item.verified] || item.verified)}</td></tr>)}</tbody></table>
-      : <p>当前服务未配置图像通道。</p>)}</section>;
+      : <p>当前服务未配置图像通道。</p>)}
+    {Object.entries(providers.data || {}).filter(([,item]:any)=>item.settings).map(([key,item]:any)=>
+      <ImageAPISettings key={key} provider={key} settings={item.settings} reload={providers.reload}/>)}
+    </section>;
 }
 
 function Executors() {
@@ -561,7 +589,7 @@ function Executors() {
     <div>
       <h1>执行器连接与型号</h1><p className="muted">工作台沿用本机 CLI 的登录账号。点“验证连接”可检查登录状态，Google CLI 通过读取可用型号验证。验证不会发起生成任务。</p>
       <button className="btn" disabled={act.busy} onClick={() => act.run(async () => {await Promise.all([probe.reload(), cat.reload()]);})}>重新检测本机程序</button>{!probe.data&&!probe.error&&<p role="status">正在检测本机 CLI…</p>}<ErrorLine error={probe.error||cat.error?{message:probe.error||cat.error||""}:null}/>
-      <div className="grid3">{Object.entries(probe.data ?? {}).map(([k, v]: any) => (
+      <div className="grid3">{Object.entries(probe.data ?? {}).filter(([k]) => pickable([k]).length).map(([k, v]: any) => (
         <div key={k} className={`card ${v.version ? "line" : "amber"}`}>
           <div className="spread"><b>{PROVIDER_LABEL[k] ?? k}</b><Tag tone={v.version?"green":"amber"}>{v.status==="simulated"?"模拟执行器":v.version?"已检测到程序":"程序不可用"}</Tag></div>
           <div className="small" style={{ margin: "6px 0" }}>{v.version ?? "未检测到版本"} · 代理 {v.proxy ? "已传入" : "无"}</div>
@@ -577,10 +605,12 @@ function Executors() {
           {cat.data?.text[k]?.connection && <ExecutorConnection key={[v.executable,v.configured,v.checkedAt,cat.data.text[k].connection.revision].join(":")} provider={k} probe={v} pathDirty={(paths[k] ?? v.configured ?? "")!==(v.configured ?? "")} settings={cat.data.text[k].connection}
             models={cat.data.text[k].models} reload={cat.reload}/>}
         </div>))}</div>
-      <h2 style={{ marginTop: 20 }}>型号与强度（能力元数据）</h2>
-      <table className="table"><thead><tr><th>执行器</th><th>型号</th><th>可选强度</th><th>状态</th><th>来源</th></tr></thead>
-        <tbody>{Object.entries(cat.data?.text ?? {}).flatMap(([prov, c]: any) => c.models.map((m: any) => (
-          <tr key={prov + m.id}><td>{PROVIDER_LABEL[prov]}</td><td>{m.label}</td><td>{m.efforts.map((e: any) => e ?? "默认").join(" / ")}</td><td><Tag tone={m.status === "verified" ? "green" : "amber"}>{m.status}</Tag></td><td className="muted small">{m.source}</td></tr>)))}</tbody></table>
+      <ExecutorDefaults/>
+      <h2 style={{ marginTop: 20 }}>型号与可选推理强度</h2>
+      <p className="muted small">“验证连接”检查本机 CLI 的连接情况。“刷新本机型号”读取型号清单，两项操作都不会发送生成请求。</p>
+      <table className="table"><thead><tr><th>执行器</th><th>型号</th><th>可选强度</th><th>型号来源</th><th>已有生成实测记录</th></tr></thead>
+        <tbody>{Object.entries(cat.data?.text ?? {}).filter(([k]) => pickable([k]).length).flatMap(([prov, c]: any) => c.models.map((m: any) => (
+          <tr key={prov + m.id}><td>{PROVIDER_LABEL[prov]}</td><td>{m.label}</td><td>{m.efforts.map((e: any) => e ?? "默认").join(" / ")}</td><td className="small">{m.source}</td><td className="muted small">{m.status === "verified" ? "有实测记录" : m.status === "partially_verified" ? "部分强度有记录" : "清单未提供"}</td></tr>)))}</tbody></table>
 
       <ErrorLine error={act.error} />
     </div>
@@ -625,11 +655,12 @@ function Tasks() {
     running:"运行中",succeeded:"已完成",failed:"失败",waiting_quota:"等待额度",stopped:"已停止",awaiting_decision:"等待确认",active:"进行中",
     clarifying:"等待澄清",abandoned:"已放弃",create:"起草",revise:"修订",review:"独审",cold_read:"冷读",comparison:"对照审查",proposal:"收尾提议",
     parallel:"并排起草",new:"新会话",ephemeral:"临时会话"};
+  Object.assign(labels,Object.fromEntries(FILM_STAGES));
   const label = (value:string)=>labels[value] ?? value;
   return (
     <div>
       <h1>任务记录与详情</h1><div className="muted small" style={{ margin: "6px 0 16px" }}>后台视图：输入快照、运行事件、执行器、型号、技能版本、产物和轮数。</div>
-      <div className="row">{["", "story", "script", "plan", "prompts"].map((s) => <button key={s} className={`pill ${stage === s ? "on" : ""}`} onClick={() => setStage(s)}>{label(s) || "全部"}</button>)}</div>
+      <div className="row">{["", ...FILM_STAGES.map(([key])=>key), "publish"].map((s) => <button key={s} className={`pill ${stage === s ? "on" : ""}`} onClick={() => setStage(s)}>{label(s) || "全部"}</button>)}</div>
       {t.error && <p className="error">{t.error}</p>}<table className="table" style={{ marginTop: 12 }}><thead><tr><th>集</th><th>阶段</th><th>任务</th><th>状态</th><th>轮数</th><th>运行</th></tr></thead>
         <tbody>{(t.data ?? []).map((x) => <Fragment key={x.id}>
           <tr key={x.id} onClick={() => setOpen(open === x.id ? null : x.id)} style={{ cursor: "pointer" }}><td>{x.display_code}</td><td>{label(x.stage)}</td><td>{x.goal.slice(0, 30)}</td><td><Tag>{label(x.state)}</Tag></td><td>{x.used_rounds}/{x.max_rounds}</td><td>{x.runs.length}</td></tr>

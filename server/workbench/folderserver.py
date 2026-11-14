@@ -41,7 +41,15 @@ def inspect_folder(path):
             schema = "SELECT name,sql FROM sqlite_master WHERE name NOT GLOB 'sqlite_*'"
             trusted = dict(model.execute(schema))
             actual = dict(db.execute(schema))
-            if any(trusted.get(name) != sql for name,sql in actual.items()):
+            # Accept the exact pre-migration and ALTER-generated forms of the one new column.
+            kickoff_forms={trusted['kickoff_check']}
+            legacy_schema=SCHEMA.replace(", error_class TEXT);", ");", 1)
+            with closing(sqlite3.connect(":memory:")) as legacy:
+                legacy.executescript(legacy_schema)
+                kickoff_forms.add(legacy.execute("SELECT sql FROM sqlite_master WHERE name='kickoff_check'").fetchone()[0])
+                legacy.execute("ALTER TABLE kickoff_check ADD COLUMN error_class TEXT")
+                kickoff_forms.add(legacy.execute("SELECT sql FROM sqlite_master WHERE name='kickoff_check'").fetchone()[0])
+            if any(sql not in kickoff_forms if name=='kickoff_check' else trusted.get(name) != sql for name,sql in actual.items()):
                 raise ValueError("项目数据库包含未知结构")
             if [r[0] for r in db.execute("SELECT id FROM project")] != [pid]:
                 raise ValueError("项目目录须包含且仅包含标记中的项目")
@@ -92,12 +100,12 @@ class FolderWorkbench(Workbench):
         return dict(super().storage_status(),externalProject=True)
 
     def get_setting(self, key, default=None):
-        if key in ("codex_path","claude_path","antigravity_path","packager_path") or key.startswith(("mount:","connection:","cli_models:")):
+        if key in ("default-image-channel","codex_path","claude_path","antigravity_path","packager_path") or key.startswith(("mount:","connection:","cli_models:")):
             return self.parent.get_setting(key,default)
         return super().get_setting(key,default)
 
     def put_setting(self,key,value):
-        if key in ("codex_path","claude_path","antigravity_path","packager_path") or key.startswith(("mount:","connection:","cli_models:")):
+        if key in ("default-image-channel","codex_path","claude_path","antigravity_path","packager_path") or key.startswith(("mount:","connection:","cli_models:")):
             raise Rejected("请在主工作台设置本机工具与资料目录")
         super().put_setting(key,value)
 

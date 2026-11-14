@@ -3,7 +3,14 @@
   "configId": "puggy",
   "name": "PUGGY ROOM",
   "summary": "胖橘猫 MILO 与 LEO、女主人的家庭荒诞喜剧短片系列。",
-  "methodPack": "short-film@v7",
+  "methodPack": "unified-film@draft",
+  "stageMethods": {
+    "story": ["puggy-methods/story.md"],
+    "script": ["puggy-methods/script.md"],
+    "asset_design": ["puggy-methods/asset_design.md"],
+    "acting": ["puggy-methods/acting.md"],
+    "prompts": ["puggy-methods/prompts.md"]
+  },
   "extractedFrom": [
     "~/.codex/skills/milo-leo-story/references/story-standard.md#二、整体风格",
     "/Users/xiaogang/Documents/自媒体 2/series/milo-leo/系列设定.md"

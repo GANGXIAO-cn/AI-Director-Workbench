@@ -34,8 +34,8 @@ async function main() {
     if(["all","home"].includes(scope)) {
       await check("project topic and series methods and script timing budget open from the seeded project",async()=>{
         for (const [route, label, section] of [
-          ["topics", "选题方法与原文", "选题三问初筛"],
-          ["groups", "连续故事制作方法与模板", "跨集共享与验收模板"]
+          ["topics", "选题方法与原文", "topic"],
+          ["groups", "连续故事制作方法与模板", "group"]
         ]) {
           await go("p/"+pid+"/"+route);
           await page.getByText(label,{exact:true}).click();
@@ -61,15 +61,15 @@ async function main() {
       });
       await check("select style, create a topic, configure ratio and executors, start and reload",async()=>{
         await go(""); await btn(/从一个想法开始/).click(); await btn("风格").click();
-        await btn("墨绿").click(); await btn("应用到本集").click();
+        await page.getByLabel("本集风格说明").fill("墨绿"); await btn("应用到本集").click();
         await btn("选题").click(); await page.getByPlaceholder("选题编号").fill(tag);
-        await page.getByPlaceholder("故事前提").fill("一只柴犬第一次值夜班。"); await btn("新建并选用").click();
+        await page.getByPlaceholder("故事前提",{exact:true}).fill("一只柴犬第一次值夜班。"); await btn("新建并选用").click();
         await btn(new RegExp("选题 · "+tag)).waitFor();
         await btn(/规格预设 ·/).click(); await page.getByLabel("画幅").selectOption("16:9");
         await page.getByLabel("起草",{exact:true}).selectOption("codex");
-        await btn("完成").click(); await btn("继续").click(); await title(/开工 ·/);
-        await btn("开工，进入故事稿").click(); await page.waitForURL(/\/e\/.+\/story/);
-        eid=page.url().split("/").at(-2); await page.reload(); await title("故事稿");
+        await btn(/调整完整开工设置/).click(); await title(/开工 ·/);
+        await btn("开工并开始创作").click(); await page.waitForURL(/\/e\/.+\/story/);
+        eid=page.url().split("/").at(-2); await page.reload(); await title("01 故事方向");
         const ep=await view(eid); const card=(await query("topics",{project_id:pid})).find(t=>t.code===tag);
         assert.equal(ep.kickoff.topic_id,card.id); assert.equal(card.episode_id,eid);
         assert.equal(ep.kickoff.spec.aspectRatio,"16:9");assert.match(ep.kickoff.spec.style,/墨绿/);
@@ -87,18 +87,20 @@ async function main() {
         await go("e/"+eid+"/review");
         const first=page.locator("details").filter({has:page.locator("summary",{hasText:"第一遍送审文件"})}).last();
         await first.locator("summary").click();
-        await first.getByRole("link",{name:"图片1.png"}).waitFor();
-        assert.equal(await first.getByRole("link",{name:"story.md"}).count(),0);
+        await first.getByRole("button",{name:"图片1.png",exact:true}).waitFor();
+        assert.equal(await first.getByRole("button",{name:"story.md",exact:true}).count(),0);
         const second=page.locator("details").filter({has:page.locator("summary",{hasText:"第二遍送审文件"})}).last();
         await second.locator("summary").click();
-        await second.getByRole("link",{name:"story.md"}).waitFor();
-        assert.ok(await second.getByRole("link",{name:"pass1.json"}).count());
+        await second.getByRole("button",{name:"story.md",exact:true}).waitFor();
+        assert.ok(await second.getByRole("button",{name:"pass1.json",exact:true}).count());
         await page.screenshot({path:path.resolve(__dirname,"../../修复验证_20261108/09_两遍独审送审文件.png")});
       });
       if(eid) await check("inspect the adopted prompt rhythm and edit a plan table in a new draft",async()=>{
         await go("e/"+eid+"/prompts");await page.getByText("镜头充分性与节奏核对",{exact:true}).click();
         await page.getByRole("columnheader",{name:"实际镜头"}).waitFor();
-        await go("e/"+eid+"/plan");await btn("修改本阶段").click();await page.getByText("镜头充分性与节奏核对",{exact:true}).click();
+        await go("e/"+eid+"/plan");await btn("修改本阶段").click();
+        await btn("结束修改").waitFor();
+        await page.getByText("镜头充分性与节奏核对",{exact:true}).click();
         const table=page.getByRole("textbox",{name:"镜头充分性联合表"});
         const original=await table.inputValue();assert.match(original,/TXT定位短句/);
         await table.fill("# 保存后的方案表\n"+original);
@@ -110,10 +112,10 @@ async function main() {
       });
       await check("one-line idea starts a new episode with no attachment",async()=>{
         await go("");await page.reload();await btn(/从一个想法开始/).click();const idea=tag+" 纸船到岸";
-        await btn(/规格预设 ·/).click();await page.getByLabel("画幅").selectOption("1:1");await btn("完成").click();
-        await page.locator(".bigbox textarea").fill(idea);await btn("继续").click();
-        await page.getByPlaceholder("一句话想法").waitFor();assert.equal(await page.getByPlaceholder("一句话想法").inputValue(),idea);
-        await btn("开工，进入故事稿").click();await page.waitForURL(/\/e\/.+\/story/);assert.equal((await view(page.url().split("/").at(-2))).kickoff.idea_text,idea);
+        await btn(/规格预设 ·/).click();await page.getByLabel("画幅").selectOption("1:1");await page.getByLabel("运行模式").selectOption("manual");await btn("完成").click();
+        await page.locator(".bigbox textarea").fill(idea);await btn("一句话开拍").click();
+
+        await page.waitForURL(/\/e\/.+\/story/);assert.equal((await view(page.url().split("/").at(-2))).kickoff.idea_text,idea);
         await page.getByText("方形画幅",{exact:true}).waitFor();
       });
       await check("import a text manuscript then start from the parsed source",async()=>{
@@ -124,7 +126,7 @@ async function main() {
         const goal=page.getByLabel("本集补充要求");
         assert.equal(await goal.inputValue(),"保留开场门铃声");
         await goal.fill("保留开场门铃声与关门动作");
-        await btn("开工，进入故事稿").click();await page.waitForURL(/\/e\/.+\/story/);
+        await btn("开工并开始创作").click();await page.waitForURL(/\/e\/.+\/story/);
         const kicked=(await view(page.url().split("/").at(-2))).kickoff;
         assert.equal(kicked.source_type,"import"); assert.equal(kicked.goal,"保留开场门铃声与关门动作");
       });
@@ -147,7 +149,7 @@ async function main() {
         assert.equal(await btn(/去开工/).isDisabled(),true);
         await page.locator(".drop input").setInputFiles(filePath("umbrella.pdf"));await btn("继续").click();
         await page.getByText(/umbrella.pdf.*PDF 文本层/).waitFor();
-        await btn(/去开工/).click();await btn("开工，进入故事稿").click();await page.waitForURL(/\/e\/.+\/story/);
+        await btn(/去开工/).click();await btn("开工并开始创作").click();await page.waitForURL(/\/e\/.+\/story/);
         assert.equal((await view(page.url().split("/").at(-2))).sourceImport.parsed_text,"Platform\n\nUmbrella");
       });
       await check("reference file to shot analysis, beat and adaptation panels",async()=>{
@@ -170,7 +172,9 @@ async function main() {
         await page.locator(".canvas-board").waitFor();await left.waitFor({state:"detached"});
       });
       await check("preview dialogue timing, correct overflow, save a version and keep the adopted plan",async()=>{
-        await go("e/"+seed.id+"/plan"); await btn("修改本阶段").click(); await btn("表演与台词读秒").click();
+        await go("e/"+seed.id+"/plan"); await btn("修改本阶段").click();
+        await btn("结束修改").waitFor();
+        await btn("表演与台词读秒").click();
         const before=(await view(seed.id)).artifacts.find(a=>a.stage==="plan").adopted_version_id;
         await page.getByLabel("表情、姿势与动作").fill("指尖压住票根，回头看门。");
         await btn("添加一句台词").click(); await page.getByLabel("说话者").fill("站务员");
@@ -193,8 +197,8 @@ async function main() {
         await go("e/"+seed.id+"/delivery");await title("交付核验");await page.getByRole("link",{name:"打开图文页"}).first().waitFor();
         const link=page.getByRole("link",{name:"将这次交付打包给 H3"}).first(); const href=await link.getAttribute("href");
         await link.click(); await page.waitForURL(/package\?delivery=/);
-        const selected=page.locator("select").first(); await selected.waitFor(); assert.equal(await selected.inputValue(),href.split("delivery=")[1]);
-        await btn("验包并导出 ZIP").click();await page.getByText("已导出",{exact:true}).waitFor();
+        const selected=page.getByRole("combobox",{name:"选择交付版本"}); await selected.waitFor(); assert.equal(await selected.inputValue(),href.split("delivery=")[1]);
+        await btn("下载 H3 包").click();await page.getByText("已导出",{exact:true}).waitFor();
       });
       await check("scope a required image, inspect its review impact and restore the original delivery state",async()=>{
         await go("e/"+seed.id+"/assets");

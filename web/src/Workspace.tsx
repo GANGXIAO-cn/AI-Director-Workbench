@@ -1,19 +1,32 @@
+import {ImageCompare} from "./ImageCompare";
+import {DirectionCompare, PreKickoffWorkspace} from "./Directions";
+import { CandidateCompare } from "./CandidateCompare";
+import { RepairProgress } from "./RepairProgress";
+import { AssetWorksheet } from "./AssetWorksheet";
+import { stressGrade } from "./StressReviewChat";
+import { ChatMarkdown } from "./ChatMarkdown";
+import { FIRST_DRAFT } from "./FirstDraft";
+import { LocateStory, MarkPassage, ReviewEvidence, type StoryLocation } from "./ReviewEvidence";
+import { Decisions, DecisionAdoption, DecisionMessageSummary, episodeScenes } from "./Decisions";
+import { StageInputs, InputGroups } from "./StageInputs";
+import { Supplements, RoleStates } from "./Supplements";
 import { StageChecklist } from "./StageChecklist";
+import { FILM_FIELDS, FILM_STAGES, NEXT_FILM_STAGE, OPTIONAL_FILM_STAGES } from "./workflow";
 import { StageTrial } from "./StageTrial";
 import { VersionCompare } from "./VersionCompare";
 import { EpisodeCooperation, OptionalStage, RevisionBar } from "./Cooperation";
-import { budgetAmount, budgetCents } from "./budget";
 import { PublishCues } from "./PublishCues";
 import { MediaPreview, PromptMedia } from "./PromptMedia";
 import { VersionSignals } from "./PromptSignals";
 import { EpisodeSceneContact, OriginalZoom } from "./SceneContact";
-import { UploadedMethods, canUseUploadedMethods } from "./UploadedMethods";
+import { ProjectMethodSync, UploadedMethods, canUseUploadedMethods } from "./UploadedMethods";
 import { StoryComparison } from "./StoryComparison";
 import { useDisplay } from "./DisplayPreferences";
 import { ShotBoard, ReferenceReview } from "./ShotReferences";
 import { OrderedImageInputs } from "./OrderedImageInputs";
 import { RequiredImage } from "./RequiredImage";
 import { useProjectRoute } from "./projectNavigation";
+import { ModelPick } from "./Project";
 import { ProjectLibrary } from "./ProjectLibrary";
 import { EpisodePaletteSettings, PaletteTrace, StepRequirements, VersionSourceText } from "./Resources";
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -22,12 +35,13 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { blob, cmd, deliveryFile, q, upload } from "./api";
 import Assistant, { Selection, artifactFor } from "./Assistant";
 import Canvas from "./Canvas";
-import { ErrorLine, Modal, PROVIDER_LABEL, Pills, STAGES, Tag, fmtMs, rno, useAction, usePoll, useQuery } from "./ui";
+import { ErrorLine, Modal, PROVIDER_LABEL, Pills, PRODUCTION_STEPS, DELIVERY_STEPS, MATERIAL_TABS, SHOT_TABS, Tag, fmtMs, rno, useAction, usePoll, useQuery } from "./ui";
 import { PlanActing } from "./PlanActing";
 import { ColumnDivider, savedWidths, type Widths } from "./WorkspaceColumns";
 import { frameOrientation } from "./specs";
 
 type Ctx = {
+  location:StoryLocation|null;
   write:(name:string,args:Record<string,any>)=>Promise<any>; locked:boolean; openTrial:()=>void; view: any; eid: string; reload: () => Promise<void>; sel: Selection; setSel: (s: Selection) => void; assets: any[];
   batches: any[]; focus: string | null; setFocus: (v: string | null) => void; openBatch: (b: any) => void;
 };
@@ -52,33 +66,39 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
   const { hash, active, go } = useProjectRoute();
   const { focusChat, setFocusChat } = useDisplay();
   const canvasMode = stage === "assets" && new URLSearchParams(hash.split("?")[1]).get("tab") === "canvas";
-  const chatOnly = focusChat && !canvasMode && stage !== "package";
+  const worksheet = stage==="worksheet";
+  const chatOnly = focusChat && !canvasMode && !["package","worksheet","shot_assets"].includes(stage);
+  const [previewId,setPreviewId]=useState("");
+  useEffect(()=>setPreviewId(""),[id,stage,chatOnly]);
   const [packagePanel,setPackagePanel]=useState<HTMLElement|null>(null);
   useEffect(() => {
     if (!active || !chatOnly) return;
     const exit = (e:KeyboardEvent) => {
       if (e.key==="Escape" && !e.defaultPrevented && !e.isComposing && !document.querySelector(".desktop-page:not([hidden]) .scrim")) {
-        e.preventDefault(); setFocusChat(false);
+        e.preventDefault(); if(previewId) setPreviewId(""); else setFocusChat(false);
       }
     };
     window.addEventListener("keydown",exit);
     return ()=>window.removeEventListener("keydown",exit);
-  },[active,chatOnly,setFocusChat]);
+  },[active,chatOnly,setFocusChat,previewId]);
   const routeParams=new URLSearchParams(hash.split("?")[1]);
   const focus = routeParams.get("v");
   const pendingStoryRun = new URLSearchParams(hash.split("?")[1]).get("run");
-  const view = useQuery<any>("episode_view", { episode_id: id },[stage,pendingStoryRun]);
+  const view = useQuery<any>("episode_view", { episode_id: id, chat_limit:30 },[stage,pendingStoryRun]);
   const assets = useQuery<any[]>("episode_assets", { episode_id: id },[stage]);
   const batches = useQuery<any[]>("episode_batches", { episode_id: id },[stage]);
+  const [location,setLocation]=useState<StoryLocation|null>(null);
+  useEffect(()=>setLocation(null),[id,stage,focus]);
   const [sel, setSel] = useState<Selection>(null);
   const [cols, setCols] = useState<Widths>(savedWidths);
   useEffect(()=>{try {localStorage.setItem("ws-cols", JSON.stringify(cols));} catch { /* storage disabled */ }}, [cols]);
   const [batch, setBatch] = useState<any>(null);
-  const expertParam = new URLSearchParams(hash.split("?")[1]).get("expert");
   const [showPalettes, setShowPalettes] = useState(false);
   const [showMethod, setShowMethod] = useState(false);
   const [trialRoute,setTrialRoute] = useState("");
   useEffect(()=>{setTrialRoute("");setCheckStage("");},[id,stage]);
+  const decisions=useQuery<any[]>("director_decisions",{episode_id:id},[stage]);
+  const [showDecisions,setShowDecisions]=useState(false);
   const [requirements,setRequirements]=useState(false);
   const [checkStage,setCheckStage]=useState("");
   const composeRef=useRef<((draft:string)=>void)|null>(null);
@@ -94,37 +114,45 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
     const next = params.size ? path+"?"+params.toString() : path;
     if (next !== hash) go(next);
   };
-  const hasRequirements = ["story","script","plan","prompts","publish","assets","space","cast","review"].includes(stage);
-  const needsLabel = ["space","cast","assets"].includes(stage) ? "本集出图增强方法" : stage==="review" ? "对照审查使用的提示词配置" : "本步需求与参考";
+  const hasRequirements = [...FILM_STAGES.map(([key])=>key),"publish","assets","space","cast","review"].includes(stage);
+  const needsLabel = ["space","cast","assets"].includes(stage) ? "本集出图增强方法" : stage==="review" ? "分镜审核依据" : "本步需求与参考";
   const documentPanel=useRef<HTMLDivElement>(null);
-  const versionStage = stage==="review" ? "prompts" : stage;
-  const missingVersion = !!(view.data && focus && ["story","script","plan","prompts","publish"].includes(versionStage)
+  const versionStage = stage==="review" ? "plan" : stage;
+  const missingVersion = !!(view.data && focus && [...FILM_STAGES.map(([key])=>key),"publish"].includes(versionStage)
     && !view.data.artifacts.find((a:any)=>a.stage===versionStage)?.versions.some((version:any)=>version.id===focus));
   useEffect(()=>{ if (missingVersion) void view.reload(); },[missingVersion,focus,versionStage,id]);
   const busy = view.data?.artifacts.some((a: any) => a.tasks.some((t: any) => t.runs.some((r: any) => ["queued", "running"].includes(r.status))));
-  const reload = async () => { await Promise.all([view.reload(), assets.reload(), batches.reload()]); };
+  const reload = async () => { await Promise.all([view.reload(), assets.reload(), batches.reload(), decisions.reload()]); };
   const imagesRunning=batches.data?.some(b=>["authorized","running"].includes(b.state));
   usePoll(!!busy || !!imagesRunning, reload);
   if (!view.data) return <div className="page">{view.error ?? "读取中…"}</div>;
   const v = view.data;
-  if (!v.kickoff) return <div className="page">本集尚未开工。<a className="btn primary" href={`#/p/${v.episode.project_id}`}>去开工</a></div>;
+  if (!v.kickoff) return <PreKickoffWorkspace eid={id} pid={v.episode.project_id} episode={v.episode} reload={view.reload}/>;
   if (missingVersion) {
     return <div className="page">当前阶段的版本列表中没有此稿。
       <button className="btn" onClick={view.reload}>刷新版本列表</button><button className="btn" onClick={()=>setFocus(null)}>返回当前稿</button></div>;
   }
   const stageArtifact = artifactFor(v,stage);
-  const ctx: Ctx = { locked:stageArtifact?.editState==="protected", view: v, eid: id, reload, sel, setSel, assets: assets.data ?? [], batches: batches.data ?? [], focus, setFocus,
+  const inputVersion = focus ?? stageArtifact?.adopted_version_id ?? stageArtifact?.versions.at(-1)?.id;
+  const ctx: Ctx = { location, locked:stageArtifact?.editState==="protected", view: v, eid: id, reload, sel, setSel, assets: assets.data ?? [], batches: batches.data ?? [], focus, setFocus,
     write:(name,args)=>cmd(name,{...args,editor_guard:[stageArtifact.id,stageArtifact.revision]}),
     openBatch: setBatch, openTrial:()=>setTrialRoute(id+":"+stage) };
+  const previews = v.artifacts.flatMap((a:any)=>a.versions.map((version:any)=>({
+    version, label:(FILM_STAGES.find(([key])=>key===a.stage)?.[1] ?? ({publish:"出版资料"} as Record<string,string>)[a.stage] ?? a.stage)
+      +" · "+rno(version.display_no)+(version.id===a.adopted_version_id?" · 已采用":"")
+  })));
+  const preview=chatOnly && previews.find((item:any)=>item.version.id===previewId);
   const adopted = (s: string) => !!v.artifacts.find((a: any) => a.stage === s)?.adopted_version_id;
   const status = (s: string) => {
     const map: Record<string, boolean> = { story: adopted("story"), script: adopted("script"), plan: adopted("plan"),
       ...v.productionStatus, prompts: adopted("prompts"),
       publish: adopted("publish"), delivery: v.episode.state === "delivered" };
-    return map[s] ? "done" : s === stage ? "now" : "";
+    return (map[s] || adopted(s)) ? "done" : s === stage ? "now" : "";
   };
   return (
-    <div className="app episode-workspace">
+    <LocateStory.Provider value={stage==="story"?setLocation:null}><div className="app episode-workspace">
+      {!worksheet && stage!=="stress" && <RepairProgress view={v} stage={stage} reload={reload}/>}
+      {!worksheet && <ProjectMethodSync key={id+stage} pid={v.episode.project_id} eid={id} stage={canUseUploadedMethods(stage)?stage:undefined}/>}
       <nav className="stage-views" aria-label="本阶段工作区">
         {!canvasMode && hasRequirements && <><button className="pill" aria-pressed={chatOnly && !requirements} onClick={()=>setFocusChat(true)}>创作对话</button>
         <button className="pill" aria-label={needsLabel} title={needsLabel} aria-haspopup="dialog" onClick={()=>setRequirements(true)}>本步需求</button>
@@ -132,21 +160,29 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
           setFocusChat(false); requestAnimationFrame(()=>documentPanel.current?.focus({preventScroll:true}));
         }}>成果文档</button></>}
         <button className="pill" onClick={()=>setCheckStage(stage)}>过关清单</button>
+        {chatOnly && previews.length>0 && <select className="preview-picker" aria-label="预览成果物" value={previewId} onChange={e=>setPreviewId(e.target.value)}>
+          <option value="">预览成果物</option>{previews.map((item:any)=><option key={item.version.id} value={item.version.id}>{item.label}</option>)}</select>}
       </nav>
-      <div className={"ws"+(chatOnly?" chat-only":"")+(canvasMode?" canvas-only":"")} style={{flex:1, gridTemplateColumns: canvasMode || chatOnly ? "minmax(0, 1fr)" : `${cols[0]}px minmax(0, 1fr) ${cols[1]}px`}}>
+      <div className={"ws"+(preview?" with-preview":"")+(chatOnly?" chat-only":"")+(canvasMode?" canvas-only":"")} style={{flex:1, gridTemplateColumns: preview ? "minmax(0, 3fr) minmax(0, 2fr)" : canvasMode || chatOnly ? "minmax(0, 1fr)" : `${cols[0]}px minmax(0, 1fr) ${cols[1]}px`}}>
         {!canvasMode && <div className="catalog">
           <div className="spread" style={{ padding: "0 8px 12px" }}><b>目录</b><a className="muted" href={`#/p/${v.episode.project_id}`}>⇤</a></div>
           <EpisodeCooperation eid={id} mode={v.cooperationMode} reload={view.reload}/>
-          {STAGES.map(([k, label], i) => (
-            <a key={k} className={`item ${k === stage ? "on" : ""}`} href={`#/e/${id}/${k}`}>
-              <span className="n">{String(i + 1).padStart(2, "0")}</span>{label}{v.skippedStages[k] ? <small>已跳过</small> : <span className={`st ${status(k)}`} />}
-            </a>))}
+          {PRODUCTION_STEPS.map(([k,label])=>{
+            const tabs=k==="asset_design"?MATERIAL_TABS:k==="plan"?SHOT_TABS:[];
+            const current=k===stage || tabs.some(([key])=>key===stage);
+            const done=k==="asset_design"?adopted(k) && v.productionStatus.materialsConfirmed:k==="plan"?adopted("plan"):status(k)==="done";
+            return <a key={k} className={`item ${current?"on":""}`} href={`#/e/${id}/${current?stage:k==="asset_design"?"worksheet":k}`}>
+              {label}{v.skippedStages[k]?<small>已跳过</small>:<span className={`st ${done?"done":current?"now":""}`}/>}</a>;
+          })}
+          <b>交付</b>{DELIVERY_STEPS.map(([k,label])=><a key={k} className={`item ${k===stage?"on":""}`} href={`#/e/${id}/${k}`}>{label}<span className={`st ${status(k)}`}/></a>)}
         </div>}
         {!canvasMode && <><ColumnDivider side={0} width={cols[0]} resize={width=>setCols(old=>[width,old[1]])}/>
           <ColumnDivider side={1} width={cols[1]} resize={width=>setCols(old=>[old[0],width])}/></>}
         <div className="center" ref={documentPanel} tabIndex={-1}>
+          <header className="document-toolbar">
           <div className="topbar">
-            {!canvasMode && !hasRequirements && stage!=="package" && <button className="btn narrow-chat" onClick={()=>setFocusChat(true)}>专注对话</button>}
+            {!worksheet && !canvasMode && !hasRequirements && stage!=="package" && <button className="btn narrow-chat" onClick={()=>setFocusChat(true)}>专注对话</button>}
+            <button className="btn" onClick={()=>setShowDecisions(true)}>导演决定 {decisions.data?.filter(d=>d.state==="active").length??0}</button>
             {["assets","prompts"].includes(stage) && <button className="btn" onClick={() => setShowPalettes(true)}>本集色卡</button>}
             {stage !== "package" && <button className="btn" onClick={() => setShowMethod(true)}>制作方法</button>}
             {canvasMode && <button className="btn" onClick={()=>setRequirements(true)}>{needsLabel}</button>}
@@ -154,28 +190,39 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
             <span className="muted small">{frameOrientation(v.kickoff.spec.aspectRatio)}</span>
             <span style={{ marginLeft: "auto" }} className="chip">◐ {v.kickoff.relation === "continue" ? "承接前集" : "独立成集"}</span>
             <span className="chip">▯ {v.kickoff.spec.aspectRatio}</span>
-            <a className="chip" href={`#/p/${v.episode.project_id}/expert${expertParam ? "/" + expertParam : ""}?episode=${id}`}>⇄ 手工 · 专家模式</a>
           </div>
+          {[MATERIAL_TABS,SHOT_TABS].filter(tabs=>tabs.some(([key])=>key===stage)).map(tabs=><nav key={tabs[0][0]} aria-label="阶段页签" className="row">{tabs.map(([key,label])=><a key={key} className={"pill "+(stage===key?"on":"")} aria-current={stage===key?"page":undefined} href={`#/e/${id}/${key}`}>{label}</a>)}</nav>)}
           {stageArtifact && <RevisionBar art={stageArtifact} reload={view.reload}/>}
-          {["space","cast"].includes(stage) && <OptionalStage key={id+stage} eid={id} stage={stage} skippedReason={v.skippedStages[stage] || ""} reload={view.reload}/>}
-          {stage==="package"?<PackageView ctx={ctx} panel={packagePanel}/>:!v.skippedStages[stage] && <StageView key={id+stage+String(ctx.locked)} stage={stage} ctx={ctx} />}
+          </header>
+          {["plan","prompts","assets"].includes(stage) && !!v.pendingShotImages?.length && <section className="card amber"><strong>还有状态图或九宫格待出</strong><p>{v.pendingShotImages.join("、")}</p><a className="btn" href={`#/e/${id}/asset_design`}>追加素材条目</a> <a className="btn" href={`#/e/${id}/assets`}>去 07 出图</a></section>}
+          {routeParams.get("report") && <StressRepair ctx={ctx} stage={stage} reportId={routeParams.get("report")!} optionIndex={routeParams.get("option")}/>}
+          {stageArtifact && inputVersion && <StageInputs key={inputVersion} versionId={inputVersion} records={decisions.data??[]} art={stageArtifact} onSave={async vid=>{await reload();setFocus(vid);}}/>}
+          {(["space","cast"].includes(stage) || OPTIONAL_FILM_STAGES.has(stage)) && <OptionalStage key={id+stage} eid={id} stage={stage} skippedReason={v.skippedStages[stage] || ""} reload={view.reload}/>}
+          {routeParams.get("directions")?<DirectionCompare eid={id} cid={routeParams.get("directions")!} reload={reload}/>:routeParams.get("compare") && !stageArtifact?.versions.some((version:any)=>version.id===routeParams.get("compare"))?stage==="assets"?<ImageCompare eid={id} continuousId={routeParams.get("compare")!} reload={reload} onBack={()=>go(`#/e/${id}/${stage}`)}/>:<CandidateCompare eid={id} stage={stage} continuousId={routeParams.get("compare")!} view={v} reload={reload} onBack={()=>go(`#/e/${id}/${stage}`)}/>:stage==="package"?<PackageView ctx={ctx} panel={packagePanel}/>:!v.skippedStages[stage] && <StageView key={id+stage+String(ctx.locked)} stage={stage} ctx={ctx} />}
         </div>
         {stage==="package" && <aside className="assistant package-aside" aria-label="出包设置" ref={setPackagePanel}/>}
+        {/* 实测 122：备图工作单也保留导演助手，切换素材页签时对话不消失。 */}
         {!canvasMode && stage!=="package" && <Assistant key={id + ":" + stage} composeRef={composeRef} openTrial={ctx.openTrial} openRequirements={()=>setRequirements(true)} view={v} stage={stage} sel={sel} setSel={setSel} reload={reload} focus={focus} batches={ctx.batches} onOpenBatch={setBatch} />}
+        {preview && <aside className="focus-preview" aria-label="成果预览">
+          <header className="spread"><strong>{preview.label}</strong><button className="btn" onClick={()=>setPreviewId("")}>关闭预览</button></header>
+          {Object.entries(preview.version.content).map(([field,value])=><section key={field}>
+            <h3>{FILM_FIELD_NAMES[field] || field}</h3>{typeof value==="string" ? <ChatMarkdown text={value}/> : <FilmValue value={value}/>}
+          </section>)}</aside>}
       </div>
       {trialRoute===id+":"+stage && <StageTrial key={trialRoute} projectId={v.episode.project_id} episodeId={id} stage={stage}
         artifacts={v.artifacts} currentVersion={focus} provider={v.kickoff.executor_plan.create.provider} close={()=>setTrialRoute("")} reload={reload}/>}
-      {checkStage===stage && <StageChecklist eid={id} stage={stage}
-        version={["story","script","plan","prompts","publish","review"].includes(stage)?focus:null}
+      {checkStage===stage && <StageChecklist eid={id} stage={worksheet?"asset_design":stage}
+        version={[...FILM_STAGES.map(([key])=>key),"publish","review"].includes(stage)?focus:null}
         delivery={stage==="package" ? routeParams.get("delivery") : null}
         scope={stage==="delivery" ? routeParams.get("scope") || (v.kickoff.spec.packaging==="trial"?"trial":"full") : "full"}
         segments={stage==="delivery" ? routeParams.getAll("segment") : []}
         close={()=>setCheckStage("")}/>}
+      {showDecisions && <Decisions eid={id} stage={stage} records={decisions.data??[]} scenes={episodeScenes(v)} refresh={reload} close={()=>setShowDecisions(false)}/>}
       {showPalettes && <EpisodePaletteSettings key={stage} eid={id} stage={stage} close={() => setShowPalettes(false)}/>}
       {showMethod && <StageMethods key={id+stage} pid={v.episode.project_id} eid={id} stage={stage} close={() => setShowMethod(false)} />}
-      {requirements && <StepRequirements key={stage} pid={v.episode.project_id} eid={id} stage={["space","cast"].includes(stage)?"assets":versionStage} close={()=>{setRequirements(false); if (stage==="review") void reload();}} toComposer={stage==="review"?undefined:text=>{composeRef.current?.(text); if (window.matchMedia("(max-width: 1120px)").matches) setFocusChat(true);}}/>}
+      {requirements && <StepRequirements key={stage} pid={v.episode.project_id} eid={id} stage={["space","cast"].includes(stage)?"assets":versionStage} close={()=>{setRequirements(false); void reload();}} toComposer={stage==="review"?undefined:text=>{composeRef.current?.(text); if (window.matchMedia("(max-width: 1120px)").matches) setFocusChat(true);}}/>}
       {batch && <BatchModal batch={batch} assets={ctx.assets} close={() => { setBatch(null); reload(); }} />}
-    </div>
+    </div></LocateStory.Provider>
   );
 }
 
@@ -188,14 +235,14 @@ function StageMethods({ pid, eid, stage, close }: { pid:string; eid: string; sta
     <div className="spread"><h2>本阶段制作方法</h2><button className="btn" onClick={close}>关闭</button></div>
     {data.error && <p className="error">{data.error}</p>}
     {canUseUploadedMethods(stage) && <UploadedMethods pid={pid} eid={eid} stage={stage}/>}
-    {data.data && <><p className="muted small">开工版本 {data.data.ref}</p>
+    {data.data && <><p className="muted small">当前阶段配置 · {data.data.ref}</p>
       {!data.data.sections.length && <p>此版本未收录本阶段的小节。</p>}
       {!!data.data.guides?.length && <details className="card"><summary>查阅 H3 指南原文</summary>
         {data.data.guides.map((guide:{name:string;text:string;methodSource:{sha256:string}})=>
-          <details key={guide.name}><summary>{guide.name==="ref-en.txt"?"全参考指南":"文本与关键帧指南"} · {guide.name}</summary>
+          <details key={guide.name}><summary>{["ref-en.txt","h3ReferenceGuide.txt"].includes(guide.name)?"全参考指南":"文本与关键帧指南"} · {guide.name}</summary>
             <p className="muted tiny">SHA-256 {guide.methodSource.sha256}</p><pre style={{whiteSpace:"pre-wrap"}}>{guide.text}</pre></details>)}</details>}
-      {data.data.sections.map((item: any) => <details className="card" key={item.name}>
-        <summary>{item.name.replace(/\.md$/, "")} · {item.role === "method" ? "通用" : "项目资料"}</summary>
+      {data.data.sections.map((item: any) => <details className="card" key={item.name+(item.pass ?? "")}>
+        <summary>{item.pass==="cold_read"?"第一遍 · ":item.pass==="comparison"?"第二遍 · ":""}{item.name.replace(/\.md$/, "")} · {item.methodSource.path.startsWith("yoko-")?"对标原文":item.methodSource.path.startsWith("unified-film/")?"工作台本地化规则":item.role === "method" ? "通用" : "项目资料"}</summary>
         {["story","script","plan","prompts","publish"].includes(stage) && item.methodSource.path.startsWith("sections/") && <label><input type="checkbox"
           checked={!disabled.includes(item.name)} onChange={e=>setOff(e.target.checked?disabled.filter((n:string)=>n!==item.name):[...disabled,item.name])}/>下次起草读取这节方法</label>}
         <p className="muted tiny">{item.methodSource.source?.path ?? item.methodSource.path} {item.methodSource.source?.lines} · {item.methodSource.sha256.slice(0, 16)}</p>
@@ -207,91 +254,343 @@ function StageMethods({ pid, eid, stage, close }: { pid:string; eid: string; sta
 }
 
 function StageView({ stage, ctx }: { stage: string; ctx: Ctx }) {
+  const {hash} = useProjectRoute();
+  if (FILM_FIELDS[stage]) return <FilmDocument stage={stage} ctx={ctx}/>;
   switch (stage) {
-    case "story": return <StoryView ctx={ctx} />;
+    case "story": return <StoryResult ctx={ctx} />;
     case "script": return <ScriptView ctx={ctx} />;
     case "plan": return <PlanView ctx={ctx} />;
+    case "worksheet": return <AssetWorksheet ctx={ctx} space={<SpaceView ctx={ctx} scenesOnly/>}/>;
+    case "shot_assets": return artifactFor(ctx.view,"plan")?.adopted_version_id
+      ? <><NeedsTable ctx={ctx}/><CastView ctx={ctx}/><a className="btn" href={`#/e/${ctx.eid}/assets?tab=canvas`}>九宫格与画布</a></>
+      : <p>这一部分在 08 分镜采用后开放，用来补每一段需要的状态图和九宫格。</p>;
     case "space": return <SpaceView ctx={ctx} />;
-    case "cast": return <CastView ctx={ctx} />;
+    case "cast": return artifactFor(ctx.view,"plan")?.adopted_version_id ? <CastView ctx={ctx}/> : <p>角色出镜登记在 08 分镜采用后开放。</p>;
     case "assets": return <AssetsView ctx={ctx} />;
     case "prompts": return <PromptsView ctx={ctx} />;
     case "review": return <ReviewView ctx={ctx} />;
     case "publish": return <PublishView ctx={ctx} />;
-    case "delivery": return <DeliveryView ctx={ctx} />;
+    case "delivery": {
+      const id = new URLSearchParams(hash.split("?")[1]).get("delivery");
+      return id ? <SelectedDelivery ctx={ctx} id={id}/> : <DeliveryView ctx={ctx}/>;
+    }
     default: return <PackageView ctx={ctx} />;
   }
 }
 
 // ---------------------------------------------------------------- common pieces
-const PREV: Record<string, string> = { script: "story", plan: "script", prompts: "plan", publish: "prompts" };
+const PREV: Record<string, string> = Object.fromEntries(Object.entries(NEXT_FILM_STAGE).map(([a,b])=>[b,a]));
 function useVersion(ctx: Ctx, stage: string) {
   const art = artifactFor(ctx.view, stage);
-  const upstreamAdopted = !!PREV[stage] && !!ctx.view.artifacts.find((a: any) => a.stage === PREV[stage])?.adopted_version_id;
+  const upstreamAdopted = !!PREV[stage] && (!!ctx.view.artifacts.find((a: any) => a.stage === PREV[stage])?.adopted_version_id || !!ctx.view.skippedStages[PREV[stage]]);
   useEffect(() => { if (!art && upstreamAdopted) cmd("open_stage", { episode_id: ctx.eid, stage }).then(ctx.reload).catch(() => null); }, [art?.id, upstreamAdopted]);
   const versions = art?.versions ?? [];
   const current = versions.find((v: any) => v.id === ctx.focus) ?? versions.find((v: any) => v.id === art?.adopted_version_id) ?? versions[versions.length - 1];
   return { art, versions, current };
 }
 
-function VersionTabs({ ctx, art, current }: { ctx: Ctx; art: any; current: any }) {
+function VersionTabs({ ctx, art, current, extra }: { ctx: Ctx; art: any; current: any; extra?: React.ReactNode }) {
   const [show, setShow] = useState(false);
   const [compare,setCompare] = useState(false);
   const { go } = useProjectRoute();
   const act=useAction();
   const refs=useQuery<any>(show && current ? "version_sources":null,{version_id:current?.id});
-  return <div className="row">{art.versions.map((v: any) => (
+  return <div className="row version-controls">{art.versions.length > 4 ? <select aria-label="选择稿件版本" value={current?.id ?? ""} onChange={e=>ctx.setFocus(e.target.value)}>
+    {[...art.versions].reverse().map(v=><option key={v.id} value={v.id}>{rno(v.display_no)}{v.aiAdopted?" · AI 采用":""}{v.origin==="manual"?" 手稿":v.origin==="combined"?" 组合":""}{v.id===art.adopted_version_id?" · 已采用":""}</option>)}
+  </select> : art.versions.map((v: any) => (
     <button key={v.id} title={rno(v.display_no)+" · "+new Date(v.created_at*1000).toLocaleString()} className={`pill ${v.id === current?.id ? "on" : ""}`} onClick={() => ctx.setFocus(v.id)}>
-      {rno(v.display_no)}{v.origin === "manual" ? " 手稿" : v.origin === "combined" ? " 组合" : ""}{art.adopted_version_id === v.id ? " ✓" : ""}</button>))}
+      {rno(v.display_no)}{v.aiAdopted?" · AI 采用":""}{v.origin === "manual" ? " 手稿" : v.origin === "combined" ? " 组合" : ""}{art.adopted_version_id === v.id ? " ✓" : ""}</button>))}
     {current && <time className="muted small" dateTime={new Date(current.created_at*1000).toISOString()}>{new Date(current.created_at*1000).toLocaleString()}</time>}
     {art.versions.length>1 && <button className="btn" onClick={()=>setCompare(true)}>比较版本</button>}
     {compare && <VersionCompare versions={art.versions} current={current.id} adopted={art.adopted_version_id} close={()=>setCompare(false)}/>}
-    <button className="btn" onClick={()=>setShow(true)}>版本来源</button>
+    <button className="btn" disabled={!current} onClick={()=>setShow(true)}>版本来源</button>
     {current && current.id!==art.versions[art.versions.length-1]?.id && <button className="btn" disabled={act.busy || ctx.locked} onClick={()=>act.run(async()=>{
       const r=await ctx.write("restore_version",{version_id:current.id,expected_adopted_version_id:art.adopted_version_id});
       await ctx.reload(); ctx.setFocus(r.versionId);})}>恢复此完整稿为新版本</button>}<ErrorLine error={act.error}/>
+    {extra}
     {show && <Modal width={760} onClose={()=>setShow(false)}><h2>{rno(current.display_no)} 的来源</h2>
       {refs.error && <p className="error">{refs.error}</p>}
       {refs.data && <><p>来源 {refs.data.origin} {refs.data.base ? " · 基版 "+refs.data.base : ""} {refs.data.run ? " · 运行 "+refs.data.run : ""}</p>
         {refs.data.inputs.length===0 && <p>这个版本没有直接读取外部参考的运行记录。</p>}
         {refs.data.inputs.map((item:any)=><details key={item.sha256+item.name}>
-          <summary>{item.role === "adopted_story" ? "起草时采用的故事" + (item.storyVersion ? " · "+rno(item.storyVersion.display_no) : "") :
+          <summary>{item.upstreamVersion ? "起草时采用的"+(FILM_STAGES.find(([key])=>key===item.upstreamVersion.stage)?.[1].slice(3) || item.upstreamVersion.stage)+" · "+rno(item.upstreamVersion.display_no) :
             item.name+" · "+(({trial_reference:"阶段试写",citation:"引用资料",visual_reference:"导演色卡",method:"制作方法",project_method:"项目方法",step_requirements:"本步需求",reference_pack:"参考包",adaptation_source:"改编来源"} as Record<string,string>)[item.role] || item.role)}</summary>
-          {item.storyVersion && <button className="btn" onClick={() => { setShow(false); go(`#/e/${ctx.eid}/story?v=${item.storyVersion.id}`); }}>打开故事原稿</button>}
+          {item.upstreamVersion && <button className="btn" onClick={() => { setShow(false); go(`#/e/${ctx.eid}/${item.upstreamVersion.stage}?v=${item.upstreamVersion.id}`); }}>打开{item.upstreamVersion.stage==="story"?"故事":""}原稿</button>}
           <small>输入文件 SHA-256 {item.sha256}</small>{!refs.data.run && <p className="muted small">来源稿的运行 · {item.sourceRuns?.join("、")}</p>}
           <VersionSourceText role={item.role} text={item.text}/></details>)}</>}
       <button className="btn" onClick={()=>setShow(false)}>关闭</button></Modal>}</div>;
 }
 
+function storyAdoptionHint(version:any,adopted:boolean) {
+  if(adopted) return "本版已采用，可到「02 角色」起草人物小传。";
+  const gate=version.gate;
+  if(gate.formatErrors.length) return "暂不能采用："+gate.formatErrors[0];
+  const issues=gate.blocking.length+gate.unresolved.length;
+  if(issues) return "暂不能采用。请先处理本版的 "+issues+" 条独审意见。";
+  if(gate.reviewRequired && !gate.review) return "请先完成独立审查，再采用这版故事。";
+  return "认可这版故事后，可点「采用并继续」进入角色创作。";
+}
+
 function AdoptBar({ ctx, art, version, hint, next }: { ctx: Ctx; art: any; version: any; hint: string; next?: string }) {
   const { go } = useProjectRoute();
   const act = useAction();
+  const [confirmed,setConfirmed]=useState<string|null>(null);
   if (!version) return null;
   const adoptedHere = art.adopted_version_id === version.id;
-  const adopt = (cont: boolean) => act.run(async () => {
-    const res = await cmd("adopt", { artifact_id: art.id, version_id: version.id, expected_adopted_version_id: art.adopted_version_id, and_continue: cont });
-    ctx.reload();
-    if (cont && next) go(`#/e/${ctx.eid}/${next}`);
-    return res;
-  });
+  const remainder=version.gate.sourceRemainder?.trim();
+  const adoption = {art,version,eid:ctx.eid,scenes:episodeScenes(ctx.view),disabled:!version.gate.adoptable || (!!remainder && confirmed!==version.id)};
   return (
-    <div className="actionbar">
-      <span className="muted small">· {hint}</span>
+    <div className={art.stage==="asset_design" ? "actionbar asset-next-bar" : "actionbar"}>
+      <span className="muted small">{art.stage==="story" ? storyAdoptionHint(version,adoptedHere) : art.stage==="asset_design" ? "当前素材清单 "+rno(version.display_no) : hint}</span>
+      <DecisionMessageSummary art={art} eid={ctx.eid} reload={ctx.reload}/>
       {!adoptedHere && art.adopted_version_id && <button className="btn" onClick={() => ctx.setFocus(art.adopted_version_id)}>对比 {rno(art.versions.find((v: any) => v.id === art.adopted_version_id)?.display_no)}</button>}
-      {art.stage === "story" && !version.gate.review && <button className="btn primary" onClick={() => act.run(async () => { await cmd("submit_review", { version_id: version.id }); ctx.reload(); })}>发起独立审查</button>}
-      {!adoptedHere && (art.stage !== "story" || version.gate.review) && <>
-        <button className="btn" disabled={!version.gate.adoptable} onClick={() => adopt(false)}>只采用</button>
-        {next && <button className="btn primary" disabled={!version.gate.adoptable} onClick={() => adopt(true)}>采用并继续</button>}
+      {["story","plan"].includes(art.stage) && !version.gate.review && <button className="btn primary" onClick={() => act.run(async () => { await cmd("submit_review", { version_id: version.id }); ctx.reload(); })}>发起独立审查</button>}
+      {!adoptedHere && remainder && <section><h4>以下原文没有归入任何场次</h4><pre>{version.gate.sourceRemainder}</pre><label><input type="checkbox" checked={confirmed===version.id} onChange={e=>setConfirmed(e.target.checked?version.id:null)}/>已核对剩余原文</label></section>}
+      {!adoptedHere && <>
+        <DecisionAdoption {...adoption} onDone={async vid=>{await ctx.reload();ctx.setFocus(vid);}}>{art.stage==="stress"?"只采用报告":"只采用"}</DecisionAdoption>
+        {next && <DecisionAdoption {...adoption} cont onDone={async(_vid,result)=>{await ctx.reload();go(`#/e/${ctx.eid}/${result.blockers?.length?"stress":next}`);}}>{art.stage==="stress"?"采用报告并继续":art.stage==="asset_design"?"采用清单并去备图":"采用并继续"}</DecisionAdoption>}
       </>}
+      {adoptedHere && art.stage==="asset_design" && <a className="btn asset-next" href={`#/e/${ctx.eid}/worksheet`}>进入备图工作单 →</a>}
       {adoptedHere && <Tag tone="green">{rno(version.display_no)} 已采用</Tag>}
       <ErrorLine error={act.error} />
     </div>
   );
 }
 
+const FILM_FIELD_NAMES: Record<string,string> = {
+  synopsis:"故事梗概",cast:"角色与身份",handoff:"制作交接",notes:"说明",scenes:"场次",rules:"世界规则",assets:"素材条目",
+  shots:"镜头",segments:"生成段",retelling:"冷读复述",scope:"审查范围",diagnosis:"诊断结论",issues:"问题与证据",options:"返修方案",
+  title:"标题",body:"正文",action:"动作",durationBudget:"时长预算",supplements:"制作补充",decisionNotes:"导演决定落实情况",
+  id:"编号", name:"名称", identity:"身份", goal:"目标", obstacle:"阻碍", behavior:"行为特征", voice:"声音身份",
+  rule:"规则", choiceImpact:"对选择的影响", evidence:"依据", heading:"场景", characters:"人物", event:"事件", result:"结果",
+  identityRequired:"需要身份基准", identityReason:"基准说明", timePoint:"发生时间", elapsedTime:"距上一场", rolePositions:"各角色位置", stateChanges:"状态变化",
+  durationEstimateSec:"估计秒数", stage:"返修阶段", sceneIds:"涉及场次", problem:"问题", issueId:"对应问题", repairScope:"修改范围",
+  proposal:"建议", kind:"类型", roleId:"角色编号", stateId:"状态编号", description:"描述", imagePrompt:"中文出图提示词",
+  evidenceStatus:"实际证据状态", sceneId:"场号", objective:"表演目标", strategy:"策略", beats:"节拍", subtext:"潜台词", voiceDirection:"声音表演",
+};
+function FilmValue({value}: {value:any}) {
+  if (Array.isArray(value)) return value.length ? <>{value.map((item,i)=><div className="card" key={i}><FilmValue value={item}/></div>)}</> : <p className="muted">无</p>;
+  if (value && typeof value === "object") return <dl>{Object.entries(value).map(([key,v])=><div key={key}><dt><b>{FILM_FIELD_NAMES[key] || key}</b></dt><dd><FilmValue value={v}/></dd></div>)}</dl>;
+  return <span style={{whiteSpace:"pre-wrap"}}>{value === "lightweight" ? "轻资产" : value === "premium" ? "精细资产" : String(value ?? "")}</span>;
+}
+function CharacterProfiles({value,ctx}: {value:any;ctx:Ctx}) {
+  const fixed = useQuery<{roles:{id:string;sha256:string}[]}>("project_role_assets",{project_id:ctx.view.episode.project_id});
+  const cast = useQuery<any>("cast_matrix",{episode_id:ctx.eid});
+  const [preview,setPreview] = useState<{name:string;sha:string}|null>(null);
+  if (!Array.isArray(value) || !value.length) return <FilmValue value={value}/>;
+  const order = ["goal","obstacle","behavior","voice","identityRequired","identityReason"];
+  return <div className="character-profiles">
+    {(fixed.error || cast.error) && <p className="error">{fixed.error || cast.error}</p>}
+    {preview && <Modal width={800} onClose={()=>setPreview(null)}><h2>{preview.name}</h2><OriginalZoom {...preview}/></Modal>}
+    {value.map((role,index)=>{
+    if (!role || typeof role!=="object" || Array.isArray(role)) return <FilmValue key={index} value={role}/>;
+    const extra = Object.keys(role).filter(key=>!["name","id","identity",...order].includes(key));
+    const baseline = cast.data?.roster?.[role.id]?.sha256;
+    const sha = baseline || fixed.data?.roles.find(item=>item.id.toLowerCase()===String(role.id).toLowerCase())?.sha256;
+    const source = baseline ? "本集身份图" : "项目固定身份图";
+    return <article className="character-profile" key={role.id || index}>
+      <header><h3>{role.name || role.id || "未命名角色"}</h3>{role.id && <small>编号 {role.id}</small>}</header>
+      {sha ? <button className="character-photo" onClick={()=>setPreview({name:role.name+" · "+source,sha})}>
+        <img src={blob(sha)} alt={role.name+"身份参考"}/><span>{source} · 查看原图</span>
+      </button> : cast.data && fixed.data && <small>暂无身份图</small>}
+      {role.identity && <div className="profile-identity"><FilmValue value={role.identity}/></div>}
+      <dl>{[...order,...extra].filter(key=>role[key]!=null && role[key]!=="").map(key=>
+        <div key={key}><dt>{key==="identityRequired" ? "身份基准" : FILM_FIELD_NAMES[key] || key}</dt>
+          <dd>{typeof role[key]==="boolean" ? (role[key] ? "需要" : "不需要") : <FilmValue value={role[key]}/>}</dd>
+        </div>)}</dl>
+    </article>;
+  })}</div>;
+}
+function WorldRules({value}:{value:any}) {
+  if (!Array.isArray(value) || !value.length) return <FilmValue value={value}/>;
+  return <div className="world-rules">{value.map((item,index)=>{
+    if (!item || typeof item!=="object" || !item.rule) return <FilmValue key={index} value={item}/>;
+    return <article className="world-rule" key={item.id || index}>
+      <div className="world-rule-text"><FilmValue value={item.rule}/></div>
+      {item.choiceImpact && <p><b>对角色行动的影响</b><FilmValue value={item.choiceImpact}/></p>}
+      <details><summary>查看依据与编号</summary>
+        {item.evidence && <p><FilmValue value={item.evidence}/></p>}
+        <small>{item.id}</small>
+        {Object.entries(item).filter(([key])=>!["id","rule","choiceImpact","evidence"].includes(key)).map(([key,v])=><div key={key}>{key} · <FilmValue value={v}/></div>)}
+      </details>
+    </article>;
+  })}</div>;
+}
+function TreatmentScenes({value,ctx}:{value:any;ctx:Ctx}) {
+  if (!Array.isArray(value) || !value.length) return <FilmValue value={value}/>;
+  const cast=artifactFor(ctx.view,"characters");
+  const roles=cast?.versions.find((v:any)=>v.id===cast.adopted_version_id)?.content.characters;
+  const names=new Map<string,string>((Array.isArray(roles)?roles:[]).filter(r=>r?.id && r.name).map(r=>[r.id,r.name]));
+  return <div className="treatment-scenes">{value.map((scene,index)=>{
+    if (!scene || typeof scene!=="object") return <FilmValue key={index} value={scene}/>;
+    const {id,heading,durationEstimateSec,characters,timePoint,event,result,elapsedTime,rolePositions,stateChanges,...other}=scene;
+    const positions=rolePositions && typeof rolePositions==="object" && !Array.isArray(rolePositions);
+    return <article className="treatment-scene" key={id || index}>
+      <header><h3>{heading || id || `第 ${index+1} 场`}</h3>{durationEstimateSec!=null && <span>预计 {durationEstimateSec} 秒</span>}</header>
+      {timePoint && <p className="scene-meta"><FilmValue value={timePoint}/></p>}
+      {Array.isArray(characters) && characters.every(v=>typeof v==="string")
+        ? characters.length>0 && <p className="scene-meta">出场人物　{characters.map(v=>names.get(v) || v).join("、")}</p>
+        : characters && <FilmValue value={characters}/>}
+      <div className="scene-event"><FilmValue value={event}/></div>
+      {result && <p><strong>本场结果　</strong><FilmValue value={result}/></p>}
+      <details><summary>查看场间衔接与角色位置</summary>
+        {elapsedTime!=null && <p>距上一场　<FilmValue value={elapsedTime}/></p>}
+        {positions ? <dl>{Object.entries(rolePositions).map(([role,pos])=><div key={role}><dt>{names.get(role) || role}</dt><dd><FilmValue value={pos}/></dd></div>)}</dl> : rolePositions && <FilmValue value={rolePositions}/>}
+        {stateChanges && <p>状态变化　<FilmValue value={stateChanges}/></p>}
+        {id && <small>场次编号　{id}</small>}
+        {Object.entries(other).map(([key,v])=><div key={key}>{FILM_FIELD_NAMES[key] || key}　<FilmValue value={v}/></div>)}
+      </details>
+    </article>;
+  })}</div>;
+}
+function StressIssues({issues,options,ctx,report}:{issues:any[];options:any[];ctx:Ctx;report:any}) {
+  return <div className="stress-issues">{issues.map(issue=>{
+    const proposals=options.filter(option=>option.issueId===issue.id);
+    const target=FILM_STAGES.find(([key,label])=>key!=="stress" && (key===issue.stage || label.split(" ")[0]===issue.stage));
+    return <article className="film-output-body stress-issue" key={issue.id}>
+      <header><strong>问题 {issue.id}</strong><b className={"stress-grade "+stressGrade(report,issue)}>{{blocking:"必须修正",normal:"普通意见"}[stressGrade(report,issue) as string] || "待分级"}</b>
+        {issue.stage && <span>返修阶段 {target?.[1] || issue.stage}</span>}
+        {issue.sceneIds?.length>0 && <span>涉及场次　{issue.sceneIds.map((id:string)=>id.replace(/^scene_0*(\d+)$/, "第 $1 场")).join("、")}</span>}
+      </header>
+      <p>{issue.problem}</p>
+      <div className="stress-evidence"><b>依据</b><FilmValue value={issue.evidence}/></div>
+      {proposals.length>0 && <details><summary>查看返修方案（{proposals.length}）</summary>{proposals.map((option,i)=>
+        <div key={i}><p>{option.proposal}</p><small>修改范围　{option.repairScope}</small>
+          {target && <a className="btn stress-repair-link" href={`#/e/${ctx.eid}/${target[0]}?report=${encodeURIComponent(report.id)}&option=${options.indexOf(option)}`}>去{target[1].slice(3)}处理此方案 →</a>}</div>)}</details>}
+    </article>;
+  })}</div>;
+}
+
+function StressRepair({ctx,stage,reportId,optionIndex}:{ctx:Ctx;stage:string;reportId:string;optionIndex:string|null}) {
+  const {go}=useProjectRoute();
+  const act=useAction();
+  const report=artifactFor(ctx.view,"stress")?.versions.find((v:any)=>v.id===reportId);
+  const option=optionIndex && report?.content.options?.[Number(optionIndex)];
+  const issue=report?.content.issues?.find((item:any)=>item.id===option?.issueId);
+  const target=artifactFor(ctx.view,stage);
+  const base=target?.versions.find((v:any)=>v.id===target.adopted_version_id);
+  if (!issue || !option || !base) return <p>此返修方案或目标阶段采用稿不可用。</p>;
+  const title=FILM_STAGES.find(([key])=>key===stage)?.[1];
+  const goal=[`根据故事审查 ${rno(report.display_no)} 的 ${issue.id}，修订${title} ${rno(base.display_no)}，提交本阶段完整新稿。`,
+    "问题："+issue.problem,"依据："+issue.evidence,"选定方案："+option.proposal,"修改范围："+option.repairScope].join("\n");
+  return <section className="card stress-repair"><b>审查返修 · {issue.id} · {title}</b><p>{option.proposal}</p>
+    <p>本次只为{title}生成待采用稿。{ctx.locked?"先点上方「修改本阶段」解除采用稿保护。":""}</p>
+    <button className="btn primary" disabled={ctx.locked || act.busy} onClick={()=>act.run(async()=>{
+      await ctx.write("create_task",{episode_id:ctx.eid,stage,base_version_id:base.id,workspace_revision:target.revision,goal});
+      go(`#/e/${ctx.eid}/${stage}`);await ctx.reload();
+    })}>基于 {rno(base.display_no)} 生成返修稿</button> <a className="btn" href={`#/e/${ctx.eid}/stress?v=${reportId}`}>返回审查报告</a><ErrorLine error={act.error}/>
+  </section>;
+}
+
+function AssetDesignCards({value}:{value:any}) {
+  if (!Array.isArray(value) || !value.length) return <FilmValue value={value}/>;
+  const kinds:Record<string,string>={character:"角色",prop:"道具",scene:"场景"};
+  const states:Record<string,string>={verified:"已核验",untested:"待验证"};
+  return <div className="asset-design-list">{value.map((asset,i)=>{
+    if (!asset || typeof asset!=="object") return <FilmValue key={i} value={asset}/>;
+    const {name,roleId,stateId,kind,id,sceneIds,evidenceStatus,description,imagePrompt,...extra}=asset;
+    const subject=name || [roleId,stateId].filter(Boolean).join(" · ") || id;
+    return <article key={i} className="film-output-body asset-design-card">
+      <header><h3>{subject}</h3><span>{kinds[kind] || kind}</span></header>
+      {description && <p>{description}</p>}
+      <div className="asset-card-meta">{Array.isArray(sceneIds) && sceneIds.length>0 && <span>涉及场次　{sceneIds.map(String).map(s=>s.replace(/^scene_0*(\d+)$/, "第 $1 场")).join("、")}</span>}
+        {evidenceStatus && <span>证据状态　{states[evidenceStatus] || evidenceStatus}</span>}</div>
+      {imagePrompt && <details><summary>查看出图提示词</summary><FilmValue value={imagePrompt}/></details>}
+      <details><summary>素材编号与详情</summary><FilmValue value={{id,roleId,stateId,...extra}}/></details>
+    </article>;
+  })}</div>;
+}
+
+function FilmDocument({stage,ctx}: {stage:string;ctx:Ctx}) {
+  const {art,current} = useVersion(ctx,stage);
+  const title = FILM_STAGES.find(([key])=>key===stage)?.[1];
+  const act = useAction();
+  const [editing,setEditing] = useState(false);
+  const [draft,setDraft] = useState<Record<string,string>>({});
+  const issues=current?.content.issues;
+  const options=current?.content.options;
+  const groupedReview=stage==="stress" && !editing && Array.isArray(issues) && issues.length>0
+    && issues.every(i=>typeof i?.id==="string" && typeof i.problem==="string" && (!i.sceneIds || (Array.isArray(i.sceneIds) && i.sceneIds.every((v:any)=>typeof v==="string"))))
+    && Array.isArray(options) && options.every(o=>typeof o?.proposal==="string" && typeof o.repairScope==="string" && issues.some(i=>i.id===o.issueId));
+  return <section data-film-stage={stage}><h1>{title}</h1>
+    {stage==="stress" && <p className="muted">在导演助手对话里查看分级，选择方案后点「修订这条」。要按当前稿进入素材阶段，点「采用报告并继续」。</p>}
+    {!art && <><p>上游成果采用或记录跳过原因后，可打开本阶段。</p><button className="btn" onClick={()=>act.run(async()=>{await cmd("open_stage",{episode_id:ctx.eid,stage});await ctx.reload();})}>打开本阶段</button></>}
+    {art && <VersionTabs ctx={ctx} art={art} current={current} extra={stage==="stress" && <RepairProgress view={ctx.view} stage={stage} reload={ctx.reload}/>}/>}
+    {art && !current && FIRST_DRAFT[stage] && !ctx.view.skippedStages[stage] && <p className="muted">可在「创作对话」中查看标准提示词并起草本阶段稿件。</p>}
+    {art && !current && !FIRST_DRAFT[stage] && <p className="muted">{stage==="characters" && artifactFor(ctx.view,"story")?.adopted_version_id
+      ? (art.tasks.length ? "角色小传尚未出稿。可在导演助手查看任务状态。" : "本集角色小传尚未起草。在导演助手点击「根据故事稿起草角色小传」，生成后即可在这里查看。")
+      : "在导演助手选择“起草”，写下本阶段要求，生成待采用稿。"}</p>}
+    {current && <>
+      {stage==="asset_design" && current.gate.formatErrors.length>0
+        ? <aside className="film-output asset-errors"><strong>清单已生成，补全以下内容后才能采用</strong><ul>{current.gate.formatErrors.map((error:string,i:number)=><li key={i}>{error}</li>)}</ul><button className="btn" disabled={ctx.locked || act.busy || art.tasks.some((t:any)=>t.runs.some((r:any)=>["running","queued"].includes(r.status)))} onClick={()=>act.run(async()=>{
+            await ctx.write("create_task",{episode_id:ctx.eid,stage,base_version_id:current.id,workspace_revision:art.revision,
+              goal:"基于当前素材清单解决以下校验问题，保留其余有效内容。已登记补充沿用资料中的原因；新增补充核对依据后说明原因。请提交完整修订稿。\n"+current.gate.formatErrors.join("\n")});
+            ctx.setFocus(null);await ctx.reload();
+          })}>让创作助手修正并生成新稿</button><ErrorLine error={act.error}/></aside>
+        : current.gate.formatErrors.map((error:string,i:number)=><p className="error" key={i}>{error}</p>)}
+      {stage==="characters" && current.gate.formatErrors.length>0 && <button className="btn primary"
+        disabled={ctx.locked || act.busy || art.tasks.some((t:any)=>t.runs.some((r:any)=>["queued","running"].includes(r.status)))}
+        onClick={()=>act.run(async()=>{
+          await cmd("create_task",{episode_id:ctx.eid,stage,base_version_id:current.id,
+            goal:"根据已采用故事稿、项目角色设定和本稿备注，补全本集角色表。请提交 characters 字段的完整数组，每个出场角色单列一条小传，保留有效备注。"});
+          ctx.setFocus(null);await ctx.reload();
+        })}>补全角色表，生成新稿</button>}
+      {FILM_FIELDS[stage].map(([key,label])=>{
+        const value = current.content[key];
+        if (groupedReview && key==="options") return null;
+        if (groupedReview && key==="issues") return <section className="film-output" key={key}><h2>{label}</h2><StressIssues issues={issues} options={options} ctx={ctx} report={current}/></section>;
+        if (!editing && (stage==="characters" || stage==="world" || stage==="treatment") && key==="notes") {
+          if (!value?.trim?.()) return null;
+          return <details className="character-notes" key={current.id}>
+            <summary>{stage==="world" ? "查看规则边界、待确认项与备注" : "查看起草备注"}</summary>{stage==="treatment" ? <ChatMarkdown text={value}/> : <FilmValue value={value}/>}
+          </details>;
+        }
+        return <section className="film-output" key={key}><h2>{label}</h2>{editing
+          ? <textarea aria-label={label} rows={8} value={draft[key] || ""} onChange={e=>setDraft({...draft,[key]:e.target.value})}/>
+          : stage==="asset_design" && key==="assets" ? <AssetDesignCards value={value}/> : stage==="characters" && key==="characters" ? <CharacterProfiles value={value} ctx={ctx}/> : stage==="world" && key==="rules" ? <WorldRules value={value}/> : stage==="treatment" && key==="scenes" ? <TreatmentScenes value={value} ctx={ctx}/>
+          : <div className="film-output-body">{stage==="treatment" && typeof value==="string" ? <ChatMarkdown text={value}/> : <FilmValue value={value}/>}</div>}</section>;
+      })}
+      {!editing ? <button className="btn" disabled={ctx.locked} onClick={()=>{setDraft(Object.fromEntries(FILM_FIELDS[stage].map(([key])=>[key,typeof current.content[key]==="string"?current.content[key]:JSON.stringify(current.content[key] ?? [],null,2)])));setEditing(true);}}>手工修改为新版本</button>
+        : <><p className="muted small">记录数组使用 JSON；保存为新版本后再决定是否采用。</p><button className="btn primary" onClick={()=>act.run(async()=>{
+          const jsonFields=new Set(["characters","rules","scenes","issues","options","assets"]);
+          const content=Object.fromEntries(Object.entries(draft).map(([key,value])=>[key,jsonFields.has(key)?JSON.parse(value):value]));
+          const result=await ctx.write("save_manual",{artifact_id:art.id,base_version_id:current.id,content});await ctx.reload();ctx.setFocus(result.versionId);setEditing(false);
+        })}>保存新版本</button><button className="btn" onClick={()=>setEditing(false)}>取消编辑</button></>}
+      <AdoptBar ctx={ctx} art={art} version={current} hint={stage==="stress"?"采用报告仅保存审查结论":"确认本阶段完整内容后采用"} next={stage==="asset_design" ? "worksheet" : NEXT_FILM_STAGE[stage]}/>
+      {stage==="asset_design" && current.id===art.adopted_version_id && <RoleStates eid={ctx.eid} assets={ctx.assets} versionId={current.id}/>}
+      {stage==="asset_design" && <a className="btn" href={`#/e/${ctx.eid}/worksheet`}>去备图</a>}
+    </>}
+    {OPTIONAL_FILM_STAGES.has(stage) && ctx.view.skippedStages[stage] && <a className="btn" href={`#/e/${ctx.eid}/${NEXT_FILM_STAGE[stage]}`}>继续下一阶段</a>}
+    <ErrorLine error={act.error}/>
+  </section>;
+}
+
 // ---------------------------------------------------------------- 01 故事稿 (J06, J36, J54, J59, J60)
 function storyText(value:unknown):string {
   if (typeof value==="string") return value;
   return value==null ? "" : JSON.stringify(value,null,2);
+}
+function StoryResult({ctx}:{ctx:Ctx}) {
+  const {hash,go}=useProjectRoute();
+  const art=artifactFor(ctx.view,"story");
+  const adopted=art?.versions.find((v:any)=>v.id===art.adopted_version_id);
+  const located=art?.versions.find((v:any)=>v.id===ctx.location?.versionId);
+  const final=located ?? adopted ?? art?.versions.at(-1);
+  const passages=located ? ctx.location!.passages : [];
+  const body=useRef<HTMLElement>(null);
+  useLayoutEffect(()=>{
+    const hit=body.current?.querySelector("mark");
+    if(hit) hit.scrollIntoView({block:"nearest",inline:"nearest"});
+  },[ctx.location]);
+  const preview=ctx.focus || new URLSearchParams(hash.split("?")[1]).get("run");
+  return <><h1>{FILM_STAGES[0][1]}</h1>{final?<article ref={body} className="story-result"><small className={final.id===adopted?.id?"ok":"muted"}>{rno(final.display_no)} · {final.id===adopted?.id?"已采用":"草稿 · 待采用"}</small>
+    <div className="story-reading">{storyText(final.content.synopsis).split(/\n\s*\n/).map((para,i)=><p key={i}>{para.split("\n").map((line,j)=><span key={j}>{j>0 && <br/>}<MarkPassage text={line} passage={passages.find(p=>p.field==="synopsis" && p.text===line)}/></span>)}</p>)}
+      {passages.filter(p=>p.field!=="synopsis").map((p,i)=><p key={"source"+i}><small>{p.label}</small><br/><MarkPassage text={p.text} passage={p}/></p>)}</div>
+    <a href={`#/e/${ctx.eid}/story?v=${final.id}`}>查看稿件与版本</a> · <a href={"/api/story/"+final.id+"/markdown"} download="故事梗概.md">下载故事梗概</a>
+    <AdoptBar ctx={ctx} art={art} version={final} hint="确认完整梗概后采用；人物小传在02另存" next="characters"/>
+    </article>:
+    <p className="muted">还没有生成故事稿。起草完成后，正文会显示在这里。</p>}
+    {preview && <Modal width={980} onClose={()=>go("#/e/"+ctx.eid+"/story")}><div className="spread"><strong>稿件预览与版本管理</strong><button className="btn" onClick={()=>go("#/e/"+ctx.eid+"/story")}>关闭预览</button></div><StoryView ctx={ctx}/></Modal>}</>;
 }
 function StoryView({ ctx }: { ctx: Ctx }) {
   const { art, current } = useVersion(ctx, "story");
@@ -318,7 +617,11 @@ function StoryView({ ctx }: { ctx: Ctx }) {
     return options;
   },[sources.data,ctx.view.refPacks]);
   const requestedPair=params.get("compare");
-  const [tab, setTab] = useState(requestedPair ? "compare" : "synopsis");
+  const [requestedTab, setTab] = useState(requestedPair ? "compare" : "synopsis");
+  const legacyTabs = [["cast", "角色表"], ["handoff", "交接说明"]]
+    .filter(([field])=>storyText(current?.content[field]).trim());
+  const tab = ["cast","handoff"].includes(requestedTab) && !legacyTabs.some(([key])=>key===requestedTab)
+    ? "synopsis" : requestedTab;
   const [pairSource, setPairSource] = useState(requestedPair);
   useEffect(()=>{if (requestedPair) {setPairSource(requestedPair);setTab("compare");}},[hash,requestedPair]);
   const [edit, setEdit] = useState(false);
@@ -355,14 +658,14 @@ function StoryView({ ctx }: { ctx: Ctx }) {
         <div className="small"><a href={`/api/story/${current.id}/markdown`} download="故事稿.md">下载本版故事稿</a></div>
         <VersionTabs ctx={ctx} art={art} current={current} />
       </div>
-      <div className="spread"><div className="tabs">{[["synopsis", "故事梗概"], ["cast", "角色表"], ["handoff", "交接说明"], ["notes", "开发辅助"], ["review", "独立审查"], ["compare","并排出稿"], ...(ctx.view.sourceImport ? [["source", "来源原文"]] : [])].map(([t, l]) => (
+      <div className="spread"><div className="tabs">{[["synopsis", "故事梗概"], ...legacyTabs, ["notes", "开发辅助"], ["review", "独立审查"], ["compare","并排出稿"], ...(ctx.view.sourceImport ? [["source", "来源原文"]] : [])].map(([t, l]) => (
         <button key={t} className={`tab ${tab === t ? "on" : ""}`} onClick={() => {if(t==="compare") setPairSource(art.comparisons?.find((c:any)=>c.version_id===current.id)?.source_version_id || current.id);setTab(t);}}>{l}</button>))}</div>
         {tab!=="compare" && <div className="row">{edit ? <><button className="btn" onClick={() => setEdit(false)}>取消</button>
           <button className="btn primary" onClick={() => act.run(async () => { const r = await ctx.write("save_manual", { artifact_id: art.id, base_version_id: current.id, content: draft }); await ctx.reload(); ctx.setFocus(r.versionId); })}>保存为手稿</button></>
           : <button className="btn" disabled={ctx.locked} onClick={() => {setDraft(current.content);setEdit(true);}}>✎ 编辑</button>}</div>}</div>
       {sourcePanel}
       {tab === "synopsis" && (edit ? <textarea style={{ minHeight: 260, marginTop: 12 }} value={storyText(draft.synopsis)} onChange={(e) => setDraft({ ...draft, synopsis: e.target.value })} /> : (
-        <div className="field" style={{ marginTop: 12, border: "1px solid #2b5fb8" }}>{paras.map((p: string, i: number) => (
+        <div className="field story-reading" style={{ marginTop: 12, border: "1px solid #2b5fb8" }}>{paras.map((p: string, i: number) => (
           <div key={i} className={`para ${ctx.sel?.data.paragraph === i + 1 ? "sel" : ""}`} onClick={() => ctx.setSel({ label: `故事梗概 第${i + 1}段`, data: { field: "synopsis", paragraph: i + 1, text: p.slice(0, 40) } })}>{p}</div>))}</div>))}
       {tab === "cast" && (edit ? <textarea style={{ minHeight: 160, marginTop: 12 }} value={storyText(draft.cast)} onChange={(e) => setDraft({ ...draft, cast: e.target.value })} /> : <CastTable md={storyText(current.content.cast)} />)}
       {tab === "handoff" && (edit ? <textarea style={{ marginTop: 12 }} value={storyText(draft.handoff)} onChange={(e) => setDraft({ ...draft, handoff: e.target.value })} /> : <div className="field" style={{ marginTop: 12 }}>{storyText(current.content.handoff)}</div>)}
@@ -377,11 +680,11 @@ function StoryView({ ctx }: { ctx: Ctx }) {
         {!edit && !["spine","timeline","props","causes","notes","adaptation"].some(k => current.content[k]) && <p className="muted">本稿未使用开发辅助表。</p>}
       </div>}
       {tab==="compare" && <StoryComparison write={ctx.write} locked={ctx.locked} key={pairSource || current.id} sourceId={pairSource || current.id} select={setPairSource}
-        plan={k.executor_plan} art={art} reload={ctx.reload} open={(vid:string)=>{setTab("synopsis");go("#/e/"+ctx.eid+"/story?v="+vid);}}/>}
+        plan={{...k.executor_plan,...art.executorSettings}} art={art} reload={ctx.reload} open={(vid:string)=>{setTab("synopsis");go("#/e/"+ctx.eid+"/story?v="+vid);}}/>}
       {current.gate.formatErrors.length > 0 && <div className="card red" style={{ marginTop: 12 }}><b className="error">结构错误（不能放行）</b><ul className="small">{current.gate.formatErrors.map((e: string) => <li key={e}>{e}</li>)}</ul></div>}
-      {tab!=="compare" && (tab === "review" || review) && <StoryReview ctx={ctx} version={current} review={review} />}
+      {tab!=="compare" && tab === "review" && <StoryReview ctx={ctx} version={current} review={review} />}
       <ErrorLine error={act.error} />
-      {tab!=="compare" && <AdoptBar ctx={ctx} art={art} version={current} next="script"
+      {tab!=="compare" && <AdoptBar ctx={ctx} art={art} version={current} next="characters"
         hint={current.gate.blocking.length ? "必须守住的设定未守住：只能改故事或改设定" : current.gate.review ? "必需审核已执行，可采用" : "故事稿通过独审后才能交给制作"} />}
     </div>
   );
@@ -432,7 +735,7 @@ function StoryReview({ ctx, version, review }: { ctx: Ctx; version: any; review:
   const cold = review.observations[0];
   return (
     <div style={{ marginTop: 18 }}>
-      <div className="spread"><h2>故事独立审查 · 第 {review.pass_no} 遍</h2>
+      <div className="spread"><h2>{review.pass === "plan" ? "分镜审核" : "故事独立审查"} · 第 {review.pass_no} 次</h2>
         <span className="muted small">{PROVIDER_LABEL[review.reviewer]} · 另开会话（{review.isolation_level === "session" ? "会话隔离" : review.isolation_level}）· 只读取 {rno(version.display_no)} 与项目设定 · 清单 {review.manifest_hash.slice(0, 10)}</span></div>
       <div className="grid2">
         <div className="card"><div className="label" style={{ marginTop: 0 }}>冷读复述</div><div className="small">{cold?.evidence}</div></div>
@@ -443,13 +746,13 @@ function StoryReview({ ctx, version, review }: { ctx: Ctx; version: any; review:
       {review.issues.map((i: any) => (
         <div key={i.id} className={`card ${i.blocking ? "red" : "line"}`} style={{ marginBottom: 10 }}>
           <div className="row"><Tag tone={i.blocking ? "red" : "amber"}>{i.blocking ? (i.category === "format" ? "硬错误" : "必须守住") : "普通意见"}</Tag><b>{i.loc.anchor}</b><span className="muted small">{i.category}</span></div>
-          {i.setting_content && <div className="grid2" style={{ margin: "8px 0" }}><div className="field small">设定原文：{i.setting_content}</div><div className="field small" style={{ background: "var(--red-bg)" }}>冲突句：{i.loc.evidence}</div></div>}
+          <ReviewEvidence issue={i} content={version.content}/>
           <div className="small" style={{ margin: "6px 0" }}>{i.reason}</div>
           {i.blocking ? <div className="row"><button className="btn" onClick={() => ctx.setSel({ label: `${i.loc.anchor}（审查意见）`, data: { issue: i.id, anchor: i.loc.anchor } })}>改故事</button>
             <a className="btn" href={`#/p/${ctx.view.episode.project_id}/settings`}>去项目设定</a><span className="muted tiny">没有放行入口</span></div>
             : i.waiver_reason ? <div className="ok small">已放行（仅本版本）：{i.waiver_reason}</div>
-              : <div className="row"><input style={{ flex: 1 }} placeholder="写理由放行（绑定本版本，改动后失效）" value={reasons[i.id] ?? ""} onChange={(e) => setReasons({ ...reasons, [i.id]: e.target.value })} />
-                <button className="btn" onClick={() => act.run(async () => { await cmd("waive", { issue_id: i.id, version_id: version.id, reason: reasons[i.id] ?? "" }); ctx.reload(); })}>写理由放行</button>
+              : <div className="row"><input style={{ flex: 1 }} aria-label="放行备注（选填）" placeholder="备注（选填）" value={reasons[i.id] ?? ""} onChange={(e) => setReasons({ ...reasons, [i.id]: e.target.value })} />
+                <button className="btn" onClick={() => act.run(async () => { await cmd("waive", { issue_id: i.id, version_id: version.id, reason: reasons[i.id] ?? "" }); ctx.reload(); })} disabled={act.busy}>按本版放行</button>
                 <button className="btn" onClick={() => ctx.setSel({ label: `${i.loc.anchor}（审查意见）`, data: { issue: i.id } })}>修订</button></div>}
         </div>))}
       <ErrorLine error={act.error} />
@@ -478,12 +781,45 @@ function ScriptBudget({ctx, script}: {ctx: Ctx; script: any}) {
   </div>;
 }
 
+function ScriptComparisonRows({left,right}:{left:any;right:any}) {
+  const pair=[left,right];
+  const sceneLists=pair.map(v=>v.content.scenes ?? []);
+  const ids=new Set<string>(sceneLists.flatMap(list=>list.map((s:any)=>s.id)));
+  const labels:Record<string,string>={heading:"场景",action:"动作",...sceneDetails};
+  return <>{Array.from(ids,id=>{
+    const scenes=sceneLists.map(list=>list.find((s:any)=>s.id===id));
+    const fields=Array.from(new Set(scenes.flatMap(s=>Object.keys(s ?? {})))).filter(k=>k!=="id");
+    const changed=fields.filter(k=>JSON.stringify(scenes[0]?.[k])!==JSON.stringify(scenes[1]?.[k]));
+    const order=sceneLists.map(list=>list.findIndex((s:any)=>s.id===id));
+    const status=!scenes[0]?"右稿新增":!scenes[1]?"右稿缺少此场":order[0]!==order[1]?"场次顺序变动":"";
+    return <section key={id} className="card script-compare-scene"><h3>{id} · {scenes[1]?.heading || scenes[0]?.heading}</h3>
+      <p className="small muted">{[status,changed.length ? "改动："+changed.map(k=>labels[k] || k).join("、") : "本场内容相同"].filter(Boolean).join(" · ")}</p>
+      {changed.map(k=><div className="script-compare-pair" key={k}>{scenes.map((scene,i)=><div key={i}><b>{labels[k] || k}</b>
+        <div><FilmValue value={scene?.[k] ?? "—"}/></div></div>)}</div>)}
+    </section>;
+  })}
+    {(left.content.notes || right.content.notes) && <details><summary>{left.content.notes===right.content.notes?"两版说明相同":"查看两版说明差异"}</summary>
+      <div className="script-compare-pair">{pair.map(v=><div key={v.id}><ChatMarkdown text={v.content.notes || "无说明"}/></div>)}</div></details>}
+  </>;
+}
+
 function ScriptView({ ctx }: { ctx: Ctx }) {
   const { art, current } = useVersion(ctx, "script");
+  const {hash}=useProjectRoute();
+  const sourceScene=new URLSearchParams(hash.split("?")[1]).get("scene");
+  const scriptBody=useRef<HTMLDivElement>(null);
   const [tab, setTab] = useState("full");
+  useEffect(()=>{
+    if (!sourceScene || !current) return;
+    setTab("full");
+    const frame=requestAnimationFrame(()=>scriptBody.current?.querySelector<HTMLElement>('[data-script-scene="'+CSS.escape(sourceScene)+'"]')?.scrollIntoView({block:"center"}));
+    return ()=>cancelAnimationFrame(frame);
+  },[sourceScene,current?.id]);
   const [cmp, setCmp] = useState<any>(null);
   const [picks, setPicks] = useState<Record<string, string>>({});
   const [editScenes, setEditScenes] = useState<any[] | null>(null);
+  const [otherId,setOtherId]=useState("");
+  useEffect(()=>{setPicks({});},[current?.id,otherId]);
   const [savedScroll, setSavedScroll] = useState<{ top: number; sel: Selection } | null>(null);
   const openSide = () => { setSavedScroll({ top: document.querySelector(".center")?.scrollTop ?? 0, sel: ctx.sel }); setTab("side"); };
   const closeSide = () => {
@@ -503,20 +839,27 @@ function ScriptView({ ctx }: { ctx: Ctx }) {
   }, [tab, current?.id, adoptedId]);
   if (!art) return <div className="empty"><p>正式剧本会引用已采用的故事。</p><button className="btn" onClick={ctx.openTrial}>先试写本阶段</button></div>;
   const story = artifactFor(ctx.view, "story");
-  if (!current) return <div><div className="stagehead"><h1>剧本</h1></div>
-    <button className="btn primary" disabled={act.busy} onClick={()=>act.run(async()=>{await cmd("create_task",{episode_id:ctx.eid,stage:"script",goal:"按采用的故事写分场剧本"});ctx.reload();})}>按采用的故事起草剧本</button><ErrorLine error={act.error}/></div>;
+  if (!current) return <div><div className="stagehead"><h1>{FILM_STAGES.find(([key])=>key==="script")?.[1]}</h1></div>
+    <p className="muted">可在「创作对话」中查看标准提示词并起草本阶段稿件。</p></div>;
   const scenes = current.content.scenes ?? [];
+  if(ctx.view.kickoff.sourceIntent==="locked_screenplay") return <section><h1>导演定稿 · 原文只读</h1>
+    <p>{current.gate.sourceVerified?"已逐字核对":"逐字核对未通过"} · 修改原文请重新导入。</p>
+    <VersionTabs ctx={ctx} art={art} current={current}/><div className="grid2"><section>{scenes.map(s=><article key={s.id}><h3>{s.id} {s.heading}</h3><p style={{whiteSpace:"pre-wrap"}}>{s.action}</p></article>)}</section>
+    <section><h2>生产拆解</h2><FilmValue value={current.content.breakdown??[]}/></section></div>
+    {current.gate.formatErrors.map(e=><p className="error" key={e}>{e}</p>)}
+    <AdoptBar ctx={ctx} art={art} version={current} next="stress" hint="核对切分后的定稿原文"/></section>;
   const baseV = current.id !== adoptedId ? art.versions.find((v: any) => v.id === (current.base_id ?? adoptedId)) : null;
   const baseScenes = baseV ? Object.fromEntries((baseV.content.scenes ?? []).map((x: any) => [x.id, x.action])) : null;
   const changedCount = baseScenes ? scenes.filter((x: any) => baseScenes[x.id] !== x.action).length : 0;
-  const others = art.versions.filter((v: any) => v.id !== current.id && v.id !== adoptedId);
+  const others = art.versions.filter((v: any) => v.id !== current.id);
+  const other=others.find(v=>v.id===otherId) ?? others.find(v=>v.id===current.base_id) ?? others.at(-1);
   return (
-    <div>
+    <div ref={scriptBody}>
       <div className="stagehead">
         <div><h1>剧本</h1><div className="muted small">{rno(current.display_no)} {current.id === adoptedId ? "已采用" : "草稿"}{current.base_id ? `（基于 ${rno(art.versions.find((v: any) => v.id === current.base_id)?.display_no)}）` : ""} · {baseScenes ? `改动 ${changedCount} 处 · 绿色新增 / 红色删除` : `${scenes.length} 场`}</div></div>
         <VersionTabs ctx={ctx} art={art} current={current} />
       </div>
-      <div className="spread"><div className="tabs">{[["full", "全文"], ["outline", "阶段大纲"], ["budget", "分段与时长预算"], ["diff", "差异"], ["side", "并排比较"]].map(([t, l]) => (
+      <div className="spread"><div className="tabs">{[["full", "全文"], ["outline", "阶段大纲"], ["budget", "分段与时长预算"], ["diff", "差异"], ["side", "并排比较"]].filter(([t])=>t==="side" ? !!other : t==="diff" ? !!adoptedId && adoptedId!==current.id : true).map(([t, l]) => (
         <button key={t} className={`tab ${tab === t ? "on" : ""}`} onClick={() => t === "side" ? openSide() : setTab(t)}>{l}</button>))}</div>
         <div className="row">{editScenes ? <><button className="btn" onClick={() => setEditScenes(null)}>取消</button>
           <button className="btn primary" onClick={() => act.run(async () => { const r = await ctx.write("save_manual", { artifact_id: art.id, base_version_id: current.id, content: { ...current.content, scenes: editScenes } }); setEditScenes(null); await ctx.reload(); ctx.setFocus(r.versionId); })}>保存为手稿</button></>
@@ -525,17 +868,21 @@ function ScriptView({ ctx }: { ctx: Ctx }) {
         <div key={i} style={{ marginTop: 12 }}><div className="row"><input value={sc.id} onChange={(e) => { const x = [...editScenes]; x[i] = { ...sc, id: e.target.value }; setEditScenes(x); }} style={{ width: 90 }} />
           <input value={sc.heading ?? ""} onChange={(e) => { const x = [...editScenes]; x[i] = { ...sc, heading: e.target.value }; setEditScenes(x); }} placeholder="内外景 · 时段" /></div>
           <textarea value={sc.action} onChange={(e) => { const x = [...editScenes]; x[i] = { ...sc, action: e.target.value }; setEditScenes(x); }} />
-          <div className="grid2">{Object.entries(sceneDetails).map(([key, label]) => <label className="col small" key={key}>{label}
+          <div className="grid2">{Object.entries(sceneDetails).filter(([k])=>!["omit","watchPurpose","proposedSegments"].includes(k)).map(([key, label]) => <label className="col small" key={key}>{label}
             <input value={sc[key] ?? ""} onChange={e => setEditScenes(editScenes.map((row: any, j: number) => j === i ? {...row, [key]: e.target.value} : row))}/></label>)}</div></div>))}
-      {!editScenes && tab === "full" && scenes.map((s: any, i: number) => { const old = baseScenes?.[s.id]; return (
-        <div key={s.id} style={{ marginTop: 18 }}>
-          <h2>{i + 1}. {s.id} <span className="muted small">{s.heading}</span></h2>
+      {!editScenes && tab === "full" && <div className="film-output script-scenes">{scenes.map((s: any, i: number) => { const old = baseScenes?.[s.id]; return (
+        <article key={s.id} className="script-scene" data-script-scene={s.id}>
+          <header><h2>{s.heading || `第 ${i+1} 场`}</h2><small>场次编号　{s.id}</small></header>
           {old !== undefined && old !== s.action ? <div className={`para ${ctx.sel?.data.scene === s.id ? "sel" : ""}`} style={{ lineHeight: 1.8 }} onClick={() => ctx.setSel({ label: `${s.id}（差异处）`, data: { scene: s.id } })}>{charDiff(old, s.action).map((d, k) => d.op === "same" ? <span key={k}>{d.text}</span> : d.op === "del" ? <del key={k} className="d">{d.text}</del> : <ins key={k} className="d">{d.text}</ins>)}</div> :
           s.action.split(/(?<=。)/).filter(Boolean).map((p: string, j: number) => (
             <div key={j} className={`para ${ctx.sel?.data.scene === s.id && ctx.sel?.data.sentence === j + 1 ? "sel" : ""}`} onClick={() => ctx.setSel({ label: `${s.id} 第${j + 1}句`, data: { scene: s.id, sentence: j + 1 } })}>{p}</div>))}
-          {Object.entries(sceneDetails).map(([key, title]) => s[key] && <div key={key} className="small" onClick={() => ctx.setSel({label: s.id + " " + title, data: {scene: s.id, field: key}})}><b>{title}</b> {s[key]}</div>)}
-          {s.source && <div className="muted tiny">出处：故事 {rno(story?.versions.find((v: any) => v.id === s.source.storyVersion)?.display_no)} · 节拍 {s.source.beat} · 原镜 {s.source.refShot}{s.source.pack ? ` · 参考包 ${s.source.pack}` : ""}</div>}
-        </div>); })}
+          {s.dialogue && <section className="script-lines" onClick={()=>ctx.setSel({label:s.id+" 对白",data:{scene:s.id,field:"dialogue"}})}><h3>对白</h3><p>{s.dialogue}</p></section>}
+          <details><summary>表演、声音与制作说明</summary>
+            <dl>{Object.entries(sceneDetails).filter(([key])=>key!=="dialogue" && s[key]).map(([key,title])=><div key={key}
+              onClick={()=>ctx.setSel({label:s.id+" "+title,data:{scene:s.id,field:key}})}><dt>{title}</dt><dd>{s[key]}</dd></div>)}</dl>
+            {s.source && <small>出处：故事 {rno(story?.versions.find((v:any)=>v.id===s.source.storyVersion)?.display_no)} · 节拍 {s.source.beat} · 原镜 {s.source.refShot}{s.source.pack ? ` · 参考包 ${s.source.pack}` : ""}</small>}
+          </details>
+        </article>); })}</div>}
       {tab === "budget" && !editScenes && <div>
         {scenes.filter((s: any) => s.proposedSegments || s.watchPurpose || s.omit || s.budgetNote).map((s: any) => <div className="card" key={s.id}><b>{s.id} · {s.heading}</b>
           {["proposedSegments", "watchPurpose", "omit", "budgetNote"].map(key => s[key] && <p key={key}>{sceneDetails[key]} · {s[key]}</p>)}</div>)}
@@ -545,20 +892,20 @@ function ScriptView({ ctx }: { ctx: Ctx }) {
       {tab === "diff" && (cmp ? <div className="field" style={{ marginTop: 12 }}>{(cmp.fields.scenes ?? []).map((d: any, i: number) => (
         d.op === "same" ? <span key={i}>{d.text}</span> : d.op === "del" ? <del key={i} className="d">{d.text}</del> : <ins key={i} className="d">{d.text}</ins>))}</div>
         : <div className="muted" style={{ marginTop: 12 }}>当前版本即采用版，没有差异。</div>)}
-      {tab === "side" && (
-        <div style={{ marginTop: 12 }}>
-          <div className="muted small">并排显示两份草稿及共同基版；可保留任一稿，或逐项组合成新的待审稿。关闭比较保留草稿。</div>
-          <div className="grid2" style={{ marginTop: 10 }}>{[current, ...others.slice(-1)].map((v: any) => (
-            <div key={v.id} className="card line"><div className="spread"><b>{rno(v.display_no)} · {v.origin === "manual" ? "手工稿" : v.origin === "combined" ? "组合稿" : "AI 稿"}</b>
-              <div className="row">{["scenes", "notes"].map((f) => <button key={f} className={`pill ${picks[f] === v.id ? "on" : ""}`} onClick={() => setPicks({ ...picks, [f]: v.id })}>取{f === "scenes" ? "场次" : "说明"}</button>)}</div></div>
-              {(v.content.scenes ?? []).map((s: any) => <div key={s.id} className="small" style={{ margin: "6px 0" }}><b>{s.id}</b> {s.action}</div>)}
-              {v.content.notes && <div className="muted small">说明：{v.content.notes}</div>}</div>))}</div>
+      {tab === "side" && other && (
+        <div className="film-output">
+          <label>对照版本 <select value={other.id} onChange={e=>setOtherId(e.target.value)}>{others.map(v=><option key={v.id} value={v.id}>{rno(v.display_no)}</option>)}</select></label>
+          <div className="script-compare-pair">{[other,current].map((v,i)=><div className="card" key={v.id}>
+            <strong>{i?"当前稿":"对照稿"} · {rno(v.display_no)}</strong>
+            <div className="row">{["scenes","notes"].map(f=><button key={f} className={`pill ${picks[f]===v.id?"on":""}`} onClick={()=>setPicks({...picks,[f]:v.id})}>取{f==="scenes"?"场次":"说明"}</button>)}</div>
+          </div>)}</div>
+          <ScriptComparisonRows left={other} right={current}/>
           <div className="row" style={{ marginTop: 10 }}><button className="btn primary" disabled={ctx.locked || Object.keys(picks).length === 0} onClick={() => act.run(async () => {
             const r = await ctx.write("combine", { artifact_id: art.id, picks }); await ctx.reload(); ctx.setFocus(r.versionId); setTab("full"); })}>组合成新的待审稿</button>
             <button className="btn" onClick={closeSide}>关闭比较</button></div>
         </div>)}
       <ErrorLine error={act.error} />
-      <AdoptBar ctx={ctx} art={art} version={current} next="plan" hint="采用前先看影响 · 重复点击不会生成重复版本" />
+      <AdoptBar ctx={ctx} art={art} version={current} next="stress" hint="采用前先看影响 · 压力测试可按本集需要跳过" />
     </div>
   );
 }
@@ -619,8 +966,8 @@ function PlanView({ ctx }: { ctx: Ctx }) {
     return () => { active = false; };
   }, [shot, current?.id, art?.adopted_version_id, ctx.eid]);
   if (!art) return <div className="empty"><p>正式镜头表会引用已采用的剧本。</p><button className="btn" onClick={ctx.openTrial}>先试写本阶段</button></div>;
-  if (!current) return <div><div className="stagehead"><h1>制作方案</h1></div>
-    <button className="btn primary" disabled={act.busy} onClick={()=>act.run(async()=>{await cmd("create_task",{episode_id:ctx.eid,stage:"plan",goal:"按采用剧本设计镜头、接点和生成段"});ctx.reload();})}>按剧本设计镜头与生成段</button><ErrorLine error={act.error}/></div>;
+  if (!current) return <div><div className="stagehead"><h1>08 分镜</h1></div>
+    <p className="muted">可在「创作对话」中查看标准提示词并起草本阶段稿件。</p></div>;
   const shots = current.content.shots ?? [];
   const scenes: string[] = [...new Set<string>(shots.map((s: any) => s.origin?.scene ?? "参考镜头"))];
   const segmentLimit = Number(ctx.view.kickoff.spec.segmentMaxSeconds ?? 15);
@@ -629,7 +976,7 @@ function PlanView({ ctx }: { ctx: Ctx }) {
   return (
     <div>
       <div className="stagehead">
-        <div><h1>制作方案</h1><div className="muted small">{rno(current.display_no)} {current.id === art.adopted_version_id ? "已采用" : "草稿"} · {shots.length} 镜 · {lay.segments.length} 段 · {Math.round(lay.total / 1000)} 秒 · 镜头时长加总等于段长</div></div>
+        <div><h1>08 分镜</h1><div className="muted small">{rno(current.display_no)} {current.id === art.adopted_version_id ? "已采用" : "草稿"} · {shots.length} 动作窗口 · {lay.segments.length} 段 · {Math.round(lay.total / 1000)} 秒 · 镜头时长加总等于段长</div></div>
         <div className="tabs">{[["shots", "镜头"], ["segments", "生成段"], ["acting", "表演与台词读秒"], ["table", "表格"]].map(([t, l]) => (
           <button key={t} className={`tab ${tab === t ? "on" : ""}`} onClick={() => setTab(t)}>{l}</button>))}</div>
       </div>
@@ -683,16 +1030,16 @@ function PlanView({ ctx }: { ctx: Ctx }) {
           {trace.origin && <div className="small">原创镜：剧本 {trace.origin.scene}「{trace.origin.line ?? ""}」</div>}
         </div>)}
       <ErrorLine error={act.error} />
-      <AdoptBar ctx={ctx} art={art} version={current} next="prompts" hint="空间锁定通过后才能出图" />
+      <AdoptBar ctx={ctx} art={art} version={current} next="prompts" hint="分镜采用后，09 按本表编写提示词并检查本步结果" />
     </div>
   );
 }
 
 // ---------------------------------------------------------------- 04 空间锁定 (J39)
-type SpaceLock = {id:string; label:string; relation:string; segments:string[]; status:string; versionId:string|null; name:string|null;
+type SpaceLock = {id:string; label:string; relation:string; segments:string[]; sceneIds?:string[]; status:string; versionId:string|null; name:string|null;
   version:number|null; sha256:string|null; positions?:number[]};
 
-function SpaceView({ ctx }: { ctx: Ctx }) {
+function SpaceView({ ctx, scenesOnly=false }: { ctx: Ctx; scenesOnly?:boolean }) {
   const items = useQuery<SpaceLock[]>("space_locks", { episode_id: ctx.eid });
   const [form, setForm] = useState({ label: "", relation: "", source: "", depends: "" });
   const [rows, setRows] = useState<any[]>([]);
@@ -705,12 +1052,12 @@ function SpaceView({ ctx }: { ctx: Ctx }) {
   const locks = items.data ?? [];
   return (
     <div>
-      <div className="stagehead"><div><h1>空间锁定</h1><div className="muted small">逐条出处；未确认的用验证图，只阻塞依赖项</div></div></div>
+      <div className="stagehead"><div><h1>空间与制作补充</h1><div className="muted small">逐条出处；未确认的用验证图，只阻塞依赖项</div></div></div>
       {items.data && !locks.some(l => l.status === "pending") && <div className="card"><span className="ok">没有待确认的空间关系</span>。</div>}
       {items.error && <p className="error">{items.error}</p>}
       {locks.map((t) => (
         <div key={t.id} className="card" style={{ marginBottom: 10 }}>
-          <div className="row"><Tag tone={t.status==="pending"?"amber":"green"}>{t.status==="pending"?"待确认":"已确认"}</Tag><b>{t.label}</b> {t.segments.join("、")}</div>
+          <div className="row"><Tag tone={t.status==="pending"?"amber":"green"}>{t.status==="pending"?"待确认":"已确认"}</Tag><b>{t.label}</b> {(t.sceneIds?.length?t.sceneIds:t.segments).join("、")}</div>
           <p>{t.relation}</p>
           <div>{t.status==="confirmed" && (t.sha256 ? <span>{t.name} v{t.version} · <code>{t.sha256.slice(0,12)}</code></span> : "锁定图不可用，请重新选择")}</div>
           <div className="row" style={{ marginTop: 8 }}>
@@ -728,9 +1075,10 @@ function SpaceView({ ctx }: { ctx: Ctx }) {
         <input placeholder="地标 / 道具，例：桶的高度" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} />
         <input placeholder="相对位置，例：桶比柜台低一个爪子" value={form.relation} onChange={(e) => setForm({ ...form, relation: e.target.value })} />
         <input placeholder="出处，例：剧本阶段 2" value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value })} />
-        <input placeholder="依赖段，逗号分隔，例：G04" value={form.depends} onChange={(e) => setForm({ ...form, depends: e.target.value })} />
+        <input placeholder={scenesOnly?"适用场号，逗号分隔":"依赖段，逗号分隔，例：G04"} value={form.depends} onChange={(e) => setForm({ ...form, depends: e.target.value })} />
       </div>
-      <button className="btn" style={{ marginTop: 10 }} onClick={() => act.run(async () => { await cmd("add_space_item", { episode_id: ctx.eid, label: form.label, relation: form.relation, source: form.source, depends: form.depends.split(/[,，、\s]+/).filter(Boolean) }); items.reload(); })}>登记（待确认）</button>
+      <button className="btn" style={{ marginTop: 10 }} onClick={() => act.run(async () => { await cmd("add_space_item", { episode_id: ctx.eid, label: form.label, relation: form.relation, source: form.source, scope:scenesOnly?"scenes":"segments", depends: form.depends.split(/[,，、\s]+/).filter(Boolean) }); items.reload(); })}>登记（待确认）</button>
+      {!scenesOnly && <Supplements eid={ctx.eid} refresh={ctx.reload}/>}
       <ErrorLine error={act.error} />
     </div>
   );
@@ -753,7 +1101,10 @@ function CastView({ ctx }: { ctx: Ctx }) {
   const baseline = m.data.roster[focused] || {};
   const draft = baselineDrafts[focused] || {};
   const identityId = draft.asset ?? baseline.assetVersionId ?? "";
-  const appearance = draft.appearance ?? baseline.appearance ?? "";
+  const designArt=artifactFor(ctx.view,"asset_design");
+  const design=designArt?.versions.find(v=>v.id===designArt.adopted_version_id)?.content.assets?.find(a=>a.roleId===focused)?.description;
+  const standard=m.data.fixedStandards?.[focused.toLowerCase()]?.text;
+  const appearance=standard ?? draft.appearance ?? baseline.appearance ?? design ?? "";
   const editBaseline = (change: {asset?:string; appearance?:string}) =>
     setBaselineDrafts(previous=>({...previous,[focused]:{...previous[focused],...change}}));
   const set = (seg: string, r: string, status: string) => act.run(async () => {
@@ -790,7 +1141,8 @@ function CastView({ ctx }: { ctx: Ctx }) {
           const file=e.target.files?.[0]; if(file)act.run(async()=>{const result=await upload("asset",file,{projectId:ctx.view.episode.project_id,episodeId:ctx.eid,category:"identity"});
           editBaseline({asset:result.versionId});ctx.reload();});}} /></label>
         {identityId && <img src={blob(ctx.assets.find(a=>a.id===identityId)?.sha256)} alt={focused+" 独立身份原图"} style={{maxWidth:96,maxHeight:96,objectFit:"contain"}}/>}</div>
-        <label>外观短描述 <input value={appearance} onChange={e=>editBaseline({appearance:e.target.value})} /></label>
+        {standard ? <div><p>项目角色外观标准（只读） · {m.data.fixedStandards[focused.toLowerCase()].detail}</p><p>提示词引用 · {standard}</p></div> : <><label>外观短描述 <input value={appearance} onChange={e=>editBaseline({appearance:e.target.value})} /></label>
+          <small>请对照图片核对，改成和图一致。</small>{baseline.appearance && design && baseline.appearance!==design && <details><summary>与素材设计不同，以此处为准</summary><p>{design}</p></details>}</>}
         <div><button className="btn" disabled={act.busy || !identityId || !appearance.trim()} onClick={()=>act.run(async()=>{
           await cmd("set_role_baseline",{episode_id:ctx.eid,role:focused,asset_version_id:identityId,appearance});
           m.reload();ctx.reload();
@@ -820,7 +1172,7 @@ function CastView({ ctx }: { ctx: Ctx }) {
   );
 }
 
-// ---------------------------------------------------------------- 06 素材与选图 (J10, J14, J15, J18, J27, J41)
+// ---------------------------------------------------------------- 08 素材与选图 (J10, J14, J15, J18, J27, J41)
 type ImageReference = {assetVersionId: string; label: string; kind: string; shots?: string[]};
 const frameFields = [["startAssetId", "起幅"], ["endAssetId", "落幅"]] as const;
 
@@ -847,7 +1199,8 @@ function adoptedReferences(ctx:Ctx): Record<string,{refs:ImageReference[]}> {
 
 function AssetsView({ ctx }: { ctx: Ctx }) {
   const { hash, go } = useProjectRoute();
-  const tab = new URLSearchParams(hash.split("?")[1]).get("tab") ?? "round";
+  const requestedTab = new URLSearchParams(hash.split("?")[1]).get("tab") ?? "round";
+  const tab=requestedTab==="needs" && !artifactFor(ctx.view,"plan")?.adopted_version_id?"round":requestedTab;
   const setTab = (t:string) => go(`#/e/${ctx.eid}/assets${t==="round"?"":"?tab="+encodeURIComponent(t)}`);
   const [mode, setMode] = useState("原图");
   const [pair,setPair]=useState(["",""]);
@@ -858,6 +1211,7 @@ function AssetsView({ ctx }: { ctx: Ctx }) {
   const [adoptPre, setAdoptPre] = useState<any>(null);
   const [upKind, setUpKind] = useState("state");
   const providers = useQuery<any>("image_providers");
+  const channel = useQuery<any>("episode_image_channel",{episode_id:ctx.eid});
   const act = useAction();
   const images = ctx.assets.filter((a) => a.kind === "image").sort((a, b) => (b.grid ? 1 : 0) - (a.grid ? 1 : 0));
   const params = new URLSearchParams(hash.split("?")[1]);
@@ -895,14 +1249,18 @@ function AssetsView({ ctx }: { ctx: Ctx }) {
     <div className="asset-stage">
       <div className="stagehead">
         <div><h1>素材与选图</h1><div className="muted small">{images.length} 张 · 提示词已引用 {cited.size} 张 · 手动已采用 {images.filter((a) => marked(a, "adopted")).length} · 本集图像批次 {ctx.batches.length}</div></div>
-        <div className="row"><div className="tabs">{[["needs", "需求"], ["round", "本轮出图"], ["backup", "补选区"], ["canvas", "画布"]].map(([t, l]) => (
+        <div className="row"><div className="tabs">{[["needs", "需求"], ["round", "本轮出图"], ["backup", "补选区"], ["canvas", "画布"]].filter(([t])=>t!=="needs" || artifactFor(ctx.view,"plan")?.adopted_version_id).map(([t, l]) => (
           <button key={t} className={`tab ${tab === t ? "on" : ""}`} onClick={() => setTab(t)}>{l}</button>))}</div>
           <button className="btn primary" onClick={() => setNewBatch({ operation: "generate" })}>出图</button>
           <select value={upKind} onChange={(e) => setUpKind(e.target.value)} style={{ padding: "4px 6px" }}><option value="state">场面 / 状态图</option><option value="grid">九宫格</option><option value="identity">身份图</option><option value="costume">服装参考</option><option value="scene">空景</option></select>
           <label className="btn">上传<input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => e.target.files?.[0] && act.run(async () => { await upload("asset", e.target.files![0], { projectId: ctx.view.episode.project_id, episodeId: ctx.eid, category: upKind, grid: upKind === "grid" }); ctx.reload(); })} /></label></div>
       </div>
+      <nav className="row" aria-label="素材制作工具">
+        <a className="btn" href={`#/e/${ctx.eid}/cast`}>角色出镜与身份覆盖</a>
+        <a className="btn" href={`#/e/${ctx.eid}/worksheet?group=scene`}>场景空间与锁定图</a>
+      </nav>
       <ProjectLibrary pid={ctx.view.episode.project_id} eid={ctx.eid} productsOnly refresh={ctx.reload} images={images} shots={artifactFor(ctx.view,"plan")?.versions.find((v:any)=>v.id===artifactFor(ctx.view,"plan")?.adopted_version_id)?.content.shots ?? []}/>
-      {tab === "canvas" ? <Canvas key={ctx.eid} ctx={ctx} providers={providers.data ?? {}} openBatch={ctx.openBatch} /> : tab === "needs" ? <NeedsTable ctx={ctx} /> : (
+      {tab === "canvas" ? channel.data && <Canvas defaultProvider={channel.data.provider} key={ctx.eid} ctx={ctx} providers={providers.data ?? {}} openBatch={ctx.openBatch} /> : tab === "needs" ? <NeedsTable ctx={ctx} /> : (
         <div className="candidate-panel"><div className={"candidate-layout"+(shown.length<2?" single":"")}>
           {shown.map((a,i) => (
             <div key={i}>
@@ -923,7 +1281,7 @@ function AssetsView({ ctx }: { ctx: Ctx }) {
               <div className="row" style={{ marginTop: 6 }}>
                 <button className="btn ghost" onClick={()=>setRequired(a)}>{marked(a,"required")?"编辑必用要求":"标必用"}</button>
                 {["recommended", "backup"].map((m) => <button key={m} className="btn ghost" onClick={() => act.run(async () => { await cmd("mark_image", { episode_id: ctx.eid, version_id:a.id, mark:m,enabled:!marked(a,m) }); ctx.reload(); })}>{marked(a,m)?"取消":""}{m === "recommended" ? "推荐" : "补选"}</button>)}
-                {!!a.grid && <button className="btn" onClick={() => setNewBatch({ operation: "edit", base: a })}>修一格</button>}
+                {a.kind === "image" && <button className="btn" onClick={() => setNewBatch({ operation: "edit", base: a })}>{a.grid ? "修一格" : "带图修改"}</button>}
                 <button className="btn" onClick={() => act.run(()=>previewImage(a))}>采用</button>
               </div>
             </div>))}
@@ -961,7 +1319,7 @@ function AssetsView({ ctx }: { ctx: Ctx }) {
           <div className="spread"><span>{b.provider} · {b.operation === "edit" ? "局部重画" : "生成"} · {b.count} 张 · {b.size} · {BATCH_LABEL[b.state] ?? b.state}</span><button className="btn" onClick={() => ctx.openBatch(b)}>打开</button></div>
           <div className="row small" style={{ marginTop: 6 }}>{b.requests.map((r: any) => <Tag key={r.id} tone={r.state === "succeeded" ? "green" : r.state === "unknown" ? "amber" : r.state === "failed" ? "red" : ""}>#{r.ordinal} {REQ[r.state] ?? r.state}</Tag>)}</div>
         </div>))}
-      {(libraryBatch || newBatch) && providers.data && <NewBatch key={editVersion || "new"} ctx={ctx} init={libraryBatch || newBatch} providers={providers.data} close={closeBatchForm}/>}
+      {(libraryBatch || newBatch) && providers.data && channel.data && <NewBatch defaultProvider={channel.data.provider} key={editVersion || "new"} ctx={ctx} init={libraryBatch || newBatch} providers={providers.data} close={closeBatchForm}/>}
       {editVersion && !editBase && <p className="muted">正在查找本集的底图版本。<button className="btn" onClick={ctx.reload}>刷新素材</button><button className="btn" onClick={closeBatchForm}>返回选图</button></p>}
       <ErrorLine error={act.error} />
     </div>
@@ -1083,16 +1441,18 @@ function GridComparison({ id }: { id: string }) {
   return <p className="small">像素有变化的格：{cmp.data.changed.join("、") || "无"} · 像素完全一致的格：{cmp.data.unchanged.join("、") || "无"}</p>;
 }
 
-function NewBatch({ ctx, init, providers, close }: { ctx: Ctx; init: any; providers: any; close: () => void }) {
+function NewBatch({ ctx, init, providers, close, defaultProvider }: { defaultProvider:string; ctx: Ctx; init: any; providers: any; close: () => void }) {
   const names = Object.keys(providers).filter(name=>providers[name].capabilities.operations.includes(init.operation));
-  const [provider, setProvider] = useState(names[0] ?? "");
+  const [provider, setProvider] = useState(names.includes(defaultProvider)?defaultProvider:names[0] ?? "");
   const [prompt, setPrompt] = useState(init.base?.grid ? `局部重画 ${init.base.name}` : "");
+  const [assetName, setAssetName] = useState("");
+  const [category, setCategory] = useState("state");
   const [count, setCount] = useState(1);
   const [size, setSize] = useState("");
   const [quality, setQuality] = useState("low");
+  const [model, setModel] = useState("");
   const [cells, setCells] = useState<number[]>(init.base ? [5] : []);
   const [ref, setRef] = useState("");
-  const [budget, setBudget] = useState("2.00");
   const [segs, setSegs] = useState("");
   const locks = useQuery<SpaceLock[]>("space_locks", {episode_id:ctx.eid});
   const scoped = segs.split(/[,，、\s]+/).filter(Boolean);
@@ -1101,14 +1461,15 @@ function NewBatch({ ctx, init, providers, close }: { ctx: Ctx; init: any; provid
   const ordered = chosen.filter(id=>relevant.some(l=>l.versionId===id));
   const act = useAction();
   const caps = providers[provider]?.capabilities;
+  const completedImages=ctx.batches.filter(b=>b.provider===provider).flatMap(b=>b.requests).filter(r=>r?.state==="succeeded" && r.asset_version_id).length;
   useEffect(() => {
     if (!caps) return;
     setSize(value=>caps.sizes.includes(value) ? value : caps.sizes[0]);
     setQuality(value=>caps.quality.includes(value) ? value : caps.quality[0]);
+    setModel(value=>caps.models?.includes(value) ? value : caps.models?.[0] || "");
   }, [provider,caps]);
   const create = () => act.run(async () => {
-    const budget_cents = budgetCents(budget);
-    const args = {episode_id:ctx.eid,provider,size,quality,budget_cents};
+    const args = {episode_id:ctx.eid,provider,size,quality,...(model?{model}:{})};
     const extraInputs = Array.from(new Set([ref,...ordered].filter(id=>id && id!==init.base?.id)));
     let r;
     if (init.base?.grid) {
@@ -1118,21 +1479,31 @@ function NewBatch({ ctx, init, providers, close }: { ctx: Ctx; init: any; provid
         libraryEntryId:init.libraryEntry,target:{name:init.base.name,category:init.base.category,assetId:init.base.asset_id,roles:init.base.roles}}]});
     } else {
       r=await cmd("create_batch",{...args,operation:"generate",items:Array.from({length:count},(_,i)=>({
-        prompt,segments:scoped,inputs:ordered,target:{name:`${prompt.slice(0,10)} ${i+1}`,category:"state"}}))});
+        prompt:category==="grid" ? "将画面等分为三行三列，共九格，按从左到右、从上到下排列。\n"+prompt : prompt,segments:scoped,inputs:ordered,target:{name:`${assetName.trim() || prompt.slice(0,10)}${count > 1 ? " " + (i+1) : ""}`,category,...(category==="grid"?{grid:true}:{})}}))});
     }
     ctx.openBatch(await q("batch_view", { batch_id: r.batchId }));
     close();
   });
   return (
-    <Modal onClose={close} width={620}>
-      <div className="row"><Tag tone="amber">会消耗额度</Tag><h2 style={{ margin: 0 }}>{init.base?.grid ? `局部重画 ${init.base.name}` : init.base ? `垫图改图 · ${init.base.name} v${init.base.version_no}` : "发起图像批次"}</h2></div>
-      <div className="formrow"><span className="muted">通道</span><select value={provider} onChange={(e) => setProvider(e.target.value)}>{names.map((n) => <option key={n} value={n}>{n}（{providers[n].verified === "simulated" ? "模拟" : providers[n].verified === "pending_verification" ? "待验证" : "已验证"}）</option>)}</select></div>
+    <Modal onClose={close} width={620}><div className="image-batch-form">
+      <div className="row"><h2 style={{ margin: 0 }}>{init.base?.grid ? `局部重画 ${init.base.name}` : init.base ? `垫图改图 · ${init.base.name} v${init.base.version_no}` : "发起图像批次"}</h2></div>
+      <label className="formrow"><span>出图工具</span><select value={provider} onChange={e=>setProvider(e.target.value)}>{names.map(n=><option key={n} value={n}>{providers[n].capabilities.label || (n==="openai-image-mcp"?"OpenAI Image MCP":n)}</option>)}</select></label>
+      {provider && <p className="muted small batch-history">{providers[provider]?.verified==="simulated" ? "模拟通道" : completedImages ? `此工具已为本集生成 ${completedImages} 张图片` : "此工具在本集暂无成功出图记录"}</p>}
+      {caps?.models?.length>0 && <>
+        <label className="formrow"><span>图像任务创作型号</span><select value={model} onChange={e=>setModel(e.target.value)}>{caps.models.map((value:string)=><option key={value}>{value}</option>)}</select></label>
+        {caps.effort && <label className="formrow"><span>推理强度</span><select value={caps.effort} disabled><option>{caps.effort}</option></select></label>}
+      </>}
       <div className="formrow"><span className="muted">要求</span><textarea aria-label="绘图要求" value={prompt} onChange={(e) => setPrompt(e.target.value)} /></div>
       {init.base ? <>
         {init.base.grid ? <><GridMethods eid={ctx.eid}/>
         <div className="formrow"><span className="muted">只改格</span><div className="row">{Array.from({ length: 9 }, (_, i) => i + 1).map((c) => <button key={c} className={`pill ${cells.includes(c) ? "on" : ""}`} onClick={() => setCells(cells.includes(c) ? cells.filter((x) => x !== c) : [...cells, c])}>{c}</button>)}</div></div></> : <div className="row"><img width="80" src={blob(init.base.sha256)} alt="本批底图"/><span>第一张输入 · {init.base.name} v{init.base.version_no}</span></div>}
         <div className="formrow"><span className="muted">参考（仅绘图）</span><select value={ref} onChange={(e) => setRef(e.target.value)}><option value="">无</option>{ctx.assets.filter((a) => a.kind === "image" && a.id !== init.base.id).map((a) => <option key={a.id} value={a.id}>{a.name} v{a.version_no}</option>)}</select></div>
       </> : <>
+        <label className="formrow"><span>素材名称</span><input value={assetName} onChange={e=>setAssetName(e.target.value)} /></label>
+          <label className="formrow"><span>素材分类</span><select value={category} onChange={e=>setCategory(e.target.value)}>
+            <option value="state">状态图</option><option value="grid">九宫格</option><option value="identity">角色身份图</option><option value="scene">场景图</option>
+            <option value="costume">服装图</option><option value="prop">道具图</option><option value="product">商品图</option><option value="reference">参考图</option>
+          </select></label>
         <div className="formrow"><span className="muted">张数</span><input type="number" min={1} max={9} value={count} onChange={(e) => setCount(+e.target.value)} /></div>
       </>}
         <div className="formrow"><span className="muted">用于段</span><input placeholder="例：G04（依赖未确认空间锁定的段会被拦下）" value={segs} onChange={(e) => setSegs(e.target.value)} /></div>
@@ -1142,12 +1513,11 @@ function NewBatch({ ctx, init, providers, close }: { ctx: Ctx; init: any; provid
         {locks.error && <p className="error">{locks.error}</p>}
       <div className="formrow"><span className="muted">尺寸</span><select value={size} onChange={(e) => setSize(e.target.value)}>{(caps?.sizes ?? []).map((s: string) => <option key={s}>{s}</option>)}</select></div>
       <div className="formrow"><span className="muted">质量</span><select value={quality} onChange={(e) => setQuality(e.target.value)}>{(caps?.quality ?? []).map((v: string) => <option key={v}>{v}</option>)}</select></div>
-      <div className="formrow"><span className="muted">本批授权预算（{providers[provider]?.currency}）</span><input value={budget} onChange={(e) => setBudget(e.target.value)} /></div>
       {!names.length && <p className="error">当前没有支持此操作的图像通道。</p>}
       <p className="muted small">只执行这一批；结果不明会标为“待核对”，不会自动重发。</p>
       <ErrorLine error={act.error} />
       <div className="row" style={{ justifyContent: "flex-end" }}><button className="btn" onClick={close}>取消</button><button className="btn primary" disabled={act.busy || !prompt.trim() || !size || !names.length} onClick={create}>生成摘要，去确认</button></div>
-    </Modal>
+    </div></Modal>
   );
 }
 
@@ -1156,8 +1526,6 @@ const BATCH_LABEL: Record<string, string> = { awaiting_authorization: "待确认
 
 function BatchModal({ batch, assets, close }: { batch: any; assets: any[]; close: () => void }) {
   const b = useQuery<any>("batch_view", { batch_id: batch.id });
-  const [accept, setAccept] = useState(false);
-  const [editedBudget, setEditedBudget] = useState<string | null>(null);
   const [dispatched, setDispatched] = useState(false);
   const act = useAction();
   usePoll(!!b.data && !["awaiting_authorization", "cancelled"].includes(b.data.state)
@@ -1166,10 +1534,9 @@ function BatchModal({ batch, assets, close }: { batch: any; assets: any[]; close
   const d = b.data;
   const pending = d.requests.filter((r: any) => r.state === "pending").length;
   const sending = d.requests.some((r: any) => r.state === "submitted");
-  const budget = editedBudget ?? (d.budget_cents == null ? "" : (d.budget_cents / 100).toFixed(2));
   return (
     <Modal onClose={close} width={640}>
-      <div className="row"><Tag tone="amber">会消耗额度</Tag><h2 style={{ margin: 0 }}>{d.operation === "edit" ? (d.spec.items[0]?.cells?.length ? "局部重画" : "垫图改图") : "图像批次"} · {d.count} 张</h2><Tag>{BATCH_LABEL[d.state] ?? d.state}</Tag></div>
+      <div className="row"><h2 style={{ margin: 0 }}>{d.operation === "edit" ? (d.spec.items[0]?.cells?.length ? "局部重画" : "垫图改图") : "图像批次"} · {d.count} 张</h2><Tag>{BATCH_LABEL[d.state] ?? d.state}</Tag></div>
       {d.operation === "edit" && !!d.spec.items[0]?.cells?.length && (() => { const it = d.spec.items[0]; const base = assets.find((a) => a.id === it.inputs?.[0]); return base ? (
         <div className="row" style={{ marginTop: 12, flexWrap: "nowrap" }}>
           <div style={{ position: "relative", width: 96 }}><img src={blob(base.sha256)} style={{ width: 96, borderRadius: 6, display: "block" }} />
@@ -1185,18 +1552,15 @@ function BatchModal({ batch, assets, close }: { batch: any; assets: any[]; close
         })}</td></tr>}
         {d.spec.palettes?.length>0&&<tr><td>风格来源</td><td><PaletteTrace cards={d.spec.palettes} label="本批次冻结色卡"/></td></tr>}
         <tr><td className="muted">服务</td><td>{d.provider}{d.model ? ` · ${d.model}` : ""} · {d.operation === "edit" ? "编辑（带基础图）" : d.spec.items.some((it: any) => it.inputs?.length) ? "带参考图生成（编辑接口）" : "文生图"}</td></tr>
-        <tr><td className="muted">实际输入</td><td>{d.spec.items.map((it: any, i: number) => <div key={i} className="small">#{i + 1} {it.prompt}{it.cells ? ` · 目标格 ${it.cells.join("、")}` : ""}<OrderedImageInputs inputs={d.inputGroups?.[i]}/></div>)}</td></tr>
+        <tr><td className="muted">实际输入</td><td>{d.spec.items.map((it: any, i: number) => <div key={i} className="small">#{i + 1} {it.target?.needKey && <strong>{it.target.name} · </strong>}{it.prompt}{it.cells ? ` · 目标格 ${it.cells.join("、")}` : ""}<OrderedImageInputs inputs={d.inputGroups?.[i]}/></div>)}</td></tr>
         {d.spec.sceneLocks && <tr><td>空间锁定核对</td><td>{d.spec.sceneLocks.map((locks: SpaceLock[], i:number)=>locks.map(l=>
           <div key={i+l.id}>第 {i+1} 张 · {l.label} · {l.name ? l.name+" v"+l.version : "原锁定图不可用"} · {l.positions?.length ? "已列入输入 "+l.positions.join("、") : "未列入本张输入"}</div>))}</td></tr>}
         <tr><td className="muted">尺寸 / 质量</td><td>{d.size} · {d.spec.quality ?? "通道默认（历史批次）"}</td></tr>
-        <tr><td className="muted">预算 / 费用</td><td>{budgetAmount(d.budget_cents, d.currency)} · {d.cost_state === "unknown" ? "费用未知" : `估算 ${budgetAmount(d.estimate_cents, d.currency)}`}</td></tr>
       </tbody></table>
       {d.authorization && <details open><summary>授权回执</summary>
-        <div className="small">授权时间 {new Date(d.authorization.at * 1000).toLocaleString()} · {budgetAmount(d.authorization.budget_cents, d.authorization.currency)}</div>
+        <div className="small">授权时间 {new Date(d.authorization.at * 1000).toLocaleString()}</div>
         <div className="small" style={{overflowWrap:"anywhere"}}>确认摘要 {d.authorization.summaryHash}</div>
       </details>}
-      {d.state === "awaiting_authorization" && d.billingCurrent && <label className="formrow"><span>授权预算（{d.currency}）</span><input value={budget} onChange={e=>setEditedBudget(e.target.value)}/></label>}
-      {!d.billingCurrent && ["awaiting_authorization","authorized","partial"].includes(d.state) && <p>请核对历史回执。全批待发时可取消后重建；已有发送记录时，仅为仍需生成的项目新建批次并核对币种。</p>}
       {d.requests.map((r: any) => (
         <div key={r.id} className="spread small" style={{ margin: "4px 0" }}>
           <span>#{r.ordinal} <span className="mono">{r.local_request_id}</span> {r.replaces_id ? "（补发）" : ""}
@@ -1209,13 +1573,13 @@ function BatchModal({ batch, assets, close }: { batch: any; assets: any[]; close
             {d.billingCurrent && !r.replaced && ["confirmed_not_executed", "failed"].includes(r.state) && <button className="btn" onClick={() => act.run(async () => { await cmd("resubmit_request", { request_id: r.id }); setDispatched(false); b.reload(); })}>按原授权重新提交</button>}
           </span>
         </div>))}
-      {d.state === "awaiting_authorization" && d.cost_state === "unknown" && <label className="small"><input type="checkbox" checked={accept} onChange={(e) => setAccept(e.target.checked)} /> 我接受实际费用未知，通道结算金额可能超过授权预算</label>}
       <ErrorLine error={act.error} />
       <div className="row" style={{ justifyContent: "flex-end", marginTop: 12 }}>
         {["awaiting_authorization", "authorized"].includes(d.state) && !sending && !dispatched && <button className="btn" disabled={act.busy} onClick={() => act.run(async () => { await cmd("cancel_batch", { batch_id: d.id }); close(); })}>取消批次</button>}
-        {d.state === "awaiting_authorization" && d.billingCurrent && <button className="btn primary" disabled={act.busy || (d.cost_state === "unknown" && !accept)} onClick={() => act.run(async () => {
-          await cmd("authorize_batch", { batch_id: d.id, summary_hash: d.summary_hash, budget_cents: budgetCents(budget), accept_unknown_cost: accept });
-          b.reload();
+        {d.state === "awaiting_authorization" && d.billingCurrent && <button className="btn primary" disabled={act.busy} onClick={() => act.run(async () => {
+          await cmd("authorize_batch", { batch_id: d.id, summary_hash: d.summary_hash });
+          if(d.spec.items.some((it:any)=>it.target?.needKey)){await cmd("execute_batch",{batch_id:d.id});setDispatched(true);}
+          await b.reload();
         })}>确认授权 {d.count} 张</button>}
         {d.billingCurrent && ["authorized","partial"].includes(d.state) && pending > 0 && <button className="btn primary" disabled={act.busy || sending || dispatched} onClick={() => act.run(async () => {
           await cmd("execute_batch", { batch_id: d.id }); setDispatched(true); b.reload();
@@ -1230,15 +1594,33 @@ function BatchModal({ batch, assets, close }: { batch: any; assets: any[]; close
 function PromptsView({ ctx }: { ctx: Ctx }) {
   const { art, current } = useVersion(ctx, "prompts");
   const plan = artifactFor(ctx.view, "plan");
-  const lay = layout(plan?.versions.find((v: any) => v.id === plan.adopted_version_id)?.content);
-  const {hash}=useProjectRoute();
+  const planContent = plan?.versions.find((v:any)=>v.id===plan.adopted_version_id)?.content;
+  const lay = layout(planContent);
+  const supplements=useQuery<any[]>("production_supplements",{episode_id:ctx.eid});
+  const sourcePackets=useQuery<any>("prompt_scene_sources",{episode_id:ctx.eid},[plan?.adopted_version_id,artifactFor(ctx.view,"script")?.adopted_version_id]);
+
+  const {hash,go}=useProjectRoute();
+  const trialRequested = new URLSearchParams(hash.split("?")[1]).get("trial") === "h3";
+  const [trial, setTrial] = useState<any>(null);
+  const [trialError, setTrialError] = useState("");
+  useEffect(() => {
+    const controller = new AbortController();
+    setTrial(null);
+    setTrialError("");
+    fetch("/api/h3-skill-trial/" + encodeURIComponent(ctx.eid), {signal: controller.signal})
+      .then(response => response.json()).then(data => {
+        if (!controller.signal.aborted) setTrial(data);
+        if (!data && !controller.signal.aborted) setTrialError("本集暂无试验稿");
+      }).catch(() => { if (!controller.signal.aborted) setTrialError("试验稿读取失败"); });
+    return () => controller.abort();
+  }, [ctx.eid, trialRequested]);
   const requestedSegment=new URLSearchParams(hash.split("?")[1]).get("segment");
   const [seg, setSeg] = useState<string>("");
   const [txt, setTxt] = useState("");
   const [preview, setPreview] = useState<any>(null);
   const [sound, setSound] = useState<any>(null);
   const act = useAction();
-  const [includeImages, setIncludeImages] = useState(false);
+  const [includeImages, setIncludeImages] = useState(true);
   const entry = current?.content.segments?.[seg];
   const palette=useQuery<any>(entry?"segment_palette_trace":null,{version_id:current?.id,segment:seg});
   useEffect(() => { if (!seg && lay.segments[0]) setSeg(lay.segments[0].id); }, [lay.segments.length]);
@@ -1278,22 +1660,21 @@ function PromptsView({ ctx }: { ctx: Ctx }) {
     return () => cancelAnimationFrame(frame);
   }, [jump,seg,current?.id,txt]);
   if (!art) return <div className="empty"><p>正式分段提示词会引用已采用的制作方案。</p><button className="btn" onClick={ctx.openTrial}>先试写本阶段</button></div>;
-  const create = ctx.view.kickoff.executor_plan.create;
+  const create = art?.executorSettings?.create ?? ctx.view.kickoff.executor_plan.create;
   const modelDraft = () => act.run(async () => {
     await cmd("create_task", {episode_id:ctx.eid, stage:"prompts", prompt_images:includeImages,
       goal:"从采用的方案起草所有生成段的完整提示词。沿用所给逐段输入编号、固定块与时间窗口，写清起幅、表演、机位、反应、交接和声音。"});
     ctx.setFocus(null); ctx.reload();
   });
-  const programDraft = () => act.run(async () => {
-    const content = await q("draft_prompts", {episode_id:ctx.eid});
-    const r = await ctx.write("save_manual", {artifact_id:art.id, base_version_id:current?.id ?? null, content});
-    await ctx.reload(); ctx.setFocus(r.versionId);
-  });
   const segInfo = lay.segments.find((s: any) => s.id === seg);
+  const segmentShots = (planContent?.shots ?? []).filter((shot:any)=>shot.segment===seg).sort((a:any,b:any)=>a.order-b.order);
+  const packet=sourcePackets.data?.[seg];
   const errors = (current?.gate.formatErrors ?? []).filter((e: string) => e.startsWith(seg + "："));
   const save = (content: any) => act.run(async () => { const r = await ctx.write("save_manual", { artifact_id: art.id, base_version_id: current?.id ?? null, content }); await ctx.reload(); ctx.setFocus(r.versionId); });
-  const draft = {txt, ambience:amb.split(/[,，、]/).map(x=>x.trim()).filter(Boolean),
-    dialogue:dia.split(/[；;\n]/).map(x=>x.trim()).filter(Boolean)};
+  const ambience=entry?.sound?.ambience ?? [];
+  const dialogue=entry?.sound?.dialogue ?? [];
+  const draft = {txt, ambience:amb === ambience.join("、") ? ambience : amb.split(/[,，、]/).map(x=>x.trim()).filter(Boolean),
+    dialogue:dia === dialogue.join("；") ? dialogue : dia.split(/[；;\n]/).map(x=>x.trim()).filter(Boolean)};
   const editReference = (action:string, asset_id?:string, previous_id?:string, purpose?:string) => act.run(async()=>{
     const r = await ctx.write("edit_prompt_reference",{version_id:current.id, segment_id:seg, action, asset_id, previous_id, purpose, draft});
     await ctx.reload(); ctx.setFocus(r.versionId); return r;
@@ -1312,20 +1693,46 @@ function PromptsView({ ctx }: { ctx: Ctx }) {
     <div>
       <div className="stagehead"><div><h1>提示词</h1><div className="muted small">{current ? `${rno(current.display_no)} ${current.id === art.adopted_version_id ? "已采用" : "草稿"}` : "尚无"} · 分段参考与提示词</div></div>
         {current && <VersionTabs ctx={ctx} art={art} current={current} />}</div>
-      <div className="row">{lay.segments.map((s: any) => <button key={s.id} className={`pill ${seg === s.id ? "on" : ""}`} onClick={() => chooseSegment(s.id)}>{s.id} · {s.duration / 1000}s</button>)}</div>
-      {current && <VersionSignals key={current.id} version={current.id} number={current.display_no} locate={(sid,phrase)=>{chooseSegment(sid);setJump({version:current.id,sid,phrase});}}/>}
-      {entry ? <>
-        <RhythmReview key={current.id} version={current.id}/>
-        {palette.error&&<p className="error">{palette.error}</p>}
-        <fieldset className="edit-fields" disabled={ctx.locked}><ReferenceReview ctx={ctx} version={current.id} sid={seg} entry={entry} draft={draft} save={ctx.setFocus}/></fieldset>
-        {palette.data&&<PaletteTrace cards={palette.data.cards} label={palette.data.direct?`${seg} 所在稿起草时参考`:`${seg} 上游稿 R${palette.data.displayNo} 起草时参考`}/>}
-        <div className="row" style={{ margin: "14px 0", alignItems: "stretch" }}>
+      <div className="row">{lay.segments.map((s: any) => <button key={s.id} className={`pill ${seg === s.id ? "on" : ""}`} onClick={() => {
+        const params=new URLSearchParams(hash.split("?")[1]);
+        params.set("segment",s.id);
+        go(hash.split("?")[0]+"?"+params.toString());
+      }}>{s.id} · {s.duration / 1000}s</button>)}</div>
+        {(trial?.segments?.[seg] || trialRequested) && <section aria-label="官方 H3 技能对照稿">
+          <h2>MiniMax 官方 H3 提示词 · {seg}</h2>
+          {trial?.segments?.[seg] ? <textarea className="prompt-main-text" readOnly
+            aria-label={seg+" 官方 H3 提示词"} value={trial.segments[seg]} /> : <p>{trialError || "正在读取…"}</p>}
+        </section>}
+      {segInfo && <details className="prompt-scene" aria-label="场景拍摄简述">
+        <summary>场景拍摄简述</summary>
+        {sourcePackets.error && <p className="error">{sourcePackets.error}</p>}
+        {packet?.scenes.map((group:any)=><div key={group.sceneId ?? "missing"}>
+          <b>{group.original?.heading || group.sceneId || "镜头未登记场次"}</b>
+          <p data-scene-action={group.sceneId}>{group.original?.action || "缺少可核对的剧本场次原文。"}</p>
+          {group.original?.dialogue && <p>对白 · {String(group.original.dialogue)}</p>}
+          {supplements.data?.filter(s=>["proposed","confirmed"].includes(s.state)&&s.scenes.includes(group.sceneId)).map(s=><p key={s.id}>制作补充 {s.code} · {s.statement}</p>)}
+          {group.original && <a className="small" href={`#/e/${ctx.eid}/script?v=${packet.scriptVersion}&scene=${encodeURIComponent(group.sceneId)}`}>核对当前采用剧本 {rno(packet.scriptRevision)} · {group.sceneId} 原文</a>}
+        </div>)}
+        <span className="small"><b>{seg} 镜头方案</b>　{segmentShots.map((shot:any)=>shot.txtAnchor || shot.origin?.line || shot.action).filter(Boolean).join(" → ") || segInfo.combinationReason || "当前方案未登记镜头动作。"}</span>
+      </details>}
+      {entry && <div className="prompt-pair">
+      <section aria-label="本段提示词">
+        <h2>{entry.prompt_format === "h3_official" ? "MiniMax 官方 H3 提示词 · " + seg : seg + " 提示词正文"}</h2>
+        <textarea readOnly={ctx.locked} ref={editor} data-version={current.id} aria-label={seg+" 提示词正文"} className="prompt-main-text" value={txt} onChange={(e) => {setTxt(e.target.value);setSound(null);setPreview(null);}} />
+        {entry.prompt_format === "h3_official" && <details><summary>中文逐窗分镜对照</summary>
+          {segmentShots.map((shot:any) => <p key={shot.id}><b>{shot.id} · {shot.duration_ms/1000}秒</b>　{shot.camera}　{shot.action}　{shot.sound}</p>)}
+        </details>}
+        {typeof entry.notes==="string" && entry.notes.trim() && <details><summary>本段制作备注与核对依据</summary><p className="field">{entry.notes}</p></details>}
+      </section>
+        <section aria-label="本段参考素材"><h2>对应参考素材</h2>
+        <div className="prompt-ref-grid">
           {entry.refs.map((r: any, i: number) => { const a = ctx.assets.find((x) => x.id === r.assetVersionId); return (
-            <div key={r.assetVersionId} className="card line" style={{ width: 150, padding: 8 }}>
-              {a && (a.kind === "image" ? <img src={blob(a.sha256)} alt={a.name} style={{width:"100%",borderRadius:6}}/>
+            <div key={r.assetVersionId} className="card line" style={{ minWidth:0, padding:8 }}>
+              {a && (a.kind === "image" ? <img src={blob(a.sha256)} alt={a.name} style={{width:"100%",height:72,objectFit:"contain",borderRadius:6}}/>
                 : <MediaPreview episode={ctx.eid} asset={a} label={r.label}/>)}
               <div className="spread"><b>{r.label}</b><span className="row">{i > 0 && <button className="btn ghost" aria-label={r.label+"前移"} disabled={act.busy || ctx.locked} onClick={() => move(i, -1)}>←</button>}{i < entry.refs.length - 1 && <button className="btn ghost" aria-label={r.label+"后移"} disabled={act.busy || ctx.locked} onClick={() => move(i, 1)}>→</button>}</span></div>
-              <div className="muted tiny">{r.role || "用途未写"}{r.grid ? " · 九宫格" : ""}</div>
+              <div className="muted tiny">{a?.name} · {r.role || "用途未写"}{r.grid ? " · 九宫格" : ""}</div>
+              {r.shots?.length>0 && <div className="muted tiny">{r.shots.join("、")}</div>}
               <select aria-label={"替换"+r.label} disabled={act.busy || ctx.locked} style={{width:"100%",marginTop:4}} value="" onChange={e=>editReference("replace",e.target.value,r.assetVersionId)}>
                 <option value="">{segInfo?.strategy === "grid" ? "替换本段九宫格…" : "替换此参考…"}</option>
                 {ctx.assets.filter(x=>x.kind===r.kind && (segInfo?.strategy!=="grid" || x.grid) && !entry.refs.some((ref:any)=>ref.assetVersionId===x.id)).map(x=><option key={x.id} value={x.id}>{x.name} v{x.version_no}{x.marks.includes("required") ? "（必用）" : ""}</option>)}
@@ -1338,6 +1745,14 @@ function PromptsView({ ctx }: { ctx: Ctx }) {
             if (v) void editReference("add",v.id,undefined,v.name.replace(/\.png$/i,""));
           }}><option value="">＋ 添加图片…</option>{ctx.assets.filter(x=>x.kind==="image" && !entry.refs.some((r:any)=>r.assetVersionId===x.id)).map(x=><option key={x.id} value={x.id}>{x.name} v{x.version_no}</option>)}</select>}
         </div>
+        </section>
+      </div>}
+      {current && <VersionSignals key={current.id} version={current.id} number={current.display_no} locate={(sid,phrase)=>{chooseSegment(sid);setJump({version:current.id,sid,phrase});}}/>}
+      {entry ? <>
+        <RhythmReview key={current.id} version={current.id}/>
+        {palette.error&&<p className="error">{palette.error}</p>}
+        <fieldset className="edit-fields" disabled={ctx.locked}><ReferenceReview ctx={ctx} version={current.id} sid={seg} entry={entry} draft={draft} save={ctx.setFocus}/></fieldset>
+        {palette.data&&<PaletteTrace cards={palette.data.cards} label={palette.data.direct?`${seg} 所在稿起草时参考`:`${seg} 上游稿 R${palette.data.displayNo} 起草时参考`}/>}
         {segInfo?.strategy!=="grid" && <PromptMedia key={ctx.eid+"/"+seg+"/"+current.id} episode={ctx.eid} reload={ctx.reload} busy={act.busy || ctx.locked}
           assets={ctx.assets.filter(x=>(x.kind==="audio" || x.kind==="video") && !entry.refs.some((r:any)=>r.assetVersionId===x.id))}
           attach={(id,purpose)=>editReference("add",id,undefined,purpose)}/>}
@@ -1345,7 +1760,7 @@ function PromptsView({ ctx }: { ctx: Ctx }) {
           {preview.preview.unclearRoles.length > 0 && <div className="small">用途不明确，请核对：{preview.preview.unclearRoles.join("、")}</div>}
           <div className="field small" style={{ marginTop: 6 }}>{preview.preview.txtDiff.map((d: any, i: number) => d.op === "same" ? <span key={i}>{d.text}</span> : d.op === "del" ? <del key={i} className="d">{d.text}</del> : <ins key={i} className="d">{d.text}</ins>)}</div>
           <div className="row" style={{ marginTop: 6 }}><button className="btn primary" onClick={() => act.run(async () => { const r = await ctx.write("reorder_refs", { version_id: current.id, segment_id: seg, new_order: preview.order, draft, confirm: true }); await ctx.reload(); ctx.setFocus(r.versionId); setPreview(null); })}>确认重排</button><button className="btn" onClick={() => setPreview(null)}>取消</button></div></div>}
-        <textarea readOnly={ctx.locked} ref={editor} data-version={current.id} aria-label={seg+" 提示词正文"} style={{ minHeight: 260, fontSize: "1rem" }} value={txt} onChange={(e) => {setTxt(e.target.value);setSound(null);setPreview(null);}} />
+
         {errors.length > 0 && <div className="error">{errors.join("；")}</div>}
         <div className="grid2" style={{ marginTop: 8 }}>
           <input readOnly={ctx.locked} placeholder="环境声（逗号分隔）" value={amb} onChange={(e) => {setAmb(e.target.value);setSound(null);setPreview(null);}} />
@@ -1355,96 +1770,52 @@ function PromptsView({ ctx }: { ctx: Ctx }) {
             {(entry.sound?.ambience ?? []).map((x: string) => <Tag key={x}>{x}</Tag>)}{(entry.sound?.dialogue ?? []).map((x: string) => <Tag key={x} tone="blue">{x}</Tag>)}
             {entry.sound?.silent && <Tag tone="amber">全静音</Tag>}</div>
           <div className="row">
-            {entry.prompt_format === "readable_v3" && !entry.sound?.bgm && <input readOnly={ctx.locked} aria-label="本段配乐描述" placeholder="具体配乐描述" value={music} onChange={e=>setMusic(e.target.value)}/>}
+            {["h3_official","readable_v3"].includes(entry.prompt_format) && !entry.sound?.bgm && <input readOnly={ctx.locked} aria-label="本段配乐描述" placeholder="具体配乐描述" value={music} onChange={e=>setMusic(e.target.value)}/>}
             <button className="btn" disabled={act.busy || ctx.locked} onClick={() => applySound({bgm:!entry.sound?.bgm,music_description:music})}>{entry.sound?.bgm ? "去掉背景音乐" : "加背景音乐"}</button>
             <button className="btn" disabled={act.busy || ctx.locked} onClick={() => applySound({silent:!entry.sound?.silent})}>{entry.sound?.silent ? "解除全静音" : "全静音"}</button>
             <button className="btn primary" disabled={ctx.locked} onClick={() => save({ ...current.content, segments: { ...current.content.segments, [seg]: { ...entry, txt,
-              sound: { ...(entry.sound ?? {}), ambience: amb.split(/[,，、]/).map((x) => x.trim()).filter(Boolean), dialogue: dia.split(/[；;\n]/).map((x) => x.trim()).filter(Boolean) } } } })}>保存本段</button>
+              sound: { ...(entry.sound ?? {}), ambience:draft.ambience, dialogue:draft.dialogue } } } })}>保存本段</button>
           </div>
         </div>
         {sound && <div className="card amber" style={{ marginTop: 10 }}><b>全静音会与以下内容冲突</b>{sound.conflicts.map((c: any) => <div key={c.item} className="small">{c.item}：{Array.isArray(c.detail) ? c.detail.join("、") : c.detail}</div>)}
           {typeof sound.retainedNotes==="string" && <label>静音后保留的画面文字及固定说明<textarea value={sound.retainedNotes} onChange={e=>setSound({...sound,retainedNotes:e.target.value})}/></label>}
           <div className="row" style={{ marginTop: 6 }}><button className="btn danger" disabled={act.busy || ctx.locked} onClick={() => applySound({silent:true,retained_notes:sound.retainedNotes??undefined},true)}>仍然全静音</button><button className="btn" onClick={() => setSound(null)}>保留</button></div></div>}
       </> : <div style={{ marginTop: 14 }}><p className="muted">该段还没有提示词。创作执行器为 {PROVIDER_LABEL[create.provider] ?? create.provider} · {create.model ?? "默认型号"}。</p>
-        <div className="row"><button className="btn primary" disabled={act.busy || ctx.locked} onClick={modelDraft}>从方案起草提示词</button>
-          <label><input type="checkbox" checked={includeImages} onChange={e => setIncludeImages(e.target.checked)}/>同时发送本集已绑定的参考原图</label>
-          <button className="btn" disabled={act.busy || ctx.locked} onClick={programDraft}>生成本地时间与参考骨架</button></div></div>}
+        <div className="row"><button className="btn primary" disabled={act.busy || ctx.locked} onClick={modelDraft}>从分镜起草官方 H3 提示词</button>
+          <label><input type="checkbox" checked={includeImages} onChange={e => setIncludeImages(e.target.checked)}/>同时发送已绑定参考原图</label></div></div>}
       <ErrorLine error={act.error} />
-      {current && <AdoptBar ctx={ctx} art={art} version={current} next="publish" hint="冻结实际送审 TXT 与引用文件后进入两遍独审" />}
+      {current && <AdoptBar ctx={ctx} art={art} version={current} next="delivery" hint="完成提示词本步检查并采用后，进入交付" />}
     </div>
   );
 }
 
-// ---------------------------------------------------------------- 08 两遍独审 (J17, J21)
+// ---------------------------------------------------------------- 08 分镜审核
 function ReviewInputs({runId,label}:{runId:string;label:string}) {
   const [open,setOpen] = useState(false);
-  type FrozenInput = {name:string;role:string;sha256:string;bytes:number};
-  const packet = useQuery<{matches:boolean;fingerprint:string;manifest:{inputs:FrozenInput[]}}>(open?"run_manifest":null,{run_id:runId});
+  const packet = useQuery(open?"run_manifest":null,{run_id:runId});
   return <details onToggle={e=>setOpen(e.currentTarget.open)}>
     <summary>{label}送审文件</summary>
-    {packet.error && <p className="error">{packet.error}</p>}
-    {packet.data && (packet.data.matches ? <ul>{packet.data.manifest.inputs.map((file,index)=><li key={index}>
-      <a href={blob(file.sha256)} download={file.name}>{file.name}</a> · {file.bytes} 字节 · <code title={file.sha256}>{file.sha256.slice(0,12)}</code>
-    </li>)}</ul> : <p className="error">送审清单指纹与运行记录不符</p>)}
+    {packet.error && <p role="alert">{packet.error}</p>}
+    {packet.data && (packet.data.matches ? <InputGroups groups={packet.data.groups}/> : <p className="error">送审清单指纹与运行记录不符</p>)}
   </details>;
 }
 
 function ReviewView({ ctx }: { ctx: Ctx }) {
   const { go } = useProjectRoute();
-  const { art, current } = useVersion(ctx, "prompts");
-  const st = useQuery<any>(current ? "prompt_review_status" : null, { version_id: current?.id }, [ctx.view]);
-  const [reasons, setReasons] = useState<Record<string, string>>({});
+  const { art, current } = useVersion(ctx, "plan");
   const act = useAction();
-  if (!art || !current) return <div className="empty">提示词定稿后才能两遍独审。</div>;
-  const rows = Object.entries(st.data ?? {});
-  const cnt = (f: (x: any) => boolean) => rows.filter(([, x]) => f(x)).length;
-  const label = (x: any) => {
-    if (x.ok) return x.waived ? "用户放行" : "通过";
-    const states = [x.coldRead.state,x.comparison.state];
-    if (states.includes("blocked")) return "退回";
-    if (states.includes("pending_decision")) return "待判断";
-    return "待审";
-  };
-  const waiting = (pass:any) => pass.state === "needed" && !pass.activeRun;
-  const progress = (pass:any) => pass.activeRun?.state === "queued" ? "已排队" : pass.activeRun ? "正在审读" : "";
-  const submit = (pass_name:"cold_read"|"comparison") => act.run(async () => {
-    await cmd("start_prompt_review_batch",{version_id:current.id,pass_name});
-    st.reload(); ctx.reload();
-  });
-  return (
-    <div>
-      <div className="stagehead"><div><h1>两遍独审</h1><div className="muted small">{PROVIDER_LABEL[ctx.view.kickoff.executor_plan.review.provider]} · 独立会话 · 第一遍读取本段 TXT 和原图 · 第二遍加入故事、方案和本步选用的参考资料</div></div>
-        <div className="row"><button className="btn" disabled={act.busy || !cnt(x=>waiting(x.coldRead))} onClick={()=>submit("cold_read")}>送审材料（第一遍）</button><button className="btn" disabled={act.busy || !rows.length || cnt(x=>x.coldRead.state==="needed" || x.coldRead.activeRun)>0 || !cnt(x=>waiting(x.comparison))} onClick={()=>submit("comparison")}>开始第二遍</button>
-          <button className="btn primary" onClick={() => go(`#/e/${ctx.eid}/delivery`)}>去交付核验</button></div></div>
-      <div className="grid3">
-        <div className="card"><div className="muted small">通过</div><div style={{ fontSize: "1.69rem", color: "var(--green)", fontWeight: 700 }}>{cnt((x) => x.ok && !x.waived)} 段</div>{cnt(x=>x.ok && x.waived)>0&&<div className="small">另有 {cnt(x=>x.ok && x.waived)} 段由用户放行</div>}</div>
-        <div className="card"><div className="muted small">退回</div><div style={{ fontSize: "1.69rem", color: "var(--red)", fontWeight: 700 }}>{cnt((x) => label(x) === "退回")} 段</div></div>
-        <div className="card"><div className="muted small">待判断 / 待审</div><div style={{ fontSize: "1.69rem", color: "var(--amber)", fontWeight: 700 }}>{cnt((x) => !x.ok && label(x) !== "退回")} 段</div></div>
-      </div>
-      <VersionSignals key={current.id} version={current.id} number={current.display_no}/>
-      <div className="muted small" style={{ margin: "10px 0" }}>通过：两遍都没有问题 · 退回：必须修改 · 待判断：改，或由你写理由放行（记为“用户放行”，不记为通过）</div>
-      {rows.map(([seg, x]: any) => { const ref = current.content.segments[seg]?.refs?.find((r:any)=>r.kind==="image"); const a = ctx.assets.find((y) => y.id === ref?.assetVersionId);
-        const issues = [...(x.coldRead.issues ?? []), ...(x.comparison.issues ?? [])]; const l = label(x);
-        return (
-          <div key={seg} className={`card ${l === "退回" ? "red" : ""}`} style={{ marginBottom: 10 }}>
-            <div className="row" style={{ flexWrap: "nowrap" }}>
-              <img src={blob(a?.sha256)} style={{ width: 70, height: 40, objectFit: "cover", borderRadius: 6 }} />
-              <div style={{ flex: 1 }}><b>{seg}</b><div className="muted tiny">第一遍 · 冷读</div><div className="small">{progress(x.coldRead) || (x.coldRead.state === "needed" ? "待审" : x.coldRead.observation ?? DEC[x.coldRead.decision])}</div></div>
-              <div style={{ flex: 1 }}><div className="muted tiny">第二遍 · 对照</div><div className="small">{progress(x.comparison) || (x.comparison.state === "needed" ? "待审（含相邻接点）" : x.comparison.observation ?? DEC[x.comparison.decision])}</div></div>
-              <Tag tone={l === "通过" || l === "用户放行" ? "green" : l === "退回" ? "red" : "amber"}>{l}</Tag>
-            </div>
-            {x.coldRead.runId&&<ReviewInputs key={x.coldRead.runId} runId={x.coldRead.runId} label="第一遍"/>}
-            {x.comparison.runId&&<ReviewInputs key={x.comparison.runId} runId={x.comparison.runId} label="第二遍"/>}
-            {issues.map((i: any) => (
-              <div key={i.id} className="small" style={{ marginTop: 8 }}><Tag tone={i.blocking ? "red" : "amber"}>{i.blocking ? "必须修复" : "语义意见"}</Tag> {i.reason}
-                {i.waiver_reason ? <span className="ok"> · 已放行：{i.waiver_reason}</span> : !i.blocking && <span className="row" style={{ marginTop: 4 }}>
-                  <input placeholder="写理由放行（绑定本段输入，改动后失效）" value={reasons[i.id] ?? ""} onChange={(e) => setReasons({ ...reasons, [i.id]: e.target.value })} style={{ flex: 1 }} />
-                  <button className="btn" onClick={() => act.run(async () => { await cmd("waive_segment_issue", { issue_id: i.id, reason: reasons[i.id] ?? "" }); st.reload(); })}>放行</button></span>}
-              </div>))}
-          </div>); })}
-      <ErrorLine error={act.error} />
+  if (!art || !current) return <div className="empty">先完成08分镜；表演与摄影在同一张表中设计。</div>;
+  const latest=current.reviews?.[current.reviews.length-1];
+  return <div>
+    <div className="stagehead"><div><h1>08 分镜审核</h1><div className="muted small">检查本版分镜和实际参考用途，沿用已接受素材差异。09仍检查自己的提示词结果，不再整体独审。</div></div>
+      <div className="row"><button className="btn" disabled={act.busy || ctx.locked} onClick={()=>act.run(async()=>{
+        await cmd("submit_review",{version_id:current.id}); await ctx.reload();
+      })}>审核当前分镜</button><button className="btn primary" onClick={()=>go(`#/e/${ctx.eid}/prompts`)}>进入09提示词</button></div>
     </div>
-  );
+    <VersionTabs ctx={ctx} art={art} current={current}/>
+    {latest ? <StoryReview ctx={ctx} version={current} review={latest}/> : <p className="muted">本版未执行独立审核，不标记为已审通过。</p>}
+    <ErrorLine error={act.error}/>
+  </div>;
 }
 
 // ---------------------------------------------------------------- 09 发布包 (J42)
@@ -1455,7 +1826,8 @@ function PublishView({ ctx }: { ctx: Ctx }) {
   const composed = useQuery<any>(current ? "compose_publish" : null, { episode_id: ctx.eid, version_id: current?.id }, [current?.id]);
   const act = useAction();
   useEffect(() => { setForm(current?.content ?? { title: "", body: "", tags: [], extraFields: {}, cues: [] }); }, [current?.id]);
-  if (!art) return <div className="empty"><p>正式发布包会引用已采用的提示词。</p><button className="btn" onClick={ctx.openTrial}>先试写本阶段</button></div>;
+  if (!art) return <div className="empty"><p>正式发布包会引用已采用的提示词。</p>{artifactFor(ctx.view,"prompts")?.adopted_version_id &&
+    <button className="btn primary" disabled={act.busy} onClick={()=>act.run(async()=>{await cmd("open_stage",{episode_id:ctx.eid,stage:"publish"});await ctx.reload();})}>开始写发布文案</button>}<ErrorLine error={act.error}/><button className="btn" onClick={ctx.openTrial}>先试写本阶段</button></div>;
   if (!form) return null;
   const copy = (t: string) => navigator.clipboard.writeText(t).catch(() => alert("复制失败，请手动选取原文"));
   const adoptedContent = (stage:string) => {
@@ -1499,6 +1871,36 @@ function PublishView({ ctx }: { ctx: Ctx }) {
 }
 
 // ---------------------------------------------------------------- 10 交付核验 (J12, J19, J55)
+function DeliveryRecord({d,eid,projectId}:{d:any;eid:string;projectId:string}) {
+  const [verify,setVerify] = useState<any>(null);
+  const act = useAction();
+  return (
+    <div className="card line" style={{ marginBottom: 10 }}>
+      <div className="spread"><span><Tag tone={d.scope === "full" ? "green" : "blue"}>{d.scope === "full" ? "整集" : "试验"}</Tag> {d.state==="needs_recheck" && <Tag tone="amber">待复核</Tag>} 交付号 <span className="mono">{d.id.slice(0, 8)}</span> · {d.segments.join("、")} · {Object.keys(d.files).length} 个文件</span>
+        <div className="row"><a className="btn" target="_blank" href={deliveryFile(d.id, "00_图文对照.html")}>打开图文页</a>
+          <button className="btn" onClick={() => navigator.clipboard.writeText(d.html)}>复制 HTML 绝对路径</button>
+          <button className="btn" onClick={() => act.run(async () => setVerify(await q("verify_delivery", { delivery_id: d.id })))}>离线验包</button>
+          {d.scope === "full" && <a className="btn primary" href={`#/p/${projectId}/closure-start/${d.id}`}>整理本集设定</a>}</div></div>
+      <div className="muted tiny mono" style={{ marginTop: 6 }}>{d.html}</div>
+      <p className="small">图文包记录计划时长。实际生成视频后，在制作和剪辑工具中核对片长、画幅、动作与声音。</p>
+      <a className="btn" href={`#/e/${eid}/package?delivery=${encodeURIComponent(d.id)}`}>将这次交付打包给 H3</a>
+      {verify && <div className={verify.ok ? "ok small" : "error small"}>{verify.ok ? "验包通过：文件与指纹一致" : verify.errors.map((e: any) => `${e.file} ${e.problem}`).join("；")}</div>}
+      <ErrorLine error={act.error}/>
+    </div>
+  );
+}
+
+function SelectedDelivery({ctx,id}:{ctx:Ctx;id:string}) {
+  const result = useQuery<any>("delivery_view",{delivery_id:id});
+  const record = result.data;
+  return <div>
+    <div className="stagehead"><h1>交付记录</h1><a href={`#/e/${ctx.eid}/delivery`}>查看本集全部交付</a></div>
+    {result.error ? <ErrorLine error={{message:result.error}}/> : !record ? <p>正在读取交付记录…</p>
+      : record.episode_id === ctx.eid ? <DeliveryRecord key={id} d={record} eid={ctx.eid} projectId={ctx.view.episode.project_id}/>
+      : <p>此交付不属于当前单集。</p>}
+  </div>;
+}
+
 function DeliveryView({ ctx }: { ctx: Ctx }) {
   const { hash, go }=useProjectRoute();
   const params=new URLSearchParams(hash.split("?")[1]);
@@ -1508,9 +1910,9 @@ function DeliveryView({ ctx }: { ctx: Ctx }) {
   function setSegs(values:string[]) {
     params.delete("segment");values.forEach(id=>params.append("segment",id));go(hash.split("?")[0]+"?"+params);
   }
-  const problems = useQuery<any>("delivery_problems", { episode_id: ctx.eid, scope, segments: scope === "trial" ? segs : null }, [scope, segs.join()]);
+  const choosingSegments = scope === "trial" && segs.length === 0;
+  const problems = useQuery<any>(choosingSegments ? null : "delivery_problems", { episode_id: ctx.eid, scope, segments: scope === "trial" ? segs : null }, [scope, segs.join()]);
   const [deliveries, setDeliveries] = useState<any[]>([]);
-  const [verify, setVerify] = useState<Record<string, any>>({});
   const act = useAction();
   const plan = artifactFor(ctx.view, "plan");
   const adoptedPlan = plan?.versions.find((v: any) => v.id === plan.adopted_version_id)?.content;
@@ -1534,34 +1936,24 @@ function DeliveryView({ ctx }: { ctx: Ctx }) {
     <div>
       <div className="stagehead"><div><h1>交付核验</h1><div className="muted small">核验实际读取文件、指纹和内容；只有核验通过且文件完整落盘才登记交付号</div></div>
         <Pills value={scope} onChange={setScope} options={[["full", "整集完整交付"], ["trial", "限定试验范围"]]} /></div>
-      {scope === "trial" && <div className="row">{lay.segments.map((s: any) => <button key={s.id} className={`pill ${segs.includes(s.id) ? "on" : ""}`} onClick={() => setSegs(segs.includes(s.id) ? segs.filter((x) => x !== s.id) : [...segs, s.id])}>{s.id}</button>)}<span className="muted small">试验范围从零计时，不更新整集完成状态</span></div>}
+      {scope === "trial" && <div className="row">{lay.segments.map((s: any) => <button key={s.id} className={`pill ${segs.includes(s.id) ? "on" : ""}`} onClick={() => setSegs(segs.includes(s.id) ? segs.filter((x) => x !== s.id) : [...segs, s.id])}>{s.id}</button>)}<span className="muted small">{choosingSegments ? "请选择要核验的拍摄段。" : "试验范围从零计时，不更新整集完成状态"}</span></div>}
       {missingFrames.length > 0 && <details className="card">
-        <summary>起落幅参考待补 · {missingFrames.length} 镜</summary>
+        <summary>未单独绑定起落幅 · {missingFrames.length} 个动作窗口（可选）</summary>
         <p className="small">{missingFrames.join("；")}</p>
-        <a href={`#/e/${ctx.eid}/plan?v=${plan.adopted_version_id}`}>查看采用的制作方案</a>
+        <a href={`#/e/${ctx.eid}/plan?v=${plan.adopted_version_id}`}>查看采用的分镜</a>
       </details>}
       {list.length > 0 ? (
         <div className="card red" style={{ marginTop: 14 }}>
           <b className="error">结构阻断 · {list.length} 项</b><span className="muted small"> · 不能放行，逐条定位到出错的阶段</span>
           {Object.entries(byStage).map(([stg, ps]) => (
-            <div key={stg} style={{ marginTop: 10 }}><div className="row"><Tag tone="red">{stg}</Tag><a className="btn ghost" href={`#/e/${ctx.eid}/${stg === "recheck" || stg === "review" ? "review" : stg === "assets" ? "assets" : stg === "space" ? "space" : stg}`}>去修复</a></div>
+            <div key={stg} style={{ marginTop: 10 }}><div className="row"><Tag tone="red">{stg}</Tag><a className="btn ghost" href={`#/e/${ctx.eid}/${stg === "recheck" || stg === "review" ? "prompts" : stg === "assets" ? "assets" : stg === "space" ? "space" : stg}`}>去修复</a></div>
               {ps.slice(0, 8).map((p: any, i: number) => <div key={i} className="small" style={{ margin: "3px 0" }}>{p.segment ?? ""} {p.file ? `· ${p.file}` : ""} · {p.problem}</div>)}</div>))}
         </div>) : problems.data && <div className="card" style={{ marginTop: 14, background: "#13261f" }}><Tag tone="green">核验通过</Tag> <span className="small">可以写入交付目录（先写临时目录，校验后改名）。</span></div>}
       <button className="btn primary" style={{ marginTop: 12 }} disabled={!problems.data || !!problems.error || list.length > 0 || act.busy} onClick={() => act.run(async () => { await cmd("deliver", { episode_id: ctx.eid, scope, segments: scope === "trial" ? segs : null }); await load(); ctx.reload(); problems.reload(); })}>生成图文交付</button>
       <h2 style={{ marginTop: 24 }}>已登记的交付</h2>
       {deliveries.length === 0 && <div className="muted">尚无。</div>}
       {deliveries.map((d) => (
-        <div key={d.id} className="card line" style={{ marginBottom: 10 }}>
-          <div className="spread"><span><Tag tone={d.scope === "full" ? "green" : "blue"}>{d.scope === "full" ? "整集" : "试验"}</Tag> 交付号 <span className="mono">{d.id.slice(0, 8)}</span> · {d.segments.join("、")} · {Object.keys(d.files).length} 个文件</span>
-            <div className="row"><a className="btn" target="_blank" href={deliveryFile(d.id, "00_图文对照.html")}>打开图文页</a>
-              <button className="btn" onClick={() => navigator.clipboard.writeText(d.html)}>复制 HTML 绝对路径</button>
-              <button className="btn" onClick={() => act.run(async () => setVerify({ ...verify, [d.id]: await q("verify_delivery", { delivery_id: d.id }) }))}>离线验包</button>
-              {d.scope === "full" && <a className="btn primary" href={`#/p/${ctx.view.episode.project_id}/closure-start/${d.id}`}>整理本集设定</a>}</div></div>
-          <div className="muted tiny mono" style={{ marginTop: 6 }}>{d.html}</div>
-          <p className="small">图文包记录计划时长。实际生成视频后，在制作和剪辑工具中核对片长、画幅、动作与声音。</p>
-          <a className="btn" href={`#/e/${ctx.eid}/package?delivery=${encodeURIComponent(d.id)}`}>将这次交付打包给 H3</a>
-          {verify[d.id] && <div className={verify[d.id].ok ? "ok small" : "error small"}>{verify[d.id].ok ? "验包通过：文件与指纹一致" : verify[d.id].errors.map((e: any) => `${e.file} ${e.problem}`).join("；")}</div>}
-        </div>))}
+        <DeliveryRecord key={d.id} d={d} eid={ctx.eid} projectId={ctx.view.episode.project_id}/>))}
       <ErrorLine error={act.error} />
     </div>
   );
@@ -1620,7 +2012,7 @@ function PackageView({ ctx,panel }: { ctx: Ctx; panel?:HTMLElement|null }) {
     return {delivery_id:did,segments:segs,overrides:packageOverrides(batch),segment_overrides:Object.fromEntries(entries)};
   }
   const [copied,setCopied]=useState("");
-  const controls=d && <div className="package-controls">
+  const controls=d && d.state!=="needs_recheck" && <div className="package-controls">
     <h2>交给 H3 打包工具</h2>
     <p>{d.scope==="full"?"整集交付":"试验交付"} · 本次选择 {segs.length} / {d.segments.length} 段</p>
         <div className="row" style={{ marginTop: 12 }}>{d.segments.map((s: string) => <button key={s} className={`pill ${segs.includes(s) ? "on" : ""}`} onClick={() => {if (target===s)setTarget("");setSegs(segs.includes(s) ? segs.filter((x) => x !== s) : [...segs, s]);setOut(null);}}>{s}</button>)}</div>
@@ -1649,10 +2041,11 @@ function PackageView({ ctx,panel }: { ctx: Ctx; panel?:HTMLElement|null }) {
     <div>
       <div className="stagehead"><div><h1>H3 出包</h1><div className="muted small">交给本地打包器离线导出 ZIP；更换清单、素材或范围后重新验包</div></div></div>
       {!d ? <div className="muted">{requestedDelivery ? "未找到指定交付，请从本集交付记录重新选择。" : "先完成图文交付。"}</div> : <>
-        <div className="row"><select value={did} onChange={e=>go(`#/e/${ctx.eid}/package?delivery=${encodeURIComponent(e.target.value)}`)}>{deliveries.map((x) => <option key={x.id} value={x.id}>{x.scope === "full" ? "整集" : "试验"} {x.id.slice(0, 8)}</option>)}</select>
+        <div className="row"><select aria-label="选择交付版本" value={did} onChange={e=>go(`#/e/${ctx.eid}/package?delivery=${encodeURIComponent(e.target.value)}`)}>{deliveries.map((x) => <option key={x.id} value={x.id}>{x.scope === "full" ? "整集" : "试验"} {x.id.slice(0, 8)}</option>)}</select>
           <button className="btn" onClick={()=>act.run(()=>navigator.clipboard.writeText(d.html))}>复制图文页路径</button>
           <details className="small"><summary>图文页位置</summary><code>{d.html}</code></details></div>
-        <p>{d.scope==="full"?"整集图文已交付":"试验图文已交付"} · {d.segments.length} 段</p>
+        <p>{d.state==="needs_recheck"?"待复核":d.scope==="full"?"整集图文已交付":"试验图文已交付"} · {d.segments.length} 段</p>
+        {!!d.packages?.length && <section aria-label="已生成的 H3 包"><h3>已生成的 H3 包</h3>{d.packages.map((p:any)=><p key={p.id}><a download href={"/api/package-download/"+encodeURIComponent(p.id)}>下载 {p.filename}</a></p>)}</section>}
         {panel && wide ? createPortal(controls,panel):controls}
         <div className="row package-links">{["00_图文对照.html","01_发布包.md","03_精剪交接.md","episode.json"].filter(file=>d.files[file]).map(file=>
           <a key={file} href={deliveryFile(did,encodeURIComponent(file))} target="_blank" rel="noreferrer">{file}</a>)}</div>
@@ -1671,8 +2064,11 @@ function PackageView({ ctx,panel }: { ctx: Ctx; panel?:HTMLElement|null }) {
         </section>}
         <button className="btn primary" style={{ marginTop: 12 }} disabled={!segs.length || act.busy} onClick={() => act.run(async () => {
           const args = packageArgs();
-          setOut({...await cmd("package",{...args,expected_preview:result?.previewHash}),inputKey});
-        })}>验包并导出 ZIP</button>
+          const packed=await cmd("package",{...args,expected_preview:result?.previewHash});
+          setOut({...packed,inputKey});
+          const link=document.createElement("a");link.href="/api/package-download/"+encodeURIComponent(packed.packageId);link.download="";link.click();
+          const updated=await q("delivery_view",{delivery_id:did});setDeliveries(ds=>ds.map(x=>x.id===did?updated:x));
+        })}>下载 H3 包</button>
         {out?.inputKey===inputKey && <div className="card" style={{ marginTop: 12, background: "#13261f" }}><b className="ok">已导出</b> <span className="mono small">{out.path}</span>
           <div className="small" style={{ marginTop: 6 }}>project.json schemaVersion {out.project.schemaVersion} · {out.project.scope} · {out.project.segments.length} 段 · {out.project.assets.length} 项素材</div>
           <div className="small">角色素材：{out.project.assets.some((a: any) => a.fixedRole) ? "含固定角色 fixedRole" : "均为普通资产（未伪装成 fixedRole）"}</div>

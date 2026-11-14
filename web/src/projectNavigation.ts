@@ -15,8 +15,7 @@ export function useProjectList() {
 }
 
 
-export function resourceOwner(projects:{id:string}[], current?:string) {
+export function resourceOwner(projects:{id:string}[], current?:string, last = localStorage.getItem("lastProject")) {
   if (current) return current;
-  const last = localStorage.getItem("lastProject");
   return projects.find(p=>p.id===last)?.id ?? (projects.length===1 ? projects[0].id : undefined);
 }

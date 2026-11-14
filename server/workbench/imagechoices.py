@@ -16,7 +16,7 @@ def validate_request(value, plan):
     fitness = value.get("fitness", "not_tested")
     limitations = value.get("limitations", "")
     if not isinstance(reason, str) or not reason.strip():
-        raise Rejected("请填写必用图的选择理由")
+        reason = "用户指定必用"
     if fitness not in ("not_tested", "pass", "limited", "blocked") or not isinstance(limitations, str):
         raise Rejected("用途适配或限制说明无效")
     if fitness in ("limited", "blocked") and not limitations.strip():

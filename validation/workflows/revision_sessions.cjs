@@ -33,9 +33,10 @@ async function main() {
       const b=await command("save_manual",{artifact_id:prior.id,base_version_id:a.id,content:edit});
       await page.goto(base+"/#/e/"+eid+"/"+stage);
       await btn("修改本阶段").waitFor();
+      if(stage==="story")await page.goto(base+"/#/e/"+eid+"/story?v="+a.id);
       assert.ok(await page.locator(".center time").getAttribute("datetime"));
       await btn("比较版本").click();
-      const modal=page.locator(".modal:visible");
+      const modal=page.locator(".modal:visible").last();
       await modal.getByLabel("原版本").selectOption(a.id);
       await modal.getByLabel("比较版本").selectOption(b.versionId);
       await modal.locator("ins.d").first().waitFor();
@@ -50,12 +51,12 @@ async function main() {
       assert.equal((await art(stage)).editState,"protected");
     }
     await page.goto(base+"/#/e/"+eid+"/story");
-    const composer=page.locator(".assistant textarea");
+    const composer=page.locator(".assistant .composer textarea");
     const stateBefore=await art("story");
     await composer.fill("先聊聊结尾，为何这样写？");await composer.press("Control+Enter");
-    await page.getByText("本次只讨论当前稿件。",{exact:true}).waitFor();
+    await page.getByRole('paragraph').filter({hasText:/^本次只讨论当前稿件。$/}).waitFor();
     assert.equal((await art("story")).versions.length,stateBefore.versions.length);
-    await composer.fill("修改第03步");await composer.press("Control+Enter");
+    await composer.fill("修改第09步");await composer.press("Control+Enter");
     await page.waitForURL("**/plan");await btn("结束修改").click();await btn("修改本阶段").waitFor();
     await page.goto(base+"/#/e/"+eid+"/story");
     const original=(await art("story")).adopted_version_id;
@@ -68,10 +69,12 @@ async function main() {
         else await btn("修改本阶段").click();
         await btn("结束修改").waitFor();
       }
+      await page.goto(base+"/#/e/"+eid+"/story?v="+original);
       await btn("✎ 编辑").click();
       const field=page.locator(".center textarea").first();await field.fill((await field.inputValue())+"\n钟声响起。"+mode);
       await btn("保存为手稿").click();
       await page.waitForURL(/story\?v=.+/);
+      await btn("关闭预览").click();
       if(mode!=="expert"){await btn("结束修改").click();await btn("修改本阶段").waitFor();}
       await page.goto(base+"/#/e/"+eid+"/script");
       await page.goto(base+"/#/e/"+eid+"/story");
@@ -81,8 +84,8 @@ async function main() {
     }
     const before=await art("story"), candidate=before.versions.at(-1);
     await page.goto(base+"/#/e/"+eid+"/story?v="+candidate.id);
-    await btn("发起独立审查").click();
-    await btn("只采用").click();await page.getByText("R"+String(candidate.display_no).padStart(2,"0")+" 已采用",{exact:true}).first().waitFor();
+    await page.locator(".modal:visible").getByRole("button",{name:"发起独立审查",exact:true}).click();
+    await page.locator(".modal:visible").getByRole("button",{name:"只采用",exact:true}).click();await page.getByText("R"+String(candidate.display_no).padStart(2,"0")+" 已采用",{exact:true}).first().waitFor();
     assert.equal((await art("story")).adopted_version_id,candidate.id);
     await page.goto(base+"/#/e/"+eid+"/story?v="+original);
     await btn("恢复此完整稿为新版本").click();

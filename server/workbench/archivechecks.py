@@ -490,9 +490,9 @@ def assess(archive, data):
         ("cast", data.get("schema_version") == 2 or "cast" in data or "character_contract_version" in data, character_contract, "角色契约与实际绑定"),
         ("depictions", data.get("schema_version") == 2 or "depicts_version" in data, depictions.check_depictions, "参考图主体、开场时刻与场景锁定图"),
         ("reviews", data.get("schema_version") == 2 or "review_evidence" in data, review_evidence, "审核索引、问题处置及依据"),
-        ("promptReview", data.get("schema_version") == 2 or "prompt_review" in data, lambda files, manifest:promptreceipt.verify(
+        ("promptReview", (data.get("schema_version") == 2 and data.get("workbench",{}).get("flow") != "storyboard-translation-v1") or "prompt_review" in data, lambda files, manifest:promptreceipt.verify(
             manifest, files.read, files.identity_bytes), "提示词独审原件与输入顺序"),
-        ("shotReferences", data.get("schema_version") == 2 or shotrefs.enabled(data), lambda files, manifest:shotrefs.check_shot_references(files.text,manifest), "逐镜角色、道具与实际看图记录"),
+        ("shotReferences", data.get("schema_version") == 2 or shotrefs.enabled(data), lambda files, manifest:shotrefs.check_binding_structure(files.text,manifest), "继承的逐镜角色与素材绑定结构"),
         ("rhythm", data.get("schema_version") == 2 or "shot_rhythm" in data, lambda files, manifest:rhythm.packaged_report(manifest,files.text), "联合表与分段节奏"),
     ]:
         if declared:

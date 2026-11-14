@@ -31,7 +31,7 @@ def search(root, query, category, kind, recommended, cursor, limit):
         if not isinstance(cursor, dict) or cursor.get("stamp") != stamp or type(cursor.get("after")) is not int:
             raise Conflict("检索条件或目录索引已改变，请重新搜索")
         last = cursor["after"]
-    where, args = ["category NOT LIKE '90-%'"], []
+    where, args = ["category NOT LIKE '90-%'", "path NOT LIKE '%/来源清单.md' AND path != '来源清单.md'"], []
     for field, value in (("category", category), ("kind", kind)):
         if value:
             where.append(field + "=?")

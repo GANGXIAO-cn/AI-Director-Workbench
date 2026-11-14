@@ -27,7 +27,7 @@ async function main() {
     const tabs = page.getByRole("navigation",{name:"已打开的项目"});
     const card = id => page.locator('.projcard[href="#/p/'+id+'"]:visible');
     const action = name => page.getByRole("button",{name,exact:true});
-    const input = page.getByPlaceholder("输入你的想法，继续完善这一集");
+    const input = page.locator(".assistant:visible .composer textarea");
     await page.goto(base+"/"+stage);
     await input.fill("未发送的剧本修改");
     await tabs.getByText("＋ 打开项目").click();

@@ -88,7 +88,12 @@ def test_each_writing_stage_uses_its_own_selection_and_retry_keeps_bytes(tmp_pat
         method = wb.import_custom_method(pid,"SKILL.md",data,stage)
         vid = method["versionId"]
         wb.set_custom_methods(pid,stage,[vid],[],episode_id=eid)
+        skipped = wb.episode_view(eid)["skippedStages"].get(stage)
+        if skipped:
+            wb.set_optional_stage(eid, stage, False, expected_reason=skipped)
         task = wb.create_task(eid,stage,"测试各阶段实际使用的自定义技能")
+        if skipped:
+            wb.set_optional_stage(eid, stage, True, reason=skipped)
         env.codex.script = [quota_exhausted]
         env.drain(task["runId"])
         snap = wb.run_methods(task["runId"])

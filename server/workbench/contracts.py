@@ -28,7 +28,12 @@ def branch_schema(kind: str) -> dict:
             return [inline(v) for v in node]
         return node
 
-    return inline(copy.deepcopy(defs[BRANCH[kind]]))
+    schema = inline(copy.deepcopy(defs[BRANCH[kind]]))
+    if kind == "review":
+        # Strict structured output requires every declared key on newly generated
+        # results. The ingestion contract still accepts old issues without this key.
+        schema["properties"]["issues"]["items"]["required"].append("decisionId")
+    return schema
 
 
 def wrapped_schema() -> dict:
@@ -37,12 +42,16 @@ def wrapped_schema() -> dict:
             "required": ["result"], "additionalProperties": False}
 
 
-def stage_dialogue_schema():
+def stage_dialogue_schema(track_removals=False, read_only=False):
     schema = branch_schema("draft")
     fields = schema["properties"]
-    fields["kind"] = {"enum":["discussion","draft"]}
+    fields["kind"] = {"enum":["discussion"] if read_only else ["discussion","draft"]}
     fields["changes"]["minItems"] = 0
     fields["reply"] = {"type":"string"}
     fields["directorRequest"] = {"type":"string"}
     schema["required"].extend(["reply","directorRequest"])
+    if track_removals:
+        fields["removedIds"] = {"type":"array","items":{"type":"object","properties":{
+            "field":{"type":"string"},"id":{"type":"string"}},"required":["field","id"],"additionalProperties":False}}
+        schema["required"].append("removedIds")
     return schema

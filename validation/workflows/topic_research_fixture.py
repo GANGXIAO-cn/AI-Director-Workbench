@@ -19,8 +19,8 @@ def prepare(env):
         for text in ["把遗失钥匙送回柜台","旧集以归还钥匙收尾","交班单有两联","找一个能拍出夜班交接动作的新故事"]:
             assert text in req.prompt, text
         assert re.search(r"^===== method · ",req.prompt,re.M)
-        source=re.search(r"^===== research_source · (知识库 · 交接规定.*?) =====$",req.prompt,re.M).group(1)
+        ref=re.search(r"^===== research_source · (R\d+) · 知识库 · 交接规定.*? =====$",req.prompt,re.M).group(1)
         card=dict(title="交班的编号",premise="站务员按交班单的编号寻找第二联。",motivation="在发车前交班",
-                  mechanism="两联编号相同",difference="旧集归还钥匙，这次补签第二联。",source=source,quote="交班单有两联")
+                  mechanism="两联编号相同",difference="旧集归还钥匙，这次补签第二联。",reference_id=ref)
         return dict(candidates=[dict(card,title="提前交班",premise="接班人早到了一站。"),card])
     env.codex.script.append(research)

@@ -45,12 +45,18 @@ def draft(wb, eid):
     for seg in lay["segments"]:
         sid=seg["id"]; grid=seg["strategy"]=="grid"
         refs={}; identities=[]; lines=[]; role_ids=set(); bound_text={}
-        def add(vid, use, shot_ids=()):
+        def add(vid, use, shot_ids=(), usage=None, subjects=()):
             if vid not in assets: raise Rejected(f"{sid} 的{use}不是本集可用图片")
             if vid in refs:
                 if use not in refs[vid]["role"].split("、"): refs[vid]["role"] += "、"+use
             else:
                 refs[vid]=dict(assetVersionId=vid,label=f"图片{len(refs)+1}",kind="image",role=use,grid=bool(assets[vid]["grid"]))
+            if usage:
+                uses=refs[vid].setdefault('usage',[])
+                if usage not in uses:uses.append(usage)
+            if subjects:
+                ids=refs[vid].setdefault('subjectIds',[])
+                ids.extend(k for k in subjects if k not in ids)
             if shot_ids:
                 target = refs[vid].setdefault("shots", [])
                 target.extend(s for s in shot_ids if s not in target)
@@ -58,9 +64,9 @@ def draft(wb, eid):
             shot=byid[s]; t=lay["shots"][s]
             if not grid:
                 for fld,use in [("startAssetId","起幅"),("endAssetId","落幅")]:
-                    if shot.get(fld): add(shot[fld],s+use,[s])
+                    if shot.get(fld): add(shot[fld],s+use,[s],"start_frame" if fld=="startAssetId" else "end_frame")
             marker = "起镜" if not lines else ("同镜延续" if shot.get("continuation") == "same" else "切镜")
-            action = "，".join(str(shot[k]).strip().rstrip("。，") for k in ("camera","action","performance","gaze","reaction","sound") if shot.get(k))
+            action = "，".join(readable.strip_matching_window_prefix(str(shot[k]),t["seg_start_ms"],t["seg_end_ms"]).strip().rstrip("。，") for k in ("camera","action","performance","gaze","reaction","sound") if shot.get(k))
             for speaker in voices.get(s, []):
                 action += f"。<scenetrans> 沿用上一镜{speaker}的声音，继续说完原句"
             for cue in spoken.get(s, []):
@@ -68,10 +74,11 @@ def draft(wb, eid):
                 across = "，声音越过切点连续 <scenetrans>" if any(byid[k].get("continuation") != "same" for k in cue["continuingShots"]) else ""
                 action += (f"。段内 {cue['start_ms']/1000:g} 秒起，{cue['speaker']}{direction}说「{cue['text']}」"
                            f"，用 {cue['speech_ms']/1000:g} 秒说完，句后停 {cue['pause_ms']/1000:g} 秒{across}")
-            lines.append(f"{fmt(t['seg_start_ms'])}-{fmt(t['seg_end_ms'])}\n{marker}，{action}。")
+            window = readable.compact_window_headers(f"{fmt(t['seg_start_ms'])}-{fmt(t['seg_end_ms'])}")
+            lines.append(f"{window}\n{marker}，{action}。")
         for role,binding in cast.get(sid,{}).items():
             if binding["status"]!="ok": continue
-            if not grid and binding.get("assetVersionId"): add(binding["assetVersionId"],role+"身份",board_scope.get((sid,role), ()))
+            if not grid and binding.get("assetVersionId"): add(binding["assetVersionId"],role+"身份",board_scope.get((sid,role), ()),"identity",[role])
             baseline = matrix["roster"].get(role, {})
             description = baseline.get("appearance")
             std=next((v for k,v in roles.items() if role.casefold() in (k.casefold(),v["name"].casefold())),None)
@@ -81,7 +88,7 @@ def draft(wb, eid):
                 if grid and binding.get("assetVersionId") and assets[binding["assetVersionId"]]["grid"]:
                     add(binding["assetVersionId"],"本段九宫格",seg["shots"])
                 elif not grid and std and baseline.get("assetVersionId"):
-                    add(baseline["assetVersionId"],role+"固定身份原图",board_scope.get((sid,role), ()))
+                    add(baseline["assetVersionId"],role+"固定身份原图",board_scope.get((sid,role), ()),"identity",[role])
             if std and std.get("video_zh"):
                 if grid:
                     identities.append(std["video_zh"])
@@ -106,6 +113,10 @@ def draft(wb, eid):
         if not refs:
             candidates=[a for a in assets.values() if bool(a["grid"])==grid and a["category"] != "product_reference"
                         and a["origin"] != "kickoff_reference"]
+            if shotrefs.plan_enabled(plan):
+                identity_ids = {info["assetVersionId"] for info in matrix["roster"].values() if info.get("assetVersionId")}
+                present_ids = {binding.get("assetVersionId") for binding in cast.get(sid,{}).values() if binding["status"]=="ok"}
+                candidates = [a for a in candidates if a["id"] not in identity_ids or a["id"] in present_ids]
             if grid: candidates=[a for a in candidates if a["name"].split(" ")[0]==sid or a["name"].startswith(sid+"-")]
             if len(candidates)!=1: raise Rejected(f"{sid} 请先为本段镜头明确选图：在镜卡绑定起落幅，或为本段标记必用图。")
             add(candidates[0]["id"],"本段九宫格" if grid else "场面参考",seg["shots"] if grid else ())
@@ -124,6 +135,7 @@ def draft(wb, eid):
             digest = assets[vid]["sha256"]
             used.setdefault(digest, set()).add(sid)
             limits = "；".join(dict.fromkeys(limits_by_hash.get(digest, [])))
+            ref['limitations']=list(dict.fromkeys(limits_by_hash.get(digest,[])))
             if limits:
                 definition += "用途限制：" + limits
             definitions.append(definition)
@@ -138,7 +150,20 @@ def draft(wb, eid):
         else:
             parts = dict(zip(readable.FLEX, [join(definitions,*identities),visual or "按采用的场景、角色与镜头方案。",
                          opening,join(*lines),join(audio,fixed("frame_text"))]))
-        out[sid]=dict(refs=list(refs.values()), txt=readable.render(parts), prompt_format="readable_v3",
+        fixed_sections={title:[] for title in parts}
+        def freeze(title,*values):fixed_sections[title].extend(v for v in values if v)
+        freeze('【分镜参考】' if grid else '【参考素材】',fixed('reference_use'),fixed('grid_reference') if grid else '')
+        freeze('【主角】' if grid else '【参考素材】',*identities)
+        if not grid:
+            freeze('【参考素材】',*(refs[v]['label']+'：'+text for v,text in bound_text.items()))
+        freeze('【环境】' if grid else '【基本设定】',fixed('visual_style'),fixed('motion'))
+        freeze('声音与音乐：' if grid else '【声音与文字】',fixed('cats_silent') if role_ids & {'milo','leo'} else '')
+        freeze('画面文字：' if grid else '【声音与文字】',fixed('frame_text'))
+        # Validate the program-owned timeline before sending it as a model example.
+        readable.flat_windows(join(*lines),seg['duration_ms'],sid)
+        from .materialcontext import binding_context
+        inherited_uses=[binding_context(ref) for ref in refs.values()]
+        out[sid]=dict(materialUses=inherited_uses, refs=list(refs.values()), txt=readable.render(parts), prompt_format="readable_v3", fixedSections=fixed_sections,
                       blocks=parts, sound=dict(bgm=False,silent=False,ambience=[],
                                               dialogue=[cue["text"] for shot in seg["shots"] for cue in spoken.get(shot, [])]))
     _, missing = imagechoices.check_scope(requirements, plan, "full", out, used)

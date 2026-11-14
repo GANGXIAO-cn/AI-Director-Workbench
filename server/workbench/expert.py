@@ -6,8 +6,9 @@ from .db import connect, dumps, new_id, transaction
 from .errors import Conflict, Rejected, loads, row
 from .storage import canonical, sha256_bytes
 
-STAGES = ("story", "script", "plan", "prompts", "publish", "delivery")
-LABELS = dict(zip(STAGES, ("故事稿", "剧本", "制作方案", "提示词", "发布包", "整集图文交付")))
+from .workflow import ORDER, LABELS as FILM_LABELS
+STAGES = (*ORDER, "delivery", "publish")
+LABELS = dict(FILM_LABELS, delivery="整集图文交付", publish="发布文案")
 MANDATORY = ("paid_batch", "rounds_exhausted", "structural_block", "model_conflict", "unknown_request",
              "settings_change", "required_violation", "isolation_unverified", "waiting_quota")
 OPTIONAL = ("confirm_story", "confirm_plan", "confirm_delivery", "confirm_point")
@@ -42,9 +43,10 @@ class ExpertMixin:
             raise Rejected("请选择不重复的具体集")
         if stop_stage not in STAGES or set(stops) - set(MANDATORY + OPTIONAL):
             raise Rejected("授权终点或确认点无效")
-        for amount in (image_cap, budget_cents):
+        budget_cents = 0
+        for amount in (image_cap,):
             if type(amount) is not int or amount < 0:
-                raise Rejected("图像预算和张数须为非负整数")
+                raise Rejected("图像张数须为非负整数")
         if not isinstance(division, dict):
             raise Rejected("执行分工无效")
         for role, sel in division.items():
@@ -137,24 +139,17 @@ class ExpertMixin:
         return self.expert_view(auth_id)
 
     def _reserve_expert_budget(self, db, batch, budget):
-        # reserve the full batch allowance in the same transaction as the user's batch confirmation
+        # Track approved image counts within the expert scope.
         auth = db.execute("SELECT a.id,a.image_cap,s.budget_cents,c.currency FROM expert_episode_owner o "
                           "JOIN expert_auth a ON a.id=o.auth_id JOIN expert_scope s ON s.auth_id=a.id "
                           "LEFT JOIN expert_budget_currency c ON c.auth_id=a.id WHERE o.episode_id=? AND a.state IN ('running','stopped')", (batch["episode_id"],)).fetchone()
         if not auth:
             return
-        if auth["currency"] != json.loads(batch["spec"]).get("currency"):
-            raise Rejected("专家预算与本批币种不一致，请重新核对每集预算并授权")
-        used, count = db.execute("SELECT coalesce(sum(b.budget_cents),0),coalesce(sum(b.count),0) "
-                                 "FROM image_batch b JOIN expert_batch x ON x.batch_id=b.id WHERE x.auth_id=? "
-                                 "AND b.episode_id=? AND b.state!='cancelled'", (auth["id"], batch["episode_id"])).fetchone()
-        if batch["estimate_cents"] is None and not budget:
-            raise Rejected("费用未知的图像批次须填写正数预算")
-        if type(budget) is not int or budget < 0 or budget + used > auth["budget_cents"]:
-            raise Rejected("本批预算超出本集专家授权的剩余金额")
+        count = db.execute("SELECT coalesce(sum(b.count),0) FROM image_batch b JOIN expert_batch x ON x.batch_id=b.id "
+                           "WHERE x.auth_id=? AND b.episode_id=? AND b.state!='cancelled'", (auth["id"],batch["episode_id"])).fetchone()[0]
         if auth["image_cap"] and count + batch["count"] > auth["image_cap"]:
             raise Rejected("本批张数超出专家授权")
-        db.execute("INSERT INTO expert_batch VALUES(?,?)", (batch["id"], auth["id"]))
+        db.execute("INSERT INTO expert_batch VALUES(?,?)", (batch["id"],auth["id"]))
 
     def _expert_guard(self, db, auth, eid):
         scope = row(db, "SELECT pause_requested FROM expert_scope WHERE auth_id=?", auth["id"])
@@ -243,6 +238,13 @@ class ExpertMixin:
             self._expert_guard(db, auth, eid)
 
     def _expert_stage(self, auth, eid, stage):
+        with connect(self.db_path) as db:
+            skip = db.execute("SELECT reason FROM optional_stage_choice WHERE episode_id=? AND stage=?", (eid,stage)).fetchone()
+            locked = self._kickoff(db,eid).get("sourceIntent") == "locked_screenplay"
+        if skip and skip[0]:
+            return dict(skipped=True, reason=skip[0])
+        if locked and stage in ("story","characters","world","treatment"):
+            return dict(source="locked_screenplay", separatelyDeveloped=False)
         if stage == "delivery":
             return self._expert_deliver(auth, eid)
         if stage == "prompts":
@@ -296,13 +298,9 @@ class ExpertMixin:
                                                  **auth["division"].get("review", {}))
                         self._expert_execute(auth, eid, stage, job["runId"])
                         continue
-            if stage in ("story", "script") and not adopted:
+            if stage in ("story", "script", "plan") and not adopted:
                 if self._expert_text_review(auth, eid, stage, version, task):
                     continue
-            if stage == "prompts":
-                self._expert_prompt_reviews(auth, eid, vid)
-                if not all(entry["ok"] for entry in self.prompt_review_status(vid).values()):
-                    raise Stop("review_decision", "审核输入已变化，请在两遍独审页核对", page="review", versionId=vid)
             if stage == "publish":
                 self.compose_publish(eid, vid)
             if not adopted:
@@ -320,34 +318,28 @@ class ExpertMixin:
             return True
         issues = reviews[-1]["issues"]
         hard = [i for i in issues if i["blocking"]]
-        if hard:
+        if stage=='plan' and not hard:
+            for issue in issues:
+                if not issue['waiver_reason']:
+                    self.waive(issue['id'],vid,'08分镜：不影响结果的普通意见按本版放行',f"{auth['id']}:plan-waive:{issue['id']}")
+            return False
+        if hard and stage!='plan':
             raise Stop("required_violation" if hard[0]["setting_id"] else "structural_block", hard[0]["reason"], versionId=vid)
         if len({r["reviewer"] for r in reviews}) > 1 and len({r["original_decision"] for r in reviews}) > 1:
             raise Stop("model_conflict", "同一版本的审核者结论不一致，请比较依据并决定采用版", versionId=vid)
-        unresolved = [i["reason"] for i in issues if not i["waiver_reason"]]
+        unresolved = [i["reason"] for i in issues if not i["waiver_reason"] and (stage!='plan' or i['blocking'])]
         if not unresolved:
             return False
         if not task or task["used_rounds"] >= task["max_rounds"]:
             raise Stop("rounds_exhausted", "自动修订轮数已用尽，请处理原任务", usedRounds=task["used_rounds"] if task else 0)
         with transaction(self.db_path) as db:
             self._expert_guard(db, auth, eid)
-            rid = self._queue_run(db, task["id"], "revise", vid, "按独审修订：" + "；".join(unresolved), counted=True,
+            instruction=('仅局部修正以下关键问题，保留其他段和已接受素材用途，不重写上游：' if stage=='plan' else '按独审修订：')+'；'.join(unresolved)
+            rid = self._queue_run(db, task["id"], "revise", vid, instruction, counted=True,
                                   **auth["division"].get("create", {}))
             db.execute("UPDATE task SET used_rounds=used_rounds+1 WHERE id=?", (task["id"],))
         self._expert_execute(auth, eid, stage, rid)
         return True
-
-    def _expert_prompt_reviews(self, auth, eid, vid):
-        for seg in self.prompt_review_status(vid):
-            for key, name in (("coldRead", "cold_read"), ("comparison", "comparison")):
-                result = self.prompt_review_status(vid)[seg][key]
-                if result["state"] == "needed":
-                    job = self.start_prompt_review(vid, seg, name, new_id(), **auth["division"].get("review", {}))
-                    self._expert_execute(auth, eid, "prompts", job["runId"])
-                    result = self.prompt_review_status(vid)[seg][key]
-                if result["state"] not in ("passed", "waived"):
-                    raise Stop("structural_block" if result["state"] == "blocked" else "review_decision",
-                               f"{seg} 的独审意见待处理", page="review", versionId=vid, segment=seg)
 
     def _expert_deliver(self, auth, eid):
         problems, ctx = self.delivery_problems(eid, "full")

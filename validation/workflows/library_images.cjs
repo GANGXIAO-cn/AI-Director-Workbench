@@ -41,10 +41,11 @@ async function main(){
     for(const r of old) await page.getByLabel("附上 "+r.name+" v1").check();
     assert.ok(await page.getByLabel("附上 落日.png v1").isDisabled());
     await page.getByRole("link",{name:"带 6 张图去对话"}).click();
+    await page.getByText("更多工具",{exact:true}).click();
     await page.getByText(/本次附图 · 落日.png v2/).waitFor();
     assert.equal((await get("free_chat",{project_id:pid})).threads.length,0);
     await page.getByLabel("对话内容").fill("请对照这六张图的色温。");await button("发送").click();
-    await page.getByText("codex · 已回复",{exact:true}).waitFor();
+    await page.locator(".model-reply").filter({hasText:/Codex/}).getByText("已回复",{exact:true}).waitFor();
     const thread_id=new URL(page.url()).hash.split("/").at(-1);
     const chat=(await get("free_chat",{project_id:pid,thread_id})).turns[0];
     assert.deepEqual(chat.sources.filter(s=>s.role==="image").map(s=>s.sha256),[v2,...old].map(v=>v.sha256));

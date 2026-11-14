@@ -1,16 +1,19 @@
 """Two-pass prompt review per segment (cold read → comparison) with partial re-review."""
 import json
 
-from . import prompts, timeline, acting, imagechoices, shotrefs, promptsignals
+from .decisions import decision_entries
+from . import supplements, prompts, timeline, acting, imagechoices, shotrefs, promptsignals
 from .db import connect, dumps, new_id, transaction
 from .errors import Rejected, NotFound, loads, row
 from .storage import canonical, sha256_bytes
 from .stages import render
 from .images import image_attachment
 from .specs import creative_spec
+from .imageassess import ImageAssessmentMixin
+from .progress_expert import provisional_image_issues
 
 
-class PromptReviewMixin:
+class PromptReviewMixin(ImageAssessmentMixin):
     def _segment_material(self, db, version_id, segment):
         v = loads(row(db, "SELECT * FROM version WHERE id=?", version_id), "content")
         art = row(db, "SELECT * FROM artifact WHERE id=?", v["artifact_id"])
@@ -23,14 +26,18 @@ class PromptReviewMixin:
         for ref in entry.get("refs", []):
             av = self.asset_version(ref["assetVersionId"], db)
             refs.append(dict(ref, sha256=av["sha256"], name=av["name"]))
+        accepted=[dict(issue) for ref in refs for issue in db.execute("SELECT * FROM accepted_image_issue WHERE asset_version_id=?",(ref["assetVersionId"],))]
+        provisional=[i for ref in refs for i in provisional_image_issues(db,art["episode_id"],ref["assetVersionId"])]
         bindings = [(r["label"], r.get("role") or "用途未写", r["sha256"]) for r in refs]
         ids = [r["assetVersionId"] for r in refs]
         txt = entry.get("txt", "")
         own = sha256_bytes(canonical(dict(txt=txt, refs=bindings, versions=ids)))
+        if accepted:own=sha256_bytes(canonical(dict(contentHash=own,acceptedImageIssues=accepted)))
         # Pre-versioned scopes can only be reused if every matching historical
         # review read this same ordered set of images. Mixed-media runs used to
         # send sound/video as PNG attachments and must be repeated.
-        if all(r["kind"] == "image" for r in refs):
+        if provisional:own=sha256_bytes(canonical(dict(contentHash=own,provisionalImageIssues=provisional)))
+        if not accepted and not provisional and all(r["kind"] == "image" for r in refs):
             old = sha256_bytes(canonical(dict(txt=txt, refs=bindings)))
             prior = db.execute("SELECT DISTINCT v.content FROM review r JOIN version v ON v.id=r.version_id "
                                "WHERE v.artifact_id=? AND r.scope=? AND r.scope_hash=? AND r.pass='cold_read'",
@@ -38,6 +45,23 @@ class PromptReviewMixin:
             if prior and all([r["assetVersionId"] for r in json.loads(v[0])["segments"][segment]["refs"]] == ids for v in prior):
                 own = old
         return v, art, entry, refs, own
+
+    def _script_scene_packets(self, db, episode, plan):
+        script = db.execute("SELECT v.id,v.display_no,v.content FROM artifact a JOIN version v ON v.id=a.adopted_version_id "
+                            "WHERE a.episode_id=? AND a.stage='script'", (episode,)).fetchone()
+        content = json.loads(script["content"]) if script else {}
+        scenes = {scene["id"]: scene for scene in content.get("scenes", [])}
+        segments = timeline.layout(plan)["segments"]
+        budgets = timeline.script_budget(content,plan,segments)["segments"]
+        return {segment["segment"]: dict(
+            scriptVersion=script["id"] if script else None, scriptRevision=script["display_no"] if script else None,
+            scenes=[dict(sceneId=g["scene"], original=scenes.get(g["scene"]), shots=g["shots"],
+                         unverifiedQuotes=g["unverifiedQuotes"]) for g in segment["scenes"]])
+            for segment in budgets}
+
+    def prompt_scene_sources(self, episode_id):
+        with connect(self.db_path) as db:
+            return self._script_scene_packets(db, episode_id, self._adopted_plan(db, episode_id) or {})
 
     def _review_context(self, db, art, version):
         episode = art["episode_id"]
@@ -53,6 +77,11 @@ class PromptReviewMixin:
             dict(role="project_settings", name="settings.txt", text=settings_text),
             dict(role="intent", name="intent.txt", text=kickoff["goal"] or "（未写）"),
         ]
+        shared.append(dict(role="requirements", name="开工原文.txt",
+                           text=prompts.render_kickoff(kickoff, self._source_text(db, kickoff))))
+        characters = (self._adopted_content(db, episode, "characters") or {}).get("characters", [])
+        designs = (self._adopted_content(db, episode, "asset_design") or {}).get("assets", [])
+        performances = (self._adopted_content(db, episode, "acting") or {}).get("scenes", [])
         shared += self._stage_reference_entries(episode, "prompts")
         spec = dict(role="episode_spec", name="spec.json", text=canonical(creative_spec(kickoff["spec"])).decode())
         sources = []
@@ -67,6 +96,7 @@ class PromptReviewMixin:
         matrix = self._cast_matrix(db, episode)
         cells = {r["segment"]: r["cells"] for r in matrix["rows"]}
         required = imagechoices.requirements(db, episode)
+        scene_packets = self._script_scene_packets(db, episode, plan)
         for i, seg in enumerate(segments):
             sid = seg["id"]
             shots = [shot for shot in plan.get("shots", []) if shot["segment"] == sid]
@@ -97,9 +127,31 @@ class PromptReviewMixin:
             plan_text = canonical(plan_data).decode()
             scoped = self._review_baselines(seg,version["content"]["segments"].get(sid,{}),
                                             cells.get(sid,{}),names,sources) + [spec] if dynamic else []
-            context[sid] = shared + scoped + [dict(role="plan_segment", name=f"{sid}-plan.json", text=plan_text)]
+            context[sid] = shared + scoped + [dict(role="script_scene_source", name=f"{sid}-剧本原文.json", text=canonical({"scenes": scene_packets[sid]["scenes"]}).decode()),
+                                               dict(role="plan_segment", name=f"{sid}-plan.json", text=plan_text)]
+            scenes = {item["sceneId"] for item in scene_packets[sid]["scenes"]}
+            context[sid].extend(supplements.entries(db,episode,scenes))
+            context[sid].extend(decision_entries(db, episode, "review", scenes, segment=sid))
+            roles = {role for shot in shots for role in shot.get("visibleRoles", [])}
+            states=[r for r in matrix["roleStates"] if r["role"] in roles]
+            if states:
+                context[sid].append(dict(role="role_states",name=f"{sid}-角色状态.json",text=canonical(states).decode()))
+            asset_ids = {key for shot in shots for key in shot.get("propStates", {})}
+            for ref in version["content"].get("segments", {}).get(sid, {}).get("refs", []):
+                asset_ids.update(ref.get(key) for key in ("assetId", "assetVersionId") if ref.get(key))
+                if ref.get("assetVersionId"):
+                    asset_ids.add(self.asset_version(ref["assetVersionId"], db)["asset_id"])
+            for role, rows in (
+                ("adopted_characters", [r for r in characters if r["id"] in roles]),
+                ("adopted_asset_design", [r for r in designs if r["id"] in asset_ids or r.get("roleId") in roles]),
+                ("adopted_acting", [r for r in performances if r["sceneId"] in scenes]),
+            ):
+                if rows:
+                    context[sid].append(dict(role=role, name=f"{sid}-{role}.json", text=canonical(rows).decode()))
             for neighbour in neighbours:
                 txt = version["content"]["segments"].get(neighbour, {}).get("txt", "")
+                context[sid].append(dict(role="neighbour_script_scene_source", name=f"{neighbour}-接点原文.json",
+                                         text=canonical({"scenes":scene_packets[neighbour]["scenes"]}).decode()))
                 context[sid].append(dict(role="neighbour_txt", name=f"{neighbour}.txt", text=txt))
         return context
 
@@ -136,7 +188,7 @@ class PromptReviewMixin:
         tid, thread = new_id(), new_id()
         db.execute("INSERT INTO task(id,project_id,episode_id,artifact_id,stage,goal,max_rounds,executor_plan,created_at) "
                    "VALUES(?,?,?,?,?,?,?,?,?)", (tid, art["project_id"], art["episode_id"], art["id"], "prompts", "两遍独审",
-                                                 2, dumps(kickoff["executor_plan"]), self.clock()))
+                                                 2, dumps({**kickoff["executor_plan"], **self._stage_executors(db,art["episode_id"],"prompts")}), self.clock()))
         db.execute("INSERT INTO thread VALUES(?,?,?)", (thread, tid, f"prompt-review:{art['id']}"))
         return tid
 
@@ -161,8 +213,9 @@ class PromptReviewMixin:
         v, art, entry, refs, own = self._segment_material(db, version_id, segment)
         tid = self._review_task(db, art)
         plan_exec = json.loads(row(db, "SELECT executor_plan FROM task WHERE id=?", tid)["executor_plan"])
-        prov = provider or plan_exec["review"]["provider"]
-        if self._isolation_status(prov) == "unverified":
+        review_slot = self._stage_executors(db,art["episode_id"],"prompts").get("review",plan_exec["review"])
+        prov = provider or review_slot["provider"]
+        if prov not in self.executors or self._isolation_status(prov) == "unverified":
             raise Rejected("审核执行器的会话隔离未验证")
         if refs and not getattr(self.executors[prov], "reads_images", True):
             raise Rejected(f"{prov} 在当前隔离配置下不能读图，请选择能读图的审核执行器")
@@ -197,6 +250,21 @@ class PromptReviewMixin:
                     entries.append(dict(role="cast_baseline_label", name=f"角色基准{n}.txt",
                                         text=f"角色基准{n}是 {role} 的独立对照图。本段实际上传图片以 order.txt 为准。"))
             scope_hash = sha256_bytes(canonical([own, extra]))
+        if pass_name == "comparison":
+            from .materialcontext import RULE, material_context
+            inherited=material_context(db,art['episode_id'],refs)
+            if inherited:
+                entries.append(dict(role='material_use_conclusions',name='已评估素材及当前用途.json',text=dumps(inherited)))
+                entries.append(dict(role='request',name='素材采用结论接续规则',text=RULE))
+            entries.append(dict(role='request',name='独审职责',text='仅审核最终提示词的翻译、组装与既定方案是否一致。检查漏写、错引、编号及动作声音表达。小问题直接放行：不改变主要动作结果、角色与素材引用、采用台词的视线顺序、表情细节、形容词或措辞差异，只记普通建议，不归为source、format、decision或必需设定违反，不要求返修。只有实际错引、缺失关键动作结果或台词、明确违背导演决定等影响制作的错误才报告阻断。继承已采用素材用途，不重新评选图片；静态环境图不用证明运行或声音，身份图不用演出动作。图片固有的旧差异不作为新增问题；若发现真实新增上游矛盾，指出来源阶段与变化证据，不要求提示词换图或重写上游。'))
+            accepted=[dict(issue) for ref in refs for issue in db.execute('SELECT * FROM accepted_image_issue WHERE asset_version_id=?',(ref['assetVersionId'],))]
+            if accepted:
+                entries.append(dict(role='accepted_image_issue',name='用户已接受的已知问题.json',text=dumps(accepted)))
+                entries.append(dict(role='request',name='已知问题处理规则',text='清单中的问题不再列为 issues，只在 observations 中注明仍然存在。其他未接受的问题照常审查。'))
+            provisional=[i for ref in refs for i in provisional_image_issues(db,art['episode_id'],ref['assetVersionId'])]
+            if provisional:
+                entries.append(dict(role='provisional_image_issue',name='AI暂用的未解决图片问题.json',text=dumps(provisional)))
+                entries.append(dict(role='request',name='暂用问题处理规则',text='仅清单中的同一图片问题已决定暂用，不重复要求修图；在 observations 中保留未解决说明，不称为用户接受或质量通过。其他问题照常审查。'))
         if not whole_pass and (segment,pass_name,scope_hash) in self._active_prompt_reviews(db,art["id"]):
             raise Rejected(f"{segment} 此遍相同输入已在排队或审读")
         run_id = self._queue_run(db, tid, pass_name, None, "", target_version_id=version_id, provider=prov, model=model, effort=effort,
@@ -214,7 +282,7 @@ class PromptReviewMixin:
             active[key] = dict(runId=run["id"],state=run["status"])
         return active
 
-    def start_prompt_review_batch(self, version_id, pass_name, command_id):
+    def start_prompt_review_batch(self, version_id, pass_name, command_id, provider=None, model=None, effort=None):
         if pass_name not in ("cold_read","comparison"):
             raise Rejected("请选择第一遍冷读或第二遍对照")
         with transaction(self.db_path) as db:
@@ -241,9 +309,11 @@ class PromptReviewMixin:
                         continue
                     state = self._seg_review_state(db,art["id"],sid,pass_name,digest)
                     if state["state"] == "needed":
-                        queued[sid] = self._queue_segment_review(db,version_id,sid,pass_name,context=context)["runId"]
+                        queued[sid] = self._queue_segment_review(db,version_id,sid,pass_name,provider,model,effort,context=context)["runId"]
                 return dict(runIds=list(queued.values()),segments=queued)
-            return self._command(db,command_id,"prompt_review_batch",dict(version=version_id,passName=pass_name),enqueue)
+            payload = dict(version=version_id, passName=pass_name)
+            payload.update({key:value for key,value in dict(provider=provider,model=model,effort=effort).items() if value is not None})
+            return self._command(db,command_id,"prompt_review_batch",payload,enqueue)
 
     def _seg_review_state(self, db, artifact_id, segment, pass_name, scope_hash):
         r = db.execute("SELECT r.* FROM review r JOIN version v ON v.id=r.version_id WHERE v.artifact_id=? AND r.pass=? "
@@ -254,7 +324,7 @@ class PromptReviewMixin:
         issues = [dict(i) for i in db.execute(
             "SELECT i.*, (SELECT reason FROM waiver w WHERE w.issue_id=i.id AND w.scope_hash=?) AS waiver_reason "
             "FROM issue i WHERE review_id=? ORDER BY ordinal", (scope_hash, r["id"]))]
-        blocking = [i["id"] for i in issues if i["blocking"]]
+        blocking = [i["id"] for i in issues if i["blocking"] and not i["waiver_reason"]]
         open_ = [i["id"] for i in issues if not i["blocking"] and not i["waiver_reason"]]
         state = ("passed" if r["original_decision"] == "pass" else "blocked" if blocking
                  else "pending_decision" if open_ else "waived")
@@ -314,25 +384,47 @@ class PromptReviewMixin:
                                 waived=cold["state"] == "waived" or cmp_["state"] == "waived")
         return out
 
-    def waive_segment_issue(self, issue_id, reason, command_id):
+    def waive_segment_issue(self, issue_id, reason="", command_id=None, *, accepted_issue=None, provisional_issue=None, usage_issue=None):
         with transaction(self.db_path) as db:
             def run():
                 issue = row(db, "SELECT * FROM issue WHERE id=?", issue_id)
                 rv = row(db, "SELECT * FROM review WHERE id=?", issue["review_id"])
                 if not rv["scope"]:
                     raise Rejected("不是分段审查意见")
-                if issue["blocking"]:
-                    raise Rejected("文件缺失、引用错误、超限或必守冲突必须修复，不能放行")
-                if not reason.strip():
-                    raise Rejected("放行须写理由")
+                accepted=False
+                if accepted_issue:
+                    _,_,entry,_,_=self._segment_material(db,rv['version_id'],rv['scope'])
+                    vid=accepted_issue.get('assetVersionId');key=accepted_issue.get('issueKey')
+                    accepted=any(ref['assetVersionId']==vid for ref in entry.get('refs',[])) and bool(db.execute('SELECT 1 FROM accepted_image_issue WHERE asset_version_id=? AND issue_key=?',(vid,key)).fetchone())
+                    if not accepted:raise Rejected('该段引用的图没有对应用户接受记录')
+                if provisional_issue:
+                    _,art,entry,_,_=self._segment_material(db,rv['version_id'],rv['scope'])
+                    vid=provisional_issue.get('assetVersionId');key=provisional_issue.get('issueKey')
+                    accepted=any(ref['assetVersionId']==vid for ref in entry.get('refs',[])) and any(i['issue_key']==key for i in provisional_image_issues(db,art['episode_id'],vid))
+                    if not accepted:raise Rejected('该段引用的图没有对应 AI 暂用记录')
+                if usage_issue:
+                    from .materialcontext import usage_clearances
+                    _,art,entry,_,_=self._segment_material(db,rv['version_id'],rv['scope'])
+                    records=usage_clearances(db,art['episode_id'],rv['scope'],entry)
+                    keys=('assetVersionId','assessmentId','observationId','sourceIssue')
+                    quote=usage_issue.get('quote')
+                    accepted=any(all(r[k]==usage_issue.get(k) for k in keys) for r in records) and isinstance(quote,str) and bool(quote.strip()) and quote in entry.get('txt','')
+                    if not accepted or self._prompt_reference_errors(db,art['episode_id'],{rv['scope']:entry}):
+                        raise Rejected('缺少当前用途核对记录或落实限制的正文依据')
+                if issue["blocking"] and not accepted:
+                    raise Rejected("阻断问题不能放行，请改稿，或修改对应的决定、补充或项目设定")
+                if not isinstance(reason, str):
+                    raise Rejected("放行备注须为文字")
                 wid = new_id()
                 db.execute("INSERT INTO waiver(id,issue_id,version_id,reason,created_at,scope_hash) VALUES(?,?,?,?,?,?)",
-                           (wid, issue_id, rv["version_id"], reason.strip(), self.clock(), rv["scope_hash"]))
+                           (wid, issue_id, rv["version_id"], reason.strip() or "导演按本版放行（未填备注）", self.clock(), rv["scope_hash"]))
                 return dict(waiverId=wid)
-            return self._command(db, command_id, "waive_seg", dict(i=issue_id, r=reason), run)
+            return self._command(db, command_id, "waive_seg", dict(i=issue_id, r=reason, **({"acceptedIssue":accepted_issue} if accepted_issue else {}), **({"provisionalIssue":provisional_issue} if provisional_issue else {})), run)
 
     def _after_review(self, db, task, run, review_id, result):
         rv = row(db, "SELECT * FROM review WHERE id=?", review_id)
+        if rv["pass"] in ("cold_read", "comparison") and result["decision"] != "pass":
+            self._mark_deliveries_stale(db, task["episode_id"], "提示词独审出现新意见", reviewed=rv["version_id"], segment=rv["scope"])
         if rv["pass"] == "comparison" and result["decision"] == "pass":
             seg = rv["scope"]
             ep = task["episode_id"]
@@ -346,3 +438,7 @@ class PromptReviewMixin:
                        "(target_ref=? OR (target_ref LIKE 'joint:%' AND (target_ref LIKE ? OR target_ref LIKE ?)))",
                        (ep, f"prompts:{seg}", f"joint:{seg}-%", f"joint:%-{seg}"))
         return []
+
+    def _resolve_adopted_prompt_impacts(self,db,eid,version_id):
+        from .promptbasis import resolve
+        resolve(self,db,eid,version_id)

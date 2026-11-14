@@ -23,6 +23,7 @@ async function main() {
     await page.goto(base+"/#/p/"+pid);
     const ui = page.locator(".desktop-page:not([hidden])");
     await ui.getByRole("link",{name:"自由对话",exact:true}).click();
+    await ui.getByText("更多工具",{exact:true}).click();
     await ui.getByText("创作技能（0）",{exact:true}).click();
     const file = Buffer.from("# 候车动作\r\n让动作先于对白。","utf8");
     await ui.getByLabel("技能名称").fill("候车动作");
@@ -40,7 +41,7 @@ async function main() {
     await page.waitForURL(u=>u.hash.split("/").length===5 && u.hash.includes("/free/"));
     const url=page.url();
     const thread_id=new URL(url).hash.split("/").at(-1);
-    await ui.getByText("codex · 已回复",{exact:true}).waitFor();
+    await ui.locator(".model-reply").filter({hasText:/Codex/}).getByText("已回复",{exact:true}).waitFor();
     const first=(await query("free_chat",{project_id:pid,thread_id})).turns[0];
     assert.deepEqual(first.sources.map(s=>s.role),["project_method","canvas","image"]);
     assert.equal(first.sources[0].sha256,createHash("sha256").update(file).digest("hex"));
@@ -58,9 +59,9 @@ async function main() {
     await page.goto(url);
     await ui.getByLabel("对话内容").fill("把这个动作再缩短。");
     await ui.getByRole("button",{name:"发送",exact:true}).click();
-    await ui.getByText("codex · 已回复",{exact:true}).nth(1).waitFor();
+    await ui.locator(".model-reply").filter({hasText:/Codex/}).getByText("已回复",{exact:true}).nth(1).waitFor();
     await page.reload();
-    await ui.getByText("codex · 已回复",{exact:true}).nth(1).waitFor();
+    await ui.locator(".model-reply").filter({hasText:/Codex/}).getByText("已回复",{exact:true}).nth(1).waitFor();
     const final = await query("free_chat",{project_id:pid,thread_id});
     assert.equal(final.threads.length,1);
     assert.deepEqual(final.turns[1].methods,first.methods);

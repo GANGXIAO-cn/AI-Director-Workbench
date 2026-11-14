@@ -226,9 +226,10 @@ class ProjectOpsMixin(ExpertMixin, HistoryMixin):
             return self._command(db, command_id, "confirm_closure", dict(c=closure_id), run)
 
     # ============================================================ settings change and spec
-    def propose_setting_change(self, project_id, key, content, strength, reason, command_id, category="rule"):
+    def propose_setting_change(self, project_id, key, content, strength, reason, command_id, category="rule", reason_default=None):
         """New revision of one setting; lists in-production episodes that actually use it."""
-        if not reason.strip():
+        reason = reason.strip() or (reason_default or "").strip()
+        if not reason:
             raise Rejected("修改设定须写理由")
         with transaction(self.db_path) as db:
             def run():
@@ -367,6 +368,7 @@ class ProjectOpsMixin(ExpertMixin, HistoryMixin):
                 db.execute("INSERT INTO spec_change VALUES(?,?,?,?,?,?,?)", (new_id(), episode_id, key, dumps(old),
                                                                              dumps(value), dumps(impacts), self.clock()))
                 self._record_impacts(db, dict(project_id=ep["project_id"],episode_id=episode_id), impacts, "spec_change", f"spec:{key}")
+                self._continuous_changed(db,episode_id)
                 return dict(preview=preview, spec=spec)
             payload = dict(e=episode_id, k=key, v=value)
             if expected_preview is not None:
@@ -513,16 +515,22 @@ class ProjectOpsMixin(ExpertMixin, HistoryMixin):
         return {"policy": policy}
 
     def _text_catalog(self):
+        from .executors.cli import ClaudeExecutor
         catalog = text_catalog()
+        if isinstance(self.executors.get("claude"), ClaudeExecutor):
+            catalog["claude"] = dict(catalog["claude"], models=[catalog["claude"]["models"][0]])
         for provider in ("claude","antigravity"):
             snapshot = self.get_setting("cli_models:"+provider)
             executor = self.executors.get(provider)
+            if provider == "claude" and snapshot and snapshot.get("source") != "initialize":
+                continue  # Older snapshots only contained examples from --help.
             if snapshot and executor and hasattr(executor,"binary") and snapshot["executable"] == str(executor.binary()):
                 catalog[provider] = dict(catalog[provider],models=snapshot["models"],fetchedAt=snapshot["checkedAt"])
         return catalog
 
     def model_catalog(self):
-        return dict(text={k:dict(v,connection=self.executor_connection(k)) for k,v in self._text_catalog().items() if k in self.executors},
+        text = {k:dict(v,connection=self.executor_connection(k)) for k,v in self._text_catalog().items() if k in self.executors and k!='claude'}
+        return dict(text=text,
                     image=self.image_providers(),quotaRetryPolicy=self.get_setting("quota_retry_policy", "manual_cli"))
 
     def refresh_cli_models(self, provider):
@@ -543,32 +551,41 @@ class ProjectOpsMixin(ExpertMixin, HistoryMixin):
             return dict(message="已读取本机 Codex 型号清单")
         if getattr(self,"parent",None):
             return self.parent.refresh_cli_models(provider)
-        args = ["models"] if provider=="antigravity" else ["--help"]
-        rc, out, err = invoke([str(binary),*args],Path.home(),"",20,extra_env=launch_env(provider,self.executor_connection(provider)))
-        if rc:
-            if "please sign in" in (err+out).lower():
-                raise Rejected("CLI 提示需要登录才能读取型号，请在原生工具中确认账号")
-            raise Rejected("CLI 型号查询失败，请检查路径和网络后重试")
         models = [MODEL_CATALOG[provider]["models"][0]]
-        if provider=="antigravity":
+        if provider == "claude":
+            options = executor.model_options(binary, self.executor_connection(provider))
+            for item in options:
+                value = item.get("value") if isinstance(item, dict) else None
+                name = item.get("displayName") if isinstance(item, dict) else None
+                if not isinstance(value, str) or not isinstance(name, str) or not name:
+                    continue
+                description = str(item.get("description") or "").split(" · ", 1)[0]
+                label = description if description.startswith(name + " ") else name
+                levels = item.get("supportedEffortLevels") or []
+                efforts = [None, *(v for v in levels if isinstance(v, str) and re.fullmatch("[a-z0-9_-]{1,25}", v))]
+                model = dict(id=value, label=label, efforts=efforts, status="pending", source="本机 Claude CLI 型号清单",
+                             resolvedModel=item.get("resolvedModel"))
+                if value == "default":
+                    models[0] = dict(model, id=None, label="执行器默认")
+                else:
+                    models.append(model)
+            message = "已读取本机 Claude CLI 型号清单"
+        else:
+            rc, out, err = invoke([str(binary),"models"],Path.home(),"",20,extra_env=launch_env(provider,self.executor_connection(provider)))
+            if rc:
+                if "please sign in" in (err+out).lower():
+                    raise Rejected("CLI 提示需要登录才能读取型号，请在原生工具中确认账号")
+                raise Rejected("CLI 型号查询失败，请检查路径和网络后重试")
             for line in out.splitlines():
                 match = re.fullmatch(r"([a-z0-9]+(?:[-.][a-z0-9]+)+)\s+(.{1,160})",line.strip())
                 if match:
                     slug, label = match.groups()
                     models.append(dict(id=slug,label=label,efforts=[None],status="pending",source="本机 agy models"))
             message = "已读取本机 Google CLI 型号清单"
-        else:
-            def option_help(flag):
-                block = re.search(r"^  "+re.escape(flag)+r"[^\n]*(?:\n {4,}[^\n]+)*",out,re.M)
-                return block[0] if block else ""
-            aliases = re.findall(r"'([a-z0-9-]+)'",option_help("--model <"))
-            efforts = re.findall(r"\b(low|medium|high|xhigh|max)\b",option_help("--effort <"))
-            for alias in dict.fromkeys(aliases):
-                models.append(dict(id=alias,label=alias,efforts=[None,*dict.fromkeys(efforts)],status="pending",source="本机 Claude CLI 帮助中的型号别名"))
-            message = "已读取本机 Claude CLI 公布的型号别名"
-        if len(models)==1:
+        if len(models)==1 and (provider!="claude" or models[0].get("source")!="本机 Claude CLI 型号清单"):
             raise Rejected("没有读到可识别的型号，已保留上次清单")
-        self.put_setting("cli_models:"+provider,dict(executable=str(binary),checkedAt=self.clock(),models=models))
+        self.put_setting("cli_models:"+provider,dict(executable=str(binary),checkedAt=self.clock(),models=models,
+                                                        source="initialize" if provider=="claude" else "models"))
         return dict(message=message)
 
     def validate_selection(self, provider, model, effort):
@@ -578,7 +595,8 @@ class ProjectOpsMixin(ExpertMixin, HistoryMixin):
         if not cat:
             raise Rejected("未知执行器")
         entry = next((m for m in cat["models"] if m["id"] == model), None)
-        if model is not None and (not isinstance(model, str) or not re.fullmatch(r"[\w.:-][\w./:-]{0,180}",model)):
+        pattern = r"[\w.:-][\w./:-]{0,180}" + (r"(?:\[1m\])?" if provider == "claude" else "")
+        if model is not None and (not isinstance(model, str) or not re.fullmatch(pattern,model)):
             raise Rejected("原生型号格式无效")
         if effort is not None and (not isinstance(effort, str) or not re.fullmatch("[a-z0-9_-]{1,25}",effort)):
             raise Rejected("原生强度格式无效")
@@ -587,6 +605,29 @@ class ProjectOpsMixin(ExpertMixin, HistoryMixin):
         if effort not in entry["efforts"]:
             raise Rejected(f"{model or '默认型号'} 不支持强度 {effort}，请重选或使用默认", detail=dict(allowed=entry["efforts"]))
         return dict(provider=provider, model=model, effort=effort, status=entry["status"])
+
+    def _stage_executors(self, db, episode_id, stage):
+        return {role:self.active_selection(json.loads(slot)) for role, slot in db.execute(
+            "SELECT role,selection FROM stage_executor WHERE episode_id=? AND stage=?", (episode_id,stage))}
+
+    def save_stage_executor(self, artifact_id, role, provider, model=None, effort=None, command_id=None):
+        if role not in ("create","review"):
+            raise Rejected("请选择创作或独审")
+        self.validate_selection(provider,model,effort)
+        slot = dict(provider=provider,model=model,effort=effort)
+        with transaction(self.db_path) as db:
+            art = row(db,"SELECT episode_id,stage FROM artifact WHERE id=?",artifact_id)
+            def save():
+                db.execute("INSERT INTO stage_executor(episode_id,stage,role,selection) VALUES(?,?,?,?) "
+                           "ON CONFLICT(episode_id,stage,role) DO UPDATE SET selection=excluded.selection",
+                           (art["episode_id"],art["stage"],role,dumps(slot)))
+                for t in db.execute("SELECT id,executor_plan FROM task WHERE artifact_id=? AND state NOT IN ('closed','abandoned')",
+                                    (artifact_id,)).fetchall():
+                    plan = json.loads(t["executor_plan"])
+                    plan[role] = slot
+                    db.execute("UPDATE task SET executor_plan=? WHERE id=?", (dumps(plan),t["id"]))
+                return slot
+            return self._command(db,command_id,"save_stage_executor",dict(artifact=artifact_id,role=role,slot=slot),save)
 
     def set_task_executor(self, task_id, role, provider, model=None, effort=None):
         if role not in ("create","review"):
@@ -609,7 +650,8 @@ class ProjectOpsMixin(ExpertMixin, HistoryMixin):
         return dict(ref=pack["id"], sections=method_entries(pack, stage, project["config_id"]))
 
     def pack_versions(self):
-        return available_packs()
+        from .workflow import METHOD_REF
+        return [METHOD_REF]
 
     def compare_packs(self, original, candidate, project_id=None):
         profile = None
@@ -641,14 +683,15 @@ class ProjectOpsMixin(ExpertMixin, HistoryMixin):
                     ok=all(r["ok"] for r in results), counted=False)
 
     def adopt_pack(self, project_id, ref, command_id, expected_ref=None):
-        reg = self.regress_pack(ref)
-        if not reg["ok"]:
-            raise Rejected("隔离样例回归未通过", detail=reg)
+        from .workflow import METHOD_REF
         with transaction(self.db_path) as db:
             def run():
                 project = row(db, "SELECT method_pack FROM project WHERE id=?", project_id)
                 if expected_ref is not None and project["method_pack"] != expected_ref:
                     raise Conflict("项目方法版本已更新，请刷新后重新比较", current=project["method_pack"])
+                if ref != METHOD_REF:
+                    raise Rejected("历史方法包仅供查阅；所有项目使用统一九阶段方法，不能恢复旧生产流程")
+                reg = dict(ref=METHOD_REF, counted=False, status="internal-development")
                 db.execute("UPDATE project SET method_pack=? WHERE id=?", (ref, project_id))
                 db.execute("INSERT INTO pack_adoption VALUES(?,?,?,?,?)", (new_id(), project_id, ref, dumps(reg), self.clock()))
                 return dict(projectId=project_id, methodPack=ref)
@@ -751,13 +794,21 @@ class ProjectOpsMixin(ExpertMixin, HistoryMixin):
                                   title=f"{c['display_code']} 收尾：{n} 条设定提议待处理", action="去处理"))
             for s in db.execute("SELECT s.*, e.display_code FROM space_item s JOIN episode e ON e.id=s.episode_id WHERE "
                                 "e.project_id=? AND s.status='pending'", (project_id,)):
-                segs = "、".join(json.loads(s["depends"]))
+                depends = json.loads(s["depends"])
+                segs = "、".join(depends if isinstance(depends,list) else depends["scenes"])
                 todos.append(dict(kind="space", episodeId=s["episode_id"], objectId=s["id"],
                                   title=f"{s['display_code']} · {segs} {s['label']}待确认", action="去确认空间"))
             for b in db.execute("SELECT b.*, e.display_code FROM image_batch b JOIN episode e ON e.id=b.episode_id WHERE "
                                 "e.project_id=? AND b.state='pending_reconcile'", (project_id,)):
                 todos.append(dict(kind="reconcile", episodeId=b["episode_id"], objectId=b["id"],
                                   title=f"{b['display_code']} 图像请求结果待核对", action="查原批次"))
+        # 实测 124：连续制作停下或等你选择的集也列入待办，与侧栏“需要你处理”一致。
+        for item in self.attention_episodes():
+            if item["projectId"] != project_id:
+                continue
+            todos.append(dict(kind="continuous", episodeId=item["episodeId"], objectId=item["episodeId"], stage=item.get("stage"),
+                              title=f"{item['displayCode']} " + ("已停下：" + (item["reason"] or "需要你处理").split("。")[0][:40] if item["state"] == "blocked" else "AI 已备好选项，等你选择"),
+                              action="去处理", state=item["state"], reason=item["reason"], displayCode=item["displayCode"], phase=item.get("phase")))
         return todos
 
     def activity_log(self, project_id=None, offset=0, limit=40):
@@ -801,7 +852,7 @@ class ProjectOpsMixin(ExpertMixin, HistoryMixin):
                     "GROUP BY a.stage", (ep["id"],))}
                 reviewed = db.execute("SELECT count(*) FROM review r JOIN version v ON v.id=r.version_id JOIN artifact a ON "
                                       "a.id=v.artifact_id WHERE a.episode_id=? AND a.stage='story'", (ep["id"],)).fetchone()[0]
-                deliveries = [dict(r) for r in db.execute("SELECT id, scope, created_at FROM delivery WHERE episode_id=? "
+                deliveries = [dict(r) for r in db.execute("SELECT id, scope, state, created_at FROM delivery WHERE episode_id=? "
                                                           "ORDER BY created_at", (ep["id"],))]
                 closure = db.execute("SELECT id, state FROM closure WHERE episode_id=?", (ep["id"],)).fetchone()
                 plan = self._adopted_content(db, ep["id"], "plan")
@@ -816,7 +867,9 @@ class ProjectOpsMixin(ExpertMixin, HistoryMixin):
                 full = [d for d in deliveries if d["scope"] == "full"]
                 if full:
                     done = 11
-                if full:
+                if (full or deliveries) and (full or deliveries)[-1]["state"] == "needs_recheck":
+                    label, tone = "交付待复核", "amber"
+                elif full:
                     label = "图文已交付" + (" · 待收尾" if closure and closure["state"] in ("open", "staged") else "")
                     tone = "blue" if closure and closure["state"] in ("open", "staged") else "green"
                 elif adopted.get("story"):
@@ -829,7 +882,20 @@ class ProjectOpsMixin(ExpertMixin, HistoryMixin):
                     label, tone = "已开工", "blue"
                 else:
                     label, tone = "待开工", ""
+                # 实测 124：集卡封面取本集已采用的主场景图（其次其他已采用素材，固定角色原图除外），没有图时前端显示一句话故事。
+                cover = db.execute("""SELECT v.sha256 FROM asset_need n JOIN asset_version v ON v.id=n.adopted_version_id
+                    WHERE n.episode_id=? AND n.removed=0 AND v.grid=0
+                      AND n.adopted_version_id NOT IN (SELECT asset_version_id FROM fixed_role_asset WHERE episode_id=?)
+                    ORDER BY CASE n.kind WHEN 'scene' THEN 0 WHEN 'character' THEN 1 ELSE 2 END, n.sort LIMIT 1""",
+                                   (ep["id"], ep["id"])).fetchone()
+                story = self._adopted_content(db, ep["id"], "story") or {}
+                kick = db.execute("SELECT idea_text FROM kickoff WHERE episode_id=?", (ep["id"],)).fetchone()
+                oneline = str(story.get("synopsis") or (kick["idea_text"] if kick and kick["idea_text"] else "")).strip()
+                oneline = oneline.split("\n")[0].split("。")[0][:60]
+                run = db.execute("SELECT state,cursor FROM continuous_run WHERE episode_id=? ORDER BY rowid DESC LIMIT 1", (ep["id"],)).fetchone()
+                ai_stage = json.loads(run["cursor"] or "{}").get("stage") if run and run["state"] not in ("done", "cancelled") else None
                 out.append(dict(ep, adopted=adopted, progress=done, label=label, tone=tone, deliveries=deliveries,
+                                cover=cover["sha256"] if cover else None, oneline=oneline, aiStage=ai_stage,
                                 closure=dict(closure) if closure else None,
                                 segments=len(lay["segments"]) if lay else 0, totalMs=lay["total_ms"] if lay else 0))
         required = sum(1 for s in p["settings"] if s["strength"] == "required")

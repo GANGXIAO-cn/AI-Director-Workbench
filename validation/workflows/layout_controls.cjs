@@ -34,7 +34,7 @@ async function main() {
       await fits(["html",".main",".home-project-grid"]);
       await page.goto(base+"/#/p/"+project.id);
       const overview = page.locator(".project-overview");
-      await overview.getByText(/必须守住/).waitFor();
+      await overview.getByRole('link',{name:/^设定 \d+ 条/}).waitFor(); // 实测 124：设定改为标题右侧按钮，守住/可变条数在按钮提示里
       await fits(["html",".main",".project-overview",".project-todos",".project-overview .grid2"]);
       const projectButton = await read(button("＋ 新增一集"));
       const projectTag = await read(overview.locator(".tag"));

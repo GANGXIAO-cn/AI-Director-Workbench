@@ -10,7 +10,7 @@ class ExecRequest:
     purpose: str            # create | revise | review
     kind: str               # contract branch: draft | review
     prompt: str             # full text, passed via stdin; built only from the input manifest
-    schema: dict            # vendor-shaped single branch
+    schema: Optional[dict]  # vendor-shaped single branch; None for direct manuscript replies
     session_mode: str       # "new" (creation, may be resumed later) | "ephemeral" (review)
     workdir: Path           # empty per-run directory
     model: Optional[str] = None
@@ -18,6 +18,7 @@ class ExecRequest:
     timeout: int = 300
     images: list = field(default_factory=list)   # local files the reviewer must look at, in order
     connection: dict = field(default_factory=dict)
+    attempt: int = 1        # initial request or the single format retry
 
 
 @dataclass

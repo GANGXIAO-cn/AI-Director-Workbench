@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 from urllib.request import getproxies
 
 from ..connections import launch_env
+from ..errors import Rejected
 from .base import ExecOutcome, Executor, ExecRequest
 
 ENV_KEEP = ("PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "SHELL")
@@ -140,6 +141,8 @@ def find_claude(configured: str | None = None) -> Path | None:
 
 
 class CliExecutor(Executor):
+    # start() owns one local request/process; transport metadata is not authored prose.
+    binds_request_context = True
     required_flags: tuple = ()
 
     def __init__(self, executable: str | None = None):
@@ -179,6 +182,7 @@ class CliExecutor(Executor):
 
 
 class CodexExecutor(CliExecutor):
+    strict_schema = True
     name = "codex"
     isolation = "session"      # verified live 2026-11-07 (story review)
     reads_images = True        # --image; not yet verified live
@@ -243,11 +247,16 @@ class CodexExecutor(CliExecutor):
             events.append(event.get("type"))
             if event.get("type") == "thread.started":
                 session = event.get("thread_id")
-            if event.get("type") in ("error", "turn.failed"):
+            # 实测 135：断线后 Codex 自行重连并完成本轮时，"Reconnecting..." 只是过程提示，不是失败；
+            # 重连用尽时会以 turn.failed 或缺少 turn.completed 结束，仍按失败处理。
+            transient = event.get("type") == "error" and str(event.get("message", "")).startswith("Reconnecting...")
+            if event.get("type") in ("error", "turn.failed") and not transient:
                 failed.append(json.dumps(event, ensure_ascii=False))
             item = event.get("item") or {}
             if event.get("type") == "item.completed" and item.get("type") == "agent_message":
                 messages.append(item.get("text", ""))
+        if messages:
+            (req.workdir.parent / f"raw-response-{req.attempt}.txt").write_text(messages[-1], encoding="utf-8")
         base = dict(session_id=session, events=events, executable=str(binary),
                     isolation=dict(session=req.session_mode, sandbox="read-only", tools="disabled", ephemeral=True, profile="isolated",
                                    user_config="ignored", rules="ignored", cwd="empty run dir"))
@@ -263,6 +272,7 @@ class CodexExecutor(CliExecutor):
 
 
 class ClaudeExecutor(CliExecutor):
+    strict_schema = True
     name = "claude"
     isolation = "session"      # verified live 2026-11-07 (story review)
     reads_images = False       # tools are disabled in the isolated review, so files cannot be opened
@@ -271,6 +281,31 @@ class ClaudeExecutor(CliExecutor):
 
     def binary(self):
         return find_claude(self.configured)
+
+    def model_options(self, binary, connection):
+        # Stream initialization returns selector metadata without sending a user turn.
+        request = dict(type="control_request", request_id="catalog", request={"subtype": "initialize"})
+        args = [str(binary), "-p", "--verbose", "--input-format", "stream-json", "--output-format", "stream-json",
+                "--no-session-persistence", "--restricted", "--strict-mcp-config", "--tools", "",
+                "--disable-slash-commands", "--setting-sources", ""]
+        with tempfile.TemporaryDirectory(prefix="adw-claude-models-") as cwd:
+            rc, out, _ = invoke(args, Path(cwd), json.dumps(request) + "\n", 20,
+                                extra_env=launch_env(self.name, connection))
+        if rc == 0:
+            for line in out.splitlines():
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(event, dict) or event.get("type") != "control_response":
+                    continue
+                reply = event.get("response") or {}
+                if isinstance(reply, dict) and reply.get("request_id") == request["request_id"] and reply.get("subtype") == "success":
+                    payload = reply.get("response")
+                    options = payload.get("models") if isinstance(payload, dict) else None
+                    if isinstance(options, list) and options:
+                        return options
+        raise Rejected("Claude CLI 未返回型号清单，请检查连接和 CLI 版本后重试。")
 
     def native_identity(self, binary, env):
         rc, out, _ = invoke([str(binary), "auth", "status", "--json"], Path.home(), "", 20, extra_env=env)
@@ -307,6 +342,10 @@ class ClaudeExecutor(CliExecutor):
             text = out + "\n" + err
             return ExecOutcome(ok=False, error_class=classify(text), diagnostic=redact(text),
                                quota_resets_at=resets_at(text), **base)
+        reply = receipt.get('structured_output')
+        raw = json.dumps(reply, ensure_ascii=False) if reply is not None else receipt.get('result')
+        if isinstance(raw, str):
+            (req.workdir.parent / f"raw-response-{req.attempt}.txt").write_text(raw, encoding='utf-8')
         base["session_id"] = receipt.get("session_id")
         if receipt.get("is_error") is not False or receipt.get("subtype") != "success" \
                 or not isinstance(receipt.get("structured_output"), dict):
@@ -323,6 +362,7 @@ class ClaudeExecutor(CliExecutor):
 
 class AntigravityExecutor(CliExecutor):
     """Google Antigravity `agy` headless mode (structured_output in a SUCCESS receipt)."""
+    strict_schema = False
     name = "antigravity"
     union_schema = False       # verified 2026-11-07: an anyOf wrapper yields status ERROR
     isolation = "unverified"   # review isolation flags not yet verified → required reviews wait
@@ -349,7 +389,10 @@ class AntigravityExecutor(CliExecutor):
         if req.effort:
             opts += ["--effort", req.effort]
         args = [str(binary), *opts, "--sandbox", "--print-timeout", f"{max(30, req.timeout - 10)}s",
-                "--output-format", "json", "--json-schema", json.dumps(req.schema, ensure_ascii=False), "-p", req.prompt]
+                "--output-format", "json"]
+        if req.schema is not None:
+            args += ["--json-schema", json.dumps(req.schema, ensure_ascii=False)]
+        args += ["-p", req.prompt]
         rc, out, err = invoke(args, req.workdir, "", req.timeout, req.run_id, extra_env=launch_env(self.name,req.connection))
         base = dict(executable=str(binary), isolation=dict(session=req.session_mode, sandbox="on"))
         try:
@@ -358,6 +401,38 @@ class AntigravityExecutor(CliExecutor):
             text = out + "\n" + err
             return ExecOutcome(ok=False, error_class=classify(text), diagnostic=redact(text),
                                quota_resets_at=resets_at(text), **base)
+        if isinstance(receipt.get("response"), str):
+            (req.workdir.parent / f"raw-response-{req.attempt}.txt").write_text(receipt["response"], encoding="utf-8")
+        if req.schema is None and receipt.get("status") == "SUCCESS":
+            response = receipt.get("response")
+            if not isinstance(response, str):
+                return ExecOutcome(ok=False, error_class="schema", diagnostic="回复须为 JSON 对象", **base)
+            response = response.strip()
+            fenced = re.fullmatch(r"```(?:json)?\s*\n(.*?)\n```", response, re.DOTALL)
+            if fenced:
+                response = fenced.group(1)
+            else:
+                blocks = re.findall(r'^```(?:json)?\s*\n(.*?)\n```\s*$',response,re.DOTALL|re.MULTILINE)
+                if len(blocks)==1:response=blocks[0]
+            try:
+                parsed = json.loads(response)
+            except json.JSONDecodeError as exc:
+                return ExecOutcome(ok=False, error_class="schema",
+                                   diagnostic=f"回复不是可解析的 JSON：第 {exc.lineno} 行第 {exc.colno} 列，{exc.msg}", **base)
+            if not isinstance(parsed, dict):
+                return ExecOutcome(ok=False, error_class="schema", diagnostic="回复须为 JSON 对象", **base)
+            return ExecOutcome(ok=True, structured=parsed, session_id=receipt.get("session_id"),
+                               reported_model=receipt.get("model") if isinstance(receipt.get("model"), str) else None, **base)
+        if receipt.get("status") == "SUCCESS" and not isinstance(receipt.get("structured_output"), dict):
+            # 实测 143：成功但只回了文字。若文字本身就是合格 JSON 则采用，否则归为格式错误（由调用方重试一次）。
+            try:
+                parsed = json.loads(receipt.get("response") or "")
+            except (TypeError, ValueError):
+                parsed = None
+            if isinstance(parsed, dict):
+                receipt["structured_output"] = parsed
+            else:
+                return ExecOutcome(ok=False, error_class="schema", diagnostic="执行器回复了文字，但没有按要求的格式回包", **base)
         if receipt.get("status") != "SUCCESS" or not isinstance(receipt.get("structured_output"), dict):
             text = json.dumps(receipt, ensure_ascii=False)[:2000] + err
             return ExecOutcome(ok=False, error_class=classify(text), diagnostic=redact(text),

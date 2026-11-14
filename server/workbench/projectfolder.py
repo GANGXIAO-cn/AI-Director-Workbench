@@ -16,6 +16,11 @@ from .storage import canonical, file_sha256, sha256_bytes
 MARKER = "导演工作台项目.json"
 # Tables without a direct project_id or episode_id have one owning parent.
 PARENTS = {
+    "accepted_image_issue": ("asset_version_id", "asset_version"),
+    "repair_run": ("plan_id", "repair_plan"),
+    "stress_resolution": ("report_version_id", "version"),
+    "asset_need_candidate": ("need_id", "asset_need"),
+    "asset_need_request": ("need_id", "asset_need"),
     "grid_cell_binding": ("asset_version_id","asset_version"),
     "stage_edit_session": ("artifact_id","artifact"),
     "free_turn": ("thread_id","free_thread"),
@@ -50,11 +55,14 @@ def copy_records(source, dest, pid):
     for table in tables:
         if table in ("app_setting","api_provider","backup","command"):
             continue
+        if table == "project_series_file" and not source.execute("SELECT 1 FROM sqlite_master WHERE name=?", (table,)).fetchone():
+            continue
         rows = source.execute(f'SELECT * FROM "{table}" WHERE {ownership(table)} ORDER BY rowid',(pid,))
         marks = ",".join("?" for _ in rows.description)
         dest.executemany(f'INSERT INTO "{table}" VALUES({marks})', rows)
     episodes = {r[0] for r in dest.execute("SELECT id FROM episode")}
     keys = {f"publish:{pid}", f"palette-selection:{pid}"} | {f"contact:{eid}" for eid in episodes}
+    keys.update("decision-dismissed:"+r[0] for r in dest.execute("SELECT id FROM artifact"))
     scoped = {"step","palette","method-options","uploaded-methods"}
     for key, value in source.execute("SELECT key,value FROM app_setting"):
         parts = key.split(":")
@@ -119,6 +127,9 @@ def copy_materials(source, dest, db):
         if table in {"baseline_revision","episode_baseline_change"} and table not in tables:
             continue  # Project folders saved before editable standards.
         for (digest,) in db.execute(f'SELECT DISTINCT "{col}" FROM "{table}"'):
+            blob(digest)
+    if "project_series_file" in tables:
+        for (digest,) in db.execute("SELECT DISTINCT sha256 FROM project_series_file"):
             blob(digest)
     if "episode_story_skill" in tables:
         for (digest,) in db.execute("SELECT snapshot FROM episode_story_skill"):

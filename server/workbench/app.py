@@ -2,6 +2,8 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 import os
+import threading
+import logging
 from base64 import b64encode
 from hashlib import sha256
 from pathlib import Path
@@ -38,6 +40,7 @@ class Worker:
     def __init__(self, wb: Workbench, threads=2, inline=False):
         self.wb, self.inline = wb, inline
         self.pool = None if inline else ThreadPoolExecutor(max_workers=threads)
+        self.continuous_pool = None if inline else ThreadPoolExecutor(max_workers=4,thread_name_prefix="continuous")
 
     def submit(self, run_id):
         if self.inline:
@@ -49,6 +52,15 @@ class Worker:
         queue = [run_id]
         while queue:
             queue += self.wb.execute_run(queue.pop(0))
+        self.continue_changed()
+
+    def run_continuous(self, fn, *args, **kwargs):
+        if self.inline:return fn(*args, **kwargs)
+        return self.continuous_pool.submit(fn,*args,**kwargs)
+
+    def continue_changed(self):
+        for cid in self.wb.changed_continuous_runs():
+            self.run_continuous(self.wb._advance_continuous,cid)
 
 
 def default_executors():
@@ -66,10 +78,19 @@ def default_image_providers():
         from .images import FakeImageProvider
         return {"fake-image": FakeImageProvider("fake-image"),
                 "fake-image-unpriced": FakeImageProvider("fake-image-unpriced", price_cents=None)}
-    return {"openai-image-mcp": OpenAIImageMCPProvider()}
+    from .apiimages import OpenAIImageAPIProvider
+    from .codeximages import CodexImageProvider
+    return {"codex-native":CodexImageProvider(Path(os.environ.get("ADW_DATA_DIR", REPO / "data")) / "codex-images",
+                                             os.environ.get("ADW_CODEX_PATH")),
+            "openai-image-mcp": OpenAIImageMCPProvider(),
+            "openai-image-api": OpenAIImageAPIProvider(Path(os.environ.get("ADW_DATA_DIR", REPO / "data")) / "image-api")}
 
 
 COMMANDS = {
+    "save_executor_defaults", "save_episode_expert", "save_episode_image_channel", "accept_material_issue",
+    "quick_start", "choose_continuous", "start_continuous", "pause_continuous", "resume_continuous", "cancel_continuous",
+    "carry_stress_issue", "start_repair_plan", "advance_repair_plan", "initialize_asset_worksheet", "set_asset_need", "prepare_asset_batch", "adopt_asset_needs",
+    "decide_supplement", "confirm_role_state", "add_decision", "revoke_decision", "replace_decision", "record_decisions", "record_message_decision",
     "kickoff_check_view", "kickoff_check_run", "kickoff_check_decide",
     "revise_baseline", "follow_baseline",
     "start_topic_research", "accept_research_topic",
@@ -77,31 +98,35 @@ COMMANDS = {
     "refresh_cli_models", "save_executor_connection", "set_quota_retry_policy", "save_provider", "read_provider_models", "label_provider_model",
     "start_story_comparison", "preview_acting",
     "add_script_document", "refresh_script_index", "restore_step_revision",
-    "use_fixed_role", "import_historical_episode", "episode_contact_sheet", "save_contact_options", "export_episode_contact_sheet", "historical_contact_sheet", "export_historical_contact_sheet", "save_product_placement", "set_project_sections", "use_project_product", "mount_resource", "restore_version", "set_stage_methods", "set_custom_methods", "save_palettes", "add_palette", "set_episode_palettes", "save_step_config",
+    "use_fixed_role", "import_historical_episode", "episode_contact_sheet", "save_contact_options", "export_episode_contact_sheet", "historical_contact_sheet", "export_historical_contact_sheet", "save_product_placement", "set_project_sections", "use_project_product", "mount_resource", "restore_version", "set_stage_methods", "sync_project_methods", "adopt_project_stage_methods", "set_custom_methods", "save_palettes", "add_palette", "set_episode_palettes", "save_step_config",
     "set_cooperation_mode", "set_stage_edit", "set_optional_stage", "export_project_folder", "create_project", "rename_project", "set_recent_visibility", "visit_project", "create_episode", "record_leftovers", "start_episode", "create_task", "post_message", "retry_run",
-    "save_manual", "submit_review", "waive", "adopt", "answer_clarification", "abandon_task", "stop_run", "open_stage", "save_canvas", "combine", "split_segment",
+    "save_manual", "submit_review", "waive_stress_issue", "waive", "adopt", "answer_clarification", "abandon_task", "stop_run", "open_stage", "save_canvas", "combine", "split_segment",
     "resolve_impact", "create_pack", "edit_cuts", "add_beat", "bookmark", "save_pack", "adapt_from_pack",
     "add_space_item", "confirm_space_item", "set_cast", "set_role_baseline", "save_shot_observation", "reorder_refs", "edit_prompt_reference", "set_sound", "submit_reuse", "review_library",
-    "copy_to_episode", "create_batch", "authorize_batch", "cancel_batch", "reconcile_request", "resubmit_request",
+    "save_system_image_channel", "save_image_provider_settings", "copy_to_episode", "create_batch", "authorize_batch", "authorize_batches", "cancel_batch", "reconcile_request", "resubmit_request",
     "set_grid_cell", "mark_image", "redraw_cells", "adopt_image", "start_prompt_review", "start_prompt_review_batch", "waive_segment_issue", "set_publish_settings",
-    "deliver", "package", "package_preview", "start_closure", "decide_items", "confirm_closure", "propose_setting_change",
+    "fix_after_delivery", "deliver", "package", "package_preview", "start_closure", "decide_items", "confirm_closure", "propose_setting_change",
     "choose_episode_settings", "update_preset", "episode_spec_change", "cite", "take_source_topic", "add_topic", "drop_topic",
-    "create_group", "continue_in_group", "authorize_expert", "pause_expert", "manual_expert", "set_task_executor", "adopt_pack", "backup", "restore",
+    "create_group", "continue_in_group", "authorize_expert", "pause_expert", "manual_expert", "set_task_executor", "save_stage_executor", "adopt_pack", "backup", "restore",
 }
 QUERIES = {
+    "executor_defaults", "episode_expert", "material_issues",
+    "continuous_view", "attention_episodes", "similar_topics", "standard_goals",
+    "stress_worklist", "asset_worksheet",
+    "production_supplements", "director_decisions", "decision_candidates",
     "free_chat","free_chat_options","topic_researches",
     "episode_contact_options", "space_locks", "api_providers",
-    "step_history", "segment_palette_trace", "rhythm_review", "shot_reference_view",
+    "step_history", "prompt_scene_sources", "segment_palette_trace", "rhythm_review", "shot_reference_view",
     "project_role_assets", "historical_episodes", "historical_receipt", "historical_review_inputs", "product_placements", "project_resources", "project_section", "episode_project_sections", "available_configs", "groups", "project_knowledge",
     "resource_mounts", "browse_scripts", "search_script_bodies", "script_excerpt", "browse_palettes", "palette_detail", "project_palettes", "episode_palettes", "step_config", "step_form",
-    "project_presets", "episode_owner", "list_projects", "project_view", "episode_view", "kickoff_preview", "read_import", "compare", "continue_check",
+    "project_presets", "episode_owner", "list_projects", "project_view", "episode_view", "episode_messages", "kickoff_preview", "read_import", "compare", "continue_check",
     "grid_bindings", "draft_prompts", "plan_preview", "adoption_preview", "impacts", "ref_frames", "episode_bookmarks", "pack_view", "trace_shot", "blocked_segments", "cast_matrix", "episode_assets",
-    "asset_version", "library", "image_providers", "batch_view", "episode_batches", "compare_cells", "image_references",
+    "asset_version", "library", "image_providers", "system_image_channel", "episode_image_channel", "batch_view", "episode_batches", "compare_cells", "image_references",
     "prompt_signals", "prompt_review_status", "publish_settings", "compose_publish", "delivery_problems", "delivery_view", "verify_delivery",
     "enhancement_catalog", "closure_view", "similar", "project_baselines", "source_styles", "source_topics", "topics", "group_view", "model_catalog", "validate_selection", "regress_pack", "pack_versions", "compare_packs", "stage_methods", "custom_methods", "custom_method_text", "project_stage_methods", "script_plan_budget", "acting_review",
-    "storage_status", "packager_status", "project_todos", "project_overview", "adoption_preview", "expert_view", "expert_history", "expert_preview", "canvas_view", "ref_questions", "activity_log", "stage_checklist", "task_records", "executor_identity", "run_manifest", "run_methods", "version_sources", "probe",
+    "storage_status", "packager_status", "project_todos", "project_overview", "adoption_preview", "expert_view", "expert_history", "expert_preview", "canvas_view", "ref_questions", "activity_log", "stage_checklist", "task_records", "executor_identity", "run_manifest", "run_methods", "version_sources", "version_inputs", "input_text", "probe",
 }
-ASYNC = {"execute_batch", "expert_run", "ask_cut"}
+ASYNC = {"fix_after_delivery", "quick_start", "choose_continuous", "start_continuous", "resume_continuous","execute_batch", "expert_run", "ask_cut"}
 
 
 def create_app(wb: Workbench | None = None, inline_worker=False, token: str | None = None, *, external=False) -> FastAPI:
@@ -116,18 +141,41 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
     folders = None if external else FolderServers(wb)
     @asynccontextmanager
     async def lifespan(app):
+        stopped=threading.Event()
+        def monitor():
+            while not stopped.wait(30):
+                try:worker.continue_changed()
+                except Exception:logging.exception('Continuous recovery check failed')
+        monitor_thread=None
+        if not inline_worker and not external:
+            monitor_thread=threading.Thread(target=monitor,name='continuous-recovery',daemon=True)
+            monitor_thread.start()
         try:
             yield
         finally:
+            stopped.set()
+            if monitor_thread:monitor_thread.join()
+            if worker.continuous_pool:worker.continuous_pool.shutdown(wait=True)
             if folders:
                 folders.shutdown()
             if worker.pool:
                 worker.pool.shutdown(wait=True)
 
     app = FastAPI(title="AI Director Workbench",lifespan=lifespan)
+    from starlette.middleware.gzip import GZipMiddleware
+    class QueryGZipMiddleware(GZipMiddleware):
+        async def __call__(self, scope, receive, send):
+            if scope['type']=='http' and scope.get('path','').startswith('/api/q/'):
+                await super().__call__(scope,receive,send)
+            else:
+                await self.app(scope,receive,send)
+    app.add_middleware(QueryGZipMiddleware,minimum_size=1000,compresslevel=1)
     app.state.wb, app.state.worker, app.state.token = wb, worker, token
     for run_id in ([] if external else wb.pending_runs()):   # resume queued work after restart
         worker.submit(run_id)
+    if not external:
+        for cid in wb.restart_continuous_runs():
+            worker.run_continuous(wb._advance_continuous,cid)
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
@@ -142,7 +190,10 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
                 return JSONResponse({"error": "missing session token"}, 403)
         if external and request.url.path.startswith("/api/") and not wb.available():
             return JSONResponse({"error":"项目目录离线或已移位，请在主工作台关闭目录并重新定位"},503)
-        return await call_next(request)
+        response = await call_next(request)
+        if not external and request.method not in ("GET", "HEAD", "OPTIONS"):
+            worker.continue_changed()
+        return response
 
     @app.exception_handler(NotFound)
     @app.exception_handler(Rejected)
@@ -171,7 +222,7 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
 
     @app.get("/api/session")
     def session():
-        return {"token": token, "externalProject": external}
+        return {"token": token, "externalProject": external, "commands": sorted(COMMANDS)}
 
     @app.get("/api/configs")
     def configs():
@@ -265,7 +316,8 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
                                 body.get("relation", "independent"), body.get("predecessorIds", []),
                                 body.get("specOverrides"), body.get("commandId"), preset_name=body.get("presetName","default"),
                                 preset_revision=body.get("presetRevision"), use_story_skill=body.get("useStorySkill", False),
-                                cooperation_mode=body.get("cooperationMode"))
+                                cooperation_mode=body.get("cooperationMode"), palette_ids=body.get("paletteIds"),
+                                source_intent=body.get("sourceIntent", "adapt"))
 
     @app.get("/api/episodes/{eid}")
     def episode(eid: str):
@@ -310,7 +362,7 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
                         body.get("andContinue", False))
 
     def call(name, args):
-        fn = getattr(wb, name)
+        fn = wb.quick_start_prepare if name=="quick_start" else getattr(wb, name)
         signature = inspect.signature(fn)
         params = signature.parameters
         if "command_id" in params and not args.get("command_id"):
@@ -319,12 +371,17 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
             args = {k: v for k, v in args.items() if k != "command_id"}   # the UI always sends one
         guard = args.pop("editor_guard", None)
         check_call_args(signature, args)
+        if name=="choose_continuous" and not worker.inline:
+            worker.run_continuous(fn,**args)
+            return {"accepted":True}
         token = EDITOR_GUARD.set(guard)
         try:
             result = fn(**args)
         finally:
             EDITOR_GUARD.reset(token)
         if isinstance(result, dict):
+            if name=="quick_start":
+                worker.run_continuous(wb._advance_continuous,result["continuousId"])
             if result.get("runId"):
                 worker.submit(result["runId"])
             if name in ("send_free_chat","retry_free_chat","start_topic_research"):
@@ -342,7 +399,7 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
     async def with_files(name: str, args: str = Form(...), files: list[UploadFile] = File(...)):
         from .attachments import LIMIT
         from starlette.concurrency import run_in_threadpool
-        if name not in ("start_episode", "create_task", "post_message"):
+        if name not in ("choose_continuous", "quick_start", "start_episode", "create_task", "post_message"):
             raise NotFound("该操作不支持附件")
         try:
             body = json.loads(args)
@@ -362,8 +419,12 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
 
     @app.post("/api/cmd/{name}")
     def command(name: str, body: dict = Body(default={})):
-        if name in ("start_episode","create_task","post_message") and "files" in body:
+        if name=="waive_segment_issue" and "accepted_issue" in body:
+            raise Rejected("已知图片问题放行由内部核对运行处理")
+        if name in ("quick_start","start_episode","create_task","post_message") and "files" in body:
             raise Rejected("含附件的请求须使用文件上传入口")
+        if name == "quick_start":
+            return call(name,body)
         if name == "expert_run":
             check_call_args(inspect.signature(wb.claim_expert), body)
             claimed = wb.claim_expert(**body)
@@ -378,7 +439,10 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
                 getattr(wb, name + "_precheck")(**body)       # refusals reach the UI before the run is queued
             if worker.inline:
                 return getattr(wb, name)(**body)
-            worker.pool.submit(getattr(wb, name), **body)
+            if name in ("start_continuous","resume_continuous","choose_continuous","fix_after_delivery"):
+                worker.run_continuous(getattr(wb,name),**body)
+            else:
+                worker.pool.submit(getattr(wb, name), **body)
             return {"accepted": True}
         if name not in COMMANDS:
             raise NotFound("未知命令")
@@ -425,6 +489,16 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
             return wb.reconcile_request(m["requestId"], "completed", data)
         raise NotFound("未知上传")
 
+    @app.get("/api/h3-skill-trial/{episode_id}")
+    def h3_skill_trial(episode_id: str):
+        from uuid import UUID
+        try:
+            trial_id = str(UUID(episode_id))
+        except ValueError:
+            raise NotFound("无此试验")
+        result = wb.store.root / "h3-skill-trial" / trial_id / "comparison.json"
+        return json.loads(result.read_text()) if result.is_file() else None
+
     @app.get("/api/reference-media/{episode_id}/{version_id}")
     def reference_media(episode_id: str, version_id: str):
         from .h3export import MEDIA_MIME, EXTENSIONS
@@ -462,6 +536,11 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
                     ".webp":"image/webp",".gif":"image/gif"}[Path(name).suffix.lower()]
         return Response(raw, media_type=mime, headers=headers)
 
+    @app.get("/api/package-download/{package_id}")
+    def download_package(package_id: str):
+        target=wb.package_file(package_id)
+        return FileResponse(target,media_type="application/zip",filename=target.name)
+
     delivery_headers = {}
     if external:
         templates = Path(__file__).with_name("delivery_templates")
@@ -497,7 +576,8 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
 def main():
     import uvicorn
     port = int(os.environ.get("ADW_PORT", "8765"))
-    uvicorn.run(create_app(), host="127.0.0.1", port=port)
+    # 实测 140：不逐条打印页面轮询请求，只保留启动信息、警告与错误。
+    uvicorn.run(create_app(), host="127.0.0.1", port=port, access_log=False)
 
 
 if __name__ == "__main__":

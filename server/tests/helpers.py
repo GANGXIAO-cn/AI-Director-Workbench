@@ -46,25 +46,60 @@ class Env:
         return pid, eid
 
     def adopt_story(self, eid, cid="s"):
-        t = self.wb.create_task(eid, "story", "写本集故事稿", command_id=f"{eid}{cid}t")
+        t = self.wb.create_task(eid, "story", "按已采用的上游成果完成本阶段", command_id=f"{eid}{cid}t")
         self.drain(t["runId"])
         story = self.art(eid, "story")
         v = story["versions"][-1]["id"]
         self.drain(self.wb.submit_review(v, f"{eid}{cid}r")["runId"])
         self.wb.adopt(story["id"], v, story["adopted_version_id"], f"{eid}{cid}a", and_continue=True)
+        self.prepare_stage(eid, "script")
         return v
 
     def save_adopt(self, eid, stage, content, cid=None):
+        self.prepare_stage(eid, stage)
         art = self.art(eid, stage)
         v = self.wb.save_manual(art["id"], art["adopted_version_id"], content, cid or f"{eid}{stage}save")["versionId"]
         res = self.wb.adopt(art["id"], v, art["adopted_version_id"], (cid or f"{eid}{stage}") + "adopt", and_continue=True)
         return v, res
 
+    def prepare_stage(self, eid, stage):
+        """Populate real intermediate documents required by the unified workflow.
+
+        These are offline fixture inputs, not model output or creative validation.
+        Tests still call the service's ordinary save/adopt/skip commands.
+        """
+        if stage not in ("script", "plan", "prompts", "publish"):
+            return
+        adopted = {a["stage"]:a["adopted_version_id"] for a in self.wb.episode_view(eid)["artifacts"]}
+        if adopted.get("story") and not adopted.get("treatment"):
+            fixtures = {
+                "characters":dict(characters=[dict(id="afu",name="阿福",identity="值夜班的柴犬",goal="按规章完成交接",behavior="主动检查异常",identityRequired=True)]),
+                "treatment":dict(scenes=[dict(id="场01",heading="内景 便利店 夜",event="巡店检查",result="发现抽屉未关"),dict(id="场02",heading="内景 收银台 夜",event="检查并登记",result="交接完成")],durationBudget="按事件预算，最终以镜头合计为准"),
+            }
+            for key in ("characters", "world", "treatment"):
+                if key == "world":
+                    self.wb.set_optional_stage(eid,key,True,"现实店铺，无额外世界规则")
+                    continue
+                aid = self.wb.open_stage(eid,key)["artifactId"]
+                art = self.art(eid,key)
+                if not art["adopted_version_id"]:
+                    vid = self.wb.save_manual(aid,None,fixtures[key],f"fixture:{eid}:{key}:save")["versionId"]
+                    self.wb.adopt(aid,vid,None,f"fixture:{eid}:{key}:adopt")
+        if stage in ("plan", "prompts", "publish") and adopted.get("script") and not adopted.get("asset_design"):
+            self.wb.set_optional_stage(eid,"stress",True,"离线结构夹具不作创作压力测试")
+            aid = self.wb.open_stage(eid,"asset_design")["artifactId"]
+            vid = self.wb.save_manual(aid,None,dict(strategy="lightweight",assets=[dict(id="store",kind="scene",description="便利店内景",imagePrompt="夜间便利店内景，收银台和冰柜位置清晰。")]),f"fixture:{eid}:assets:save")["versionId"]
+            self.wb.adopt(aid,vid,None,f"fixture:{eid}:assets:adopt")
+            self.wb.set_optional_stage(eid,"acting",True,"此夹具直接使用剧本已写出的可见行动")
+        self.wb.open_stage(eid,stage)
+
     def script(self, eid):
-        return self.save_adopt(eid, "script", dict(scenes=[
+        vid = self.save_adopt(eid, "script", dict(scenes=[
             dict(id="场01", heading="内景 便利店 夜", action="阿福巡店，推门确认上锁。"),
             dict(id="场02", heading="内景 收银台 夜", action="阿福发现抽屉没关，按规章推回并登记。", dialogue="",
                  sound="冰柜低鸣")]))[0]
+        self.prepare_stage(eid, "plan")
+        return vid
 
     def plan86(self, segments=SEGMENTS_86, strategy=None):
         shots, segs, n = [], [], 0

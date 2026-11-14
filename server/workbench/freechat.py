@@ -11,11 +11,32 @@ from .errors import Conflict, NotFound, Rejected, row
 from .executors.base import ExecRequest
 from .prompts import prompt_from
 from . import topicresearch
+from .stages import WRITABLE
 
 REPLY_SCHEMA = {"type":"object", "properties":{"reply":{"type":"string"}}, "required":["reply"], "additionalProperties":False}
 
 
 class FreeChatMixin(topicresearch.TopicResearchMixin):
+    def _chat_project_context(self, db, project_id):
+        overview = self.project_overview(project_id)
+        project = overview["project"]
+        episodes = sorted(overview["episodes"], key=lambda ep: ep["created_at"], reverse=True)
+        todos = overview["todos"]
+        candidates = db.execute(
+            "SELECT code, premise, count(*) OVER () AS total FROM topic "
+            "WHERE project_id=? AND status='候选' AND episode_id IS NULL ORDER BY rowid DESC LIMIT 20",
+            (project_id,),
+        ).fetchall()
+        return dict(
+            项目=project["name"], 简介=project["summary"][:1000],
+            候选选题数=candidates[0]["total"] if candidates else 0,
+            最近候选选题=[dict(编号=t["code"], 前提=t["premise"][:240]) for t in candidates],
+            剧集数=len(episodes),
+            最近创建的剧集=[dict(集号=e["display_code"], 标题=e["title"][:160], 状态=e["label"],
+                             已采纳阶段=[k for k,v in e["adopted"].items() if v]) for e in episodes[:20]],
+            项目页待办数=len(todos), 项目页待办=[t["title"][:320] for t in todos[:20]],
+        )
+
     def free_chat(self, project_id, thread_id=None, episode_id=None, stage=None):
         with connect(self.db_path) as db:
             row(db, "SELECT id FROM project WHERE id=?", project_id)
@@ -38,6 +59,8 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
                     manifest, digest = self.store.load_manifest(t.pop("manifest_relpath"))
                     if digest != t["input_hash"]:
                         raise Rejected("自由对话输入清单指纹不符")
+                    connection = manifest.get("executorConnection") or manifest.get("creator") or {}
+                    t["model"], t["effort"] = connection.get("model"), connection.get("effort")
                     t["methods"] = manifest["methodVersions"]
                     if episode_id:
                         t["basis"] = manifest["stageBasis"]
@@ -51,10 +74,11 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
                       "ON a.id=v.asset_id WHERE a.project_id=? AND a.kind='image' ORDER BY a.name,v.version_no DESC",(project_id,))]
             canvases = [dict(r) for r in db.execute("SELECT e.id,e.display_code,coalesce(c.revision,0) AS revision FROM episode e LEFT JOIN canvas c "
                         "ON c.episode_id=e.id JOIN kickoff k ON k.episode_id=e.id WHERE e.project_id=? ORDER BY e.display_code",(project_id,))]
-        return dict(assets=assets,canvases=canvases,providers=list(self.executors))
+        return dict(assets=assets,canvases=canvases,providers=[p for p in self.executors if p!='claude'])
 
     def send_free_chat(self, project_id, text, provider, thread_id=None, previous=None, methods=(), images=(),
                        canvas=None, canvas_revision=None, command_id=None, baseline=None, episode_id=None, stage=None, source_version=None):
+        if provider=='claude':provider=self.active_selection(dict(provider=provider))['provider']
         if not isinstance(text,str) or not text.strip():
             raise Rejected("请输入对话内容")
         if not isinstance(provider,str) or provider not in self.executors:
@@ -67,7 +91,7 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
         payload = dict(project=project_id,thread=thread_id,previous=previous,text=text,methods=methods,images=images,
                        canvas=canvas,canvasRevision=canvas_revision,provider=provider)
         if episode_id is not None or stage is not None or source_version is not None:
-            if not episode_id or stage not in ("story","script","plan","prompts","publish"):
+            if not episode_id or stage not in WRITABLE:
                 raise Rejected("请选择本集的写作阶段")
             payload.update(episodeId=episode_id, stage=stage, sourceVersion=source_version)
         if baseline is not None:
@@ -105,6 +129,9 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
                 if history and history[-1]["status"] in {"queued","running"}:
                     raise Conflict("请等待上一条回复，或先停止该次请求")
                 entries = stage_entries
+                if episode_id is None:
+                    context = self._chat_project_context(db, project_id)
+                    entries.append(dict(role="project_context", name="发送时的项目概况", text=dumps(context)))
                 if baseline is not None:
                     if not isinstance(baseline,dict) or set(baseline) != {"kind","key","sha256","revision"}:
                         raise Rejected("基准引用缺少固定块或版本")
@@ -201,6 +228,13 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
             purpose = manifest["purpose"]
             research = purpose == "topic_research"
             guidance = topicresearch.INSTRUCTIONS if research else "根据本次选用的创作方法和资料，直接回答本条消息。将答复放入 reply 字段。"
+            if any(e["role"] == "project_context" for e in entries):
+                guidance += ("你是本项目的导演助手。讨论创意时直接接着聊。用户询问进度或下一步时，以本轮项目概况为准，"
+                             "结合待办、剧集状态和候选选题，给出具体可做的下一步。空项目可以先聊想法，"
+                             "也可以在选题池加入候选，或在项目页新增一集。把建议与已发生的事实分清。"
+                             "对话中的建议不会自动创建选题、开工或改稿。")
+            if research:
+                entries, citations = topicresearch.research_inputs(entries)
             prompt = prompt_from(entries, guidance, purpose)
             choice = manifest.get("executorConnection",manifest.get("creator",{}))
             request = ExecRequest(attempt,purpose,purpose,prompt,topicresearch.SCHEMA if research else REPLY_SCHEMA,"new",work,
@@ -208,7 +242,7 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
                                   timeout=int(self.get_setting("executor_timeout",600)),images=images)
             out = self.executors[t["provider"]].start(request)
             if research and out.ok:
-                reply, status = topicresearch.research_reply(out.structured, entries), "succeeded"
+                reply, status = topicresearch.research_reply(out.structured, citations), "succeeded"
             elif out.ok:
                 body = out.structured
                 if not isinstance(body,dict) or not isinstance(body.get("reply"),str) or not body["reply"].strip():

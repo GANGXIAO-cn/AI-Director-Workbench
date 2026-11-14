@@ -11,7 +11,7 @@ async function main() {
     let runs=0;
     page.on("request",r=>{if(r.url().endsWith("/cmd/kickoff_check_run")) runs++;});
     const button=name=>page.getByRole("button",{name,exact:true});
-    const start=button("开工，进入故事稿");
+    const start=button("开工并开始创作");
     const idea=page.getByPlaceholder("一句话想法");
     const sample="让主角说出最后一句台词。";
     await page.goto(base+"/#/p/"+project.id);

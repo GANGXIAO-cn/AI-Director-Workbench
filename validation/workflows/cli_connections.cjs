@@ -17,14 +17,14 @@ async function main() {
     const [project]=await q("list_projects");
     const eid=project.recent[0].id;
     await page.goto(base+"/#/sys/settings");
-    const menu=page.getByRole("navigation",{name:"设置分类"});
+    const settingsMenu=page.getByRole("navigation",{name:"设置分类"});
     const nav=page.getByRole("navigation",{name:"主导航"});
-    await menu.getByRole("link",{name:"色卡资料位置"}).click();
+    await settingsMenu.getByRole("link",{name:"色卡资料位置"}).click();
     await page.getByLabel("资料路径").waitFor();
     assert.equal(await nav.getByRole("link",{name:"设置",exact:true}).getAttribute("aria-current"),"page");
     await page.reload();
     await page.getByLabel("资料路径").waitFor();
-    await menu.getByRole("link",{name:"执行器连接与型号"}).click();
+    await settingsMenu.getByRole("link",{name:"执行器连接与型号"}).click();
     const settings=page.locator(".grid3 .card");
     const providers=[
       ["Codex","codex","codex","studio-model","high","ChatGPT · 已登录"],
@@ -40,6 +40,16 @@ async function main() {
       await card.getByRole("status").waitFor();
       await card.getByRole("button",{name:"验证连接"}).click();
       await card.getByText(provider==="antigravity"?/Google CLI 已返回可用型号/:/本机登录已验证/).waitFor();
+      if(provider==="claude") {
+        const row=page.getByRole("row").filter({has:page.getByRole("cell",{name:"Fable 5.1",exact:true})});
+        await row.getByRole("cell",{name:"本机 Claude CLI 型号清单"}).waitFor();
+        await row.getByRole("cell",{name:"清单未提供"}).waitFor();
+        const select=card.getByLabel("默认型号");
+        assert.deepEqual(await select.locator("option").allTextContents(),["执行器默认","Sonnet 5.5","Fable 5.1"]);
+        await select.selectOption("claude-fable-5-1[1m]");
+        assert.deepEqual(await card.getByLabel("默认强度").locator("option").allTextContents(),["执行器默认","high"]);
+        assert.equal((await q("validate_selection",{provider,model:"claude-fable-5-1[1m]",effort:"high"})).model,"claude-fable-5-1[1m]");
+      }
       await card.getByLabel("默认型号").selectOption(model);
       if(effort) await card.getByLabel("默认强度").selectOption(effort);
       await card.getByLabel("连接代理").selectOption("off");
@@ -58,14 +68,18 @@ async function main() {
       if(effort) assert.equal(await card.getByLabel("默认强度").inputValue(),effort);
     }
     await page.goto(base+"/#/e/"+eid+"/story");
+    const menu=page.locator(".composer:visible .composer-model").filter({has:page.locator("small").getByText("创作",{exact:true})});
     for(const [,provider,,model,effort,identity] of providers) {
+      await menu.locator(".model-trigger").click();
       await page.getByLabel("创作执行器").selectOption(provider);
-      await page.getByLabel("当前账号连接").filter({hasText:identity}).waitFor();
-      assert.equal(await page.getByLabel("创作型号").inputValue(),model);
-      if(effort) assert.equal(await page.getByLabel("推理强度").inputValue(),effort);
+      await menu.getByRole("group",{name:"创作",exact:true}).filter({hasText:identity}).waitFor();
+      await page.getByLabel("创作型号").selectOption(model);
+      if(effort) await page.getByLabel("创作推理强度").selectOption(effort);
+      await page.waitForFunction(()=>!document.querySelector(".executor-panel fieldset:disabled"));
+      await menu.locator(".model-trigger").click();
       await page.locator(".composer textarea").fill("检查本集开场 "+provider);
       const result=page.waitForResponse(r=>r.request().method()==="POST"&&/\/(create_task|post_message)$/.test(r.url()));
-      await page.locator(".composer").getByRole("button",{name:"↑"}).click();
+      await page.locator(".composer").getByRole("button",{name:"发送消息"}).click();
       const response=await result;
       assert.ok(response.ok(),await response.text());
       const {runId}=await response.json();

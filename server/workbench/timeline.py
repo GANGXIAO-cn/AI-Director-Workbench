@@ -5,7 +5,16 @@ its shots, segments run back to back in order, and the episode total is derived 
 """
 import copy
 
+MIN_SEGMENT_MS = 5_000
 MAX_SEGMENT_MS = 15_000
+SEGMENT_STEP_MS = 1_000
+
+def shooting_contract():
+    return (f"剧本同时提供顶层 shootingSegments 数组：每项 id、sceneId、order、duration_ms、action、dialogue、sound、startState、endState。"
+            f"当前提交入口每拍摄段 {MIN_SEGMENT_MS//1000}–{MAX_SEGMENT_MS//1000} 秒、{SEGMENT_STEP_MS//1000} 秒步长，不要求用满。"
+            "完整 scenes 保留；按动作结果与对白语义先拆拍摄段，段落覆盖原剧情，不新增故事。短动作可合段，不加无效等待。"
+            "分镜继承该段号和预算，再在段内展开观看窗口；提示词照分镜表达。锁定原文时仅补顶层制作拆分，不改 scenes 或准确对白。")
+
 
 
 def layout(plan: dict) -> dict:
@@ -81,7 +90,7 @@ def check(plan: dict, packaging: bool = False) -> list[dict]:
             problems.append(dict(segment=seg["id"], problem="生成段为空"))
         elif d > MAX_SEGMENT_MS:
             problems.append(dict(segment=seg["id"], problem=f"生成段 {d / 1000:g} 秒，超过 15 秒，须在动作完成处拆段"))
-        elif packaging and (d % 1000 or not 5000 <= d <= 15000):
+        elif packaging and (d % SEGMENT_STEP_MS or not MIN_SEGMENT_MS <= d <= MAX_SEGMENT_MS):
             problems.append(dict(segment=seg["id"], problem=f"打包要求 5–15 秒整数，当前 {d / 1000:g} 秒"))
     return problems
 
@@ -97,6 +106,8 @@ def preview(old: dict | None, new: dict) -> dict:
     new_seg = {s["id"]: s for s in new_lay["segments"]}
     old_shots = {s["id"]: s for s in old.get("shots", [])}
     new_shots = {s["id"]: s for s in new.get("shots", [])}
+    old_records = {s['id']: s for s in old.get('segments', [])}
+    new_records = {s['id']: s for s in new.get('segments', [])}
     changed = set()
     for sid in set(old_shots) | set(new_shots):
         a, b = old_shots.get(sid), new_shots.get(sid)
@@ -105,8 +116,9 @@ def preview(old: dict | None, new: dict) -> dict:
             if a and b and a["segment"] != b["segment"]:
                 changed.add(a["segment"])
     for sid in set(old_seg) & set(new_seg):
-        if old_seg[sid]["shots"] != new_seg[sid]["shots"] or old_seg[sid]["strategy"] != new_seg[sid]["strategy"]:
+        if old_seg[sid]["shots"] != new_seg[sid]["shots"] or old_records[sid] != new_records[sid]:
             changed.add(sid)
+    changed.update(set(new_seg) - set(old_seg))
     shifted = [dict(segment=sid, startBefore=old_seg[sid]["start_ms"], startAfter=new_seg[sid]["start_ms"])
                for sid in new_seg if sid in old_seg and old_seg[sid]["start_ms"] != new_seg[sid]["start_ms"]]
     order = [s["id"] for s in new_lay["segments"]]

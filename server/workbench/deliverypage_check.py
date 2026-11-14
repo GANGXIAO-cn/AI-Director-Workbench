@@ -148,6 +148,11 @@ def check_segment(actual, segment, assets, data, read_text, matches):
     return check_uploads(actual,segment,assets,data,matches)
 
 
+def reference_shot_label(ref):
+    numbers = ref.get("windows") or ref.get("shots")
+    return "作用镜头：" + "、".join(numbers) if numbers else None
+
+
 def check_uploads(actual, segment, assets, data, matches):
     prompt_path = segment["prompt"]
     if (actual['card_grids'] != 1 or not all(x['is_card'] for x in actual['assets'])):
@@ -162,7 +167,8 @@ def check_uploads(actual, segment, assets, data, matches):
     if [a['id'] for a in actual['assets']] != [r['asset_id'] for r in refs]:
         raise ValueError(f'页面实际上传顺序不符：{segment["id"]}')
     for entry, ref in zip(actual['assets'], refs):
-        if (data.get("shot_reference_version") == 1 or ref.get("shots")) and entry.get('shot_labels') != ['作用镜头：' + '、'.join(ref['shots'])]:
+        label = reference_shot_label(ref)
+        if (label or data.get("shot_reference_version") == 1) and entry.get("shot_labels", []) != ([label] if label else []):
             raise ValueError(f'页面作用镜头与实际清单不符：{segment["id"]}/{ref["asset_id"]}')
         asset = assets[ref['asset_id']]
         expected = asset['path']

@@ -4,7 +4,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from . import publishing
-from .deliverypage_check import TEMPLATES, TEMPLATE, check
+from .deliverypage_check import TEMPLATES, TEMPLATE, check, reference_shot_label
 
 DOCUMENTS = (
     ("shot-references", "逐镜引用与看图记录", "逐镜参考.html"),
@@ -110,6 +110,10 @@ def gallery(meta):
             parts.append(f'<li class="card"><a href="{url}">{name}<img loading="lazy" src="{url}" alt="{name}"></a>')
             if used:
                 parts.append('<p>使用段 '+h("、".join(row["segments"]))+'</p>')
+            if row.get('provisionalIssues'):
+                parts.append('<div class="known-image-issues"><h4>AI 暂用，未解决</h4><ul>'+''.join('<li>'+h(issue['issue_key']+'：'+issue['text'])+'</li>' for issue in row['provisionalIssues'])+'</ul></div>')
+            if row.get('knownIssues'):
+                parts.append('<div class="known-image-issues"><h4>用户已接受的已知问题</h4><ul>'+''.join('<li>'+h(issue['issue_key']+'：'+issue['text'])+'</li>' for issue in row['knownIssues'])+'</ul></div>')
             if row["marks"]:
                 labels = {"required":"必用","backup":"备选","recommended":"推荐","adopted":"采用"}
                 parts.append('<p>'+h("、".join(labels.get(m,m) for m in row["marks"]))+'</p>')
@@ -207,16 +211,20 @@ def render(root, data, files):
     if meta["publish"]:
         parts.append('<a data-publish-link href="#publish-pack">发布包</a>')
     parts.append('</nav><p class="status">按段内顺序将素材和完整提示词送入 H3。实际生成后再核对动作、时长和声音。</p>')
-    if bindings:
-        parts.append(bindings)
-    if roster:
-        parts.append(roster)
+    if data['workbench'].get('changes'):
+        parts.append('<aside class="delivery-changes"><h2>本次修改</h2><ul>')
+        for change in data['workbench']['changes']:
+            scope='、'.join([*change['segments'],*change['scenes'],*change['needKeys']])
+            parts.append('<li>'+h(scope+'：'+change['reason'])+'<p>'+h(change['instruction'])+'</p></li>')
+        parts.append('</ul></aside>')
     for s in segments:
         sid = h(s["id"])
         parts.append(f'<section id="segment-{sid}" data-segment="{sid}"><h2>{sid}</h2><p class="meta">{h(s["strategy"])} · {h(s["start"])} · {h(s["duration_s"])} 秒</p>')
         grid = data["workbench"].get("frameGeometry", {}).get("grids", {}).get(s["id"])
         if grid:
             parts.append(f'<p class="meta" data-grid-size>九宫格原图 {h(grid["width"])} × {h(grid["height"])} 像素</p>')
+        text = (root/s["prompt"]).read_bytes().decode("utf-8")
+        parts.append(f'<p><a href="{link(s["prompt"])}">独立提示词 TXT</a></p><pre>{verbatim(text)}</pre>')
         parts.append('<ol class="cards">')
         for ref in sorted(s["references"], key=lambda r:r["upload_order"]):
             asset = assets[ref["asset_id"]]
@@ -225,11 +233,15 @@ def render(root, data, files):
             parts.append(f'<li class="card" data-asset="{aid}"><p class="meta">上传 {ref["upload_order"]} · {h(asset["version"])}</p><h3>{h(asset.get("name") or label)}</h3>')
             media = f'<img src="{url}" alt="{label}">' if kind=="image" else f'<{kind} controls preload="metadata" src="{url}"></{kind}>'
             parts.append(f'<a href="{url}">{label} · {aid}</a>{media}<p>{h(ref.get("role",""))}</p>')
-            if ref.get("shots"):
-                parts.append('<p data-reference-shots>作用镜头：'+h("、".join(ref["shots"]))+'</p>')
+            shot_label = reference_shot_label(ref)
+            if shot_label:
+                parts.append('<p data-reference-shots>'+h(shot_label)+'</p>')
             parts.append('</li>')
-        text = (root/s["prompt"]).read_bytes().decode("utf-8")
-        parts.append(f'</ol><p><a href="{link(s["prompt"])}">独立提示词 TXT</a></p><pre>{verbatim(text)}</pre></section>')
+        parts.append('</ol></section>')
+    if bindings:
+        parts.append(bindings)
+    if roster:
+        parts.append(roster)
     if meta["publish"]:
         parts.append(publish_html(meta["publish"]))
     parts.append(gallery(meta))
@@ -250,7 +262,7 @@ def verify(root, data, files):
             if source["sha256"] != files.get(source["path"]) or source["version"] != handoff["adopted"][stage]:
                 raise ValueError("精剪交接来源文件与冻结稿不符")
         if (handoff["adopted"] != data["workbench"]["adopted"] or handoff["revision"] != data["workbench"]["deliveryId"]
-                or (root/"03_精剪交接.md").read_bytes() != finecut.render(handoff).encode()):
+                or (root/"03_精剪交接.md").read_bytes() not in (finecut.render(handoff).encode(), finecut.render(handoff, legacy_labels=True).encode())):
             raise ValueError("精剪交接与本次来源版本或冻结正文不符")
     meta = data["workbench"]["page"]
     pack = meta["publish"]

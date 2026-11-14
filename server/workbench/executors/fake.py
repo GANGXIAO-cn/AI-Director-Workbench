@@ -1,9 +1,11 @@
 """FakeExecutor: scripted results for tests. Never touches the network."""
+import json
 import re
 
 from .base import ExecOutcome, Executor, ExecRequest
 
 STORY = dict(
+    title="第一次值夜班",
     synopsis="那天夜里，柴犬阿福第一次值夜班。他看见收银台抽屉没关，按规章把抽屉推回并登记。",
     cast="|角色ID|身份与作用|独立身份基准|\n|---|---|---|\n|afu|值夜班的柴犬，主角|需要|",
     handoff="目标时长约 70 秒；无特殊限制。",
@@ -36,6 +38,12 @@ def review(req: ExecRequest, decision="pass", issues=()) -> dict:
     seg = ctx["segment"]
     if seg:
         obs = [dict(objectId=seg, versionId=vid, unit="segment", anchor="00:00", evidence="看到角色与动作")]
+        if ctx["passName"] == "comparison":
+            obs.extend(dict(objectId=key, versionId=vid, unit="segment", anchor=seg, evidence="已对照必守设定")
+                       for key in ctx["requiredSettings"])
+        for block in re.findall(r"^===== director_decisions · [^\n]+ =====\n([^\n]+)", req.prompt, re.M):
+            obs.extend(dict(objectId=d["code"], versionId=vid, unit="segment", anchor=seg, evidence="已对照决定")
+                       for d in json.loads(block))
     else:
         obs = [dict(objectId=vid, versionId=vid, unit="paragraph", anchor="梗概", evidence="冷读复述：阿福值夜班。")]
         obs += [dict(objectId=s, versionId=vid, unit="paragraph", anchor="梗概", evidence="已核对")
@@ -44,6 +52,7 @@ def review(req: ExecRequest, decision="pass", issues=()) -> dict:
                                      anchor=i.get("anchor", "第1段"),
                                      evidence=i.get("evidence", "原句")),
                        category=i.get("category", "clarity"), settingId=i.get("settingId"),
+                       **({"decisionId":i["decisionId"]} if "decisionId" in i else {}),
                        decision="return", reason=i.get("reason", "意见")) for i in issues]
     return dict(schemaVersion=1, kind="review", runId=ctx["runId"], inputFingerprint=ctx["inputFingerprint"],
                 reviewedVersionId=vid, pass_=ctx["passName"], decision=decision, observations=obs, issues=out_issues)
@@ -51,6 +60,8 @@ def review(req: ExecRequest, decision="pass", issues=()) -> dict:
 
 class FakeExecutor(Executor):
     """script: list of callables(req) -> ExecOutcome | dict, consumed in order; default: valid result."""
+
+    strict_schema = True
 
     def __init__(self, name="fake", script=None, isolation="session", reads_images=True):
         self.name = name
@@ -68,6 +79,25 @@ class FakeExecutor(Executor):
         result = step(req) if step else directed(req, self.name)
         if isinstance(result, ExecOutcome):
             return result
+        if not step and result.get("kind") == "draft":
+            source = sections(req.prompt).get("director_decisions")
+            if source:
+                fields = {change["field"]:change["value"] for change in result["changes"]}
+                if fields.get("synopsis"):
+                    location, quote = "梗概", fields["synopsis"].splitlines()[0]
+                elif "scenes" in fields:
+                    scene = _json.loads(fields["scenes"])[0]
+                    location = scene.get("id") or scene.get("sceneId")
+                    quote = scene.get("action") or scene.get("event") or scene.get("objective")
+                else:
+                    location, quote = None, None
+                notes = []
+                for d in _json.loads(source):
+                    if quote and (d["scope"] == "episode" or location in d["scenes"]):
+                        notes.append(dict(decision=d["code"], status="applied", where=location, quote=quote))
+                    else:
+                        notes.append(dict(decision=d["code"], status="not_applicable", reason="本次离线结构夹具未设计对应动作"))
+                result["changes"].append(dict(targetId=context(req.prompt)["targetId"],field="decisionNotes",value=_json.dumps(notes,ensure_ascii=False)))
         if "pass_" in result:
             result["pass"] = result.pop("pass_")
         return ExecOutcome(ok=True, structured=result, session_id=f"fake-session-{len(self.calls)}",
@@ -115,19 +145,21 @@ def sections(prompt: str) -> dict:
     return {k: "\n".join(v) for k, v in out.items()}
 
 
-def directed(req: ExecRequest, name: str):
+def directed(req: ExecRequest, name: str, stage_reply=True):
     p = req.prompt
     sec = sections(p)
     request = sec.get("request", "")
     if MARK_QUOTA in request and name == "codex":
         return quota_exhausted(req)
-    if "directorRequest" in req.schema.get("properties", {}):
-        return dict(draft(req), kind="discussion", changes=[], directorRequest="", reply="本次只讨论当前稿件。")
+    if stage_reply and "directorRequest" in req.schema.get("properties", {}):
+        if "removedIds" in req.schema["properties"] and ("导演已经选择按讨论生成新稿" in p or "【测试：改稿】" in request):
+            return dict(directed(req,name,stage_reply=False), directorRequest=request.strip(),reply="",removedIds=[])
+        return dict(draft(req), kind="discussion", changes=[], directorRequest="", reply="本次只讨论当前稿件。", **({"removedIds":[]} if "removedIds" in req.schema["properties"] else {}))
     if req.kind == "topic_research":
-        source, quote = re.search(r"^===== research_source · (.*?) =====\n([^\n]+)", p, re.M).groups()
+        ref = re.search(r"^===== research_source · (R\d+) · ", p, re.M).group(1)
         return {"candidates":[dict(title="错拿的钥匙", premise="值班员试图在交班前归还拿错的钥匙。",
                                    mechanism="两人互换线索", motivation="按时完成交班",
-                                   difference="将发现遗失改为主动归还。",source=source,quote=quote[:24])]}
+                                   difference="将发现遗失改为主动归还。",reference_id=ref)]}
     if req.kind == "free_chat":
         return {"reply":"已按本轮资料回应。"+request.strip()}
     if req.kind == "cut_explanation":
@@ -157,6 +189,19 @@ def directed(req: ExecRequest, name: str):
         return review(req)
     fields = re.search(r"可写字段：(.+)", p)
     writable = [f.strip() for f in fields.group(1).split(",")] if fields else []
+    # Offline fixtures for the unified stages, distinguished by the explicit
+    # stage contract rather than a semantic classifier.
+    contract = re.search(r"^===== stage_contract · (\w+)\.txt =====$",p,re.M)
+    unified = {
+        "characters":dict(characters=[dict(id="afu",name="阿福",identity="值夜班的柴犬",goal="完成交接",behavior="主动检查异常")]),
+        "world":dict(rules=[dict(id="night",rule="夜间只留值班员",choiceImpact="必须自己检查异常")]),
+        "treatment":dict(scenes=[dict(id="场01",heading="便利店 夜",event="检查抽屉",result="完成登记")],durationBudget="8秒估计，非实测"),
+        "stress":dict(retelling="值班员想完成交接，发现抽屉异常后推回并登记。",scope="已采用剧本",diagnosis="事件因果清楚；此为离线夹具，不评价创作质量。",issues=[],options=[],productionNotes=[]),
+        "asset_design":dict(strategy="lightweight",assets=[dict(id="store",kind="scene",description="夜间便利店收银台",imagePrompt="夜间便利店内景，阿福站在收银台前检查抽屉。")]),
+        "acting":dict(scenes=[dict(sceneId="场01",objective="完成检查",obstacle="异常抽屉",strategy="观察再处理",beats=["看向抽屉","推回并登记"])]),
+    }
+    if contract and contract[1] in unified:
+        return draft(req, **{k:_json.dumps(v,ensure_ascii=False) if isinstance(v,(list,dict)) else v for k,v in unified[contract[1]].items()})
     if MARK_CLARIFY in request and "clarification" in p and "澄清：" not in request:
         return clarify(req)
     kick = next((l for l in sec.get("kickoff", "").splitlines() if "【测试" in l), "")

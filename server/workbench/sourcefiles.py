@@ -8,18 +8,30 @@ from .errors import Rejected, Conflict, row
 from .methodpack import load_config
 from .roleassets import RoleAssetMixin
 from .projectlibrary import ProjectLibraryMixin
-from .storage import sha256_bytes
+from .storage import Store, sha256_bytes
 
-STAGES = {"characterStandard": ("script", "plan", "prompts"), "soundStandard": ("script", "prompts"),
+STAGES = {"characterStandard": ("story", "characters", "world", "treatment", "script", "stress", "asset_design", "acting", "plan", "prompts"),
+          "soundStandard": ("characters", "script", "stress", "acting", "plan", "prompts"),
           "promptStandard": ("prompts",)}
 
 def production(db, pid):
     project = row(db, "SELECT production, config_id FROM project WHERE id=?", pid)
     # Older projects keep their configured paths; new source keys come from their own template.
-    return {**load_config(project["config_id"]).get("production", {}), **json.loads(project["production"])}
+    prod = {**load_config(project["config_id"]).get("production", {}), **json.loads(project["production"])}
+
+    sources = dict(db.execute("SELECT path,sha256 FROM project_series_file WHERE project_id=?", (pid,)))
+    if sources:
+        prod["_files"] = sources
+        prod["_store"] = Store(Path(db.execute("PRAGMA database_list").fetchone()[2]).parent)
+    return prod
+
 
 def read_named(prod, key):
     rel = prod.get(key)
+    if rel and "_files" in prod:
+        if rel not in prod["_files"]:
+            raise Rejected(f"项目迁移资料缺失：{rel}")
+        return rel, prod["_store"].read_blob(prod["_files"][rel])
     if not rel or not prod.get("assetRoot"):
         return None
     root = Path(prod["assetRoot"]).resolve()
@@ -56,9 +68,20 @@ class SourceFilesMixin(BaselineRevisionMixin, ProjectLibraryMixin, RoleAssetMixi
                 db.execute("INSERT INTO episode_source VALUES(?,?,?,?)", (eid,key,rel,self.store.put_blob(data)))
 
     def _source_entries(self, db, eid, stage):
-        return [dict(role=r["kind"], name=r["relpath"], text=self._effective_bytes(db,eid,r).decode("utf-8"))
+        entries = [dict(role=r["kind"], name=r["relpath"], text=self._effective_bytes(db,eid,r).decode("utf-8"))
                 for r in db.execute("SELECT * FROM episode_source WHERE episode_id=? ORDER BY kind",(eid,))
                 if stage in STAGES[r["kind"]]]
+
+        if stage in ("story", "characters", "world", "treatment", "script", "asset_design", "plan"):
+            paths = ["系列设定.md", "制作基准/家庭空间约束.md"]
+            if stage == "story":
+                paths.append("故事开发索引.md")
+            pid = self._episode_in(db, eid)["project_id"]
+            for path in paths:
+                item = db.execute("SELECT sha256 FROM project_series_file WHERE project_id=? AND path=?", (pid,path)).fetchone()
+                if item:
+                    entries.append(dict(role="citation", name=path, text=self.store.read_blob(item[0]).decode("utf-8")))
+        return entries
 
     def project_baselines(self, project_id):
         with connect(self.db_path) as db:

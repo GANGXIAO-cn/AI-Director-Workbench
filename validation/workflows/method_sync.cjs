@@ -27,45 +27,37 @@ async function main() {
     const tag="记录接触前的位置和接触后的位移";
     const target="动作能量与反应";
     await page.goto(base+"/#/sys/skills");
-    await page.getByLabel("方法包",{exact:true}).selectOption("short-film@v9");
-    await page.locator("p.error").filter({hasText:"方法包读取或指纹核对失败"}).waitFor();
+    const choices=page.getByLabel("方法包",{exact:true});
+    await choices.locator("option",{hasText:"unified-film@draft"}).waitFor({state:"attached"});
+    assert.deepEqual(await choices.locator("option").allTextContents(),["unified-film@draft"]);
     await page.getByLabel("应用方法包的项目").selectOption(pid);
-    await page.getByLabel("方法包",{exact:true}).selectOption("short-film@v8");
-    await page.getByText("当前 short-film@v7",{exact:true}).waitFor();
-    await page.getByText(/动作能量与反应 · 正文修改/).click();
-    const row=page.locator(".method-changes details").filter({has:page.locator("summary").filter({hasText:"动作能量与反应 · 正文修改"})}).first();
-    assert.match(await row.innerText(),/24-37/);
-    assert.match(await row.locator("pre").innerText(),new RegExp(tag));
-    assert.match(await page.getByText(/阶段输入变更 ·/).innerText(),/制作方案、剧本|剧本、制作方案/);
-    await page.screenshot({path:path.join(output,"41_v7方法更新与受影响阶段.png")});
-    await page.getByRole("button",{name:"应用于新开工的集"}).click();
-    await page.getByText("当前 short-film@v8",{exact:true}).waitFor();
-    const oldNext=await command("create_task",{episode_id:eid,stage:"script",goal:"换版后旧集延续"});
-    const {episodeId:newId}=await command("start_episode",{episode_id:null,project_id:pid,display_code:"新集",source_type:"idea",idea_text:"雨中站台",executor_plan:{create:{provider:"codex"},review:{provider:"claude"}}});
-    await command("create_task",{episode_id:newId,stage:"story",goal:"起草新集"});
-    const art=(await query("episode_view",{episode_id:newId})).artifacts.find(a=>a.stage==="story");
-    const version=art.versions.at(-1).id;
-    await command("submit_review",{version_id:version});
-    await command("adopt",{artifact_id:art.id,version_id:version,expected_adopted_version_id:null,and_continue:true});
-    const newTask=await command("create_task",{episode_id:newId,stage:"script",goal:"换版后新集起草"});
+    const bad=await page.request.get(base+"/api/q/regress_pack",{params:{args:JSON.stringify({ref:"short-film@v9"})}});
+    assert.equal(bad.status(),422);
+    const comparison=await query("compare_packs",{original:"short-film@v7",candidate:"short-film@v8",project_id:pid});
+    const change=comparison.sections.find(s=>s.key===target);
+    assert.equal(change.after.source.lines,"24-37");
+    assert.ok(change.patch.includes(tag));
+    const rejected=await page.request.post(base+"/api/cmd/adopt_pack",{headers:{"x-adw-token":token},
+      data:{project_id:pid,ref:"short-film@v8",command_id:"reject-historical"}});
+    assert.equal(rejected.status(),422);
+    const oldNext=await command("create_task",{episode_id:eid,stage:"script",goal:"旧集当前方法"});
+    const {episodeId:newId}=await command("start_episode",{episode_id:null,project_id:pid,display_code:"新集",
+      source_type:"idea",idea_text:"雨中站台",executor_plan:{create:{provider:"codex"},review:{provider:"claude"}}});
+    const newTask=await command("create_task",{episode_id:newId,stage:"story",goal:"新集当前方法"});
     assert.deepEqual(await query("run_methods",{run_id:first}),original);
     const cases=[];
-    for (const [label,id,ref] of [["换版前旧集",first,"v7"],["换版后旧集",oldNext.runId,"v7"],["换版后新集",newTask.runId,"v8"]]) {
+    for(const [label,id,stage] of [["旧集",oldNext.runId,"script"],["新集",newTask.runId,"story"]]){
       const doc=await query("run_methods",{run_id:id});
-      const section=doc.sections.find(s=>s.name===target+".md");
-      assert.equal(section.text.includes(tag),ref==="v8");
-      assert.equal(doc.ref,"short-film@"+ref);
-      assert.equal(section.source.lines,ref==="v8"?"24-37":"22-34");
-      cases.push({label,run:id,pack:doc.ref,inputHash:doc.inputHash,section});
+      assert.equal(doc.ref,"unified-film@draft");
+      assert.ok(doc.sections.some(s=>s.name===stage+".md"));
+      cases.push({label,run:id,pack:doc.ref,inputHash:doc.inputHash});
     }
     await page.goto(base+"/#/sys/tasks");
-    await page.getByRole("row").filter({hasText:"换版后新集起草"}).click();
+    await page.getByRole("row").filter({hasText:"新集当前方法"}).click();
     await page.getByText("查看本次冻结的方法原文",{exact:true}).click();
-    const method=page.locator("summary").filter({hasText:target+".md · 通用"});
+    const method=page.locator("summary").filter({hasText:"story.md · 通用"});
     await method.click();
-    assert.ok((await method.locator("..").innerText()).includes(tag));
-    await method.scrollIntoViewIfNeeded();
-    await page.screenshot({path:path.join(output,"42_v8演练新集冻结方法原文.png")});
+    assert.equal(await method.locator("..").locator("pre").textContent(),fs.readFileSync(path.join(__dirname,"../../resources/skills/unified-film/story.md"),"utf8"));
     assert.deepEqual(errors,[]);
     fs.writeFileSync(path.join(output,"V6_v7基线方法小节改动与新旧集回放.json"),JSON.stringify({fixture:"隔离 Git 测试分支 verify-method-sync，模拟执行器",impact,cases,errors},null,2)+"\n");
     console.log("PASS frozen source line relocation, released pack comparison and old/new episode replay");

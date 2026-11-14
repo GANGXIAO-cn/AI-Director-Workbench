@@ -58,8 +58,10 @@ def test_02_script_import_is_story_source(env):
     story = env.art(ep, "story")
     env.drain(wb.submit_review(story["versions"][0]["id"], "r")["runId"])
     res = wb.adopt(story["id"], story["versions"][0]["id"], None, "a", and_continue=True)
-    assert res["next"]["stage"] == "script"
-    assert wb.create_task(ep, "script", "写剧本")["artifactId"] == res["next"]["artifactId"]
+    assert res["next"]["stage"] == "characters"
+    assert wb.create_task(ep, "characters", "写角色小传")["artifactId"] == res["next"]["artifactId"]
+    env.prepare_stage(ep, "script")
+    assert wb.create_task(ep, "script", "写剧本")["artifactId"] != res["next"]["artifactId"]
 
 
 # 03 ---------------------------------------------------------------------------------------------
@@ -550,6 +552,7 @@ def test_18_space_and_cast(env):
 # 19 ---------------------------------------------------------------------------------------------
 def test_19_batch_partial_unknown(tmp_path):
     env = Env(tmp_path, image_script=["ok", "timeout"])
+    env.images.remote_status = True  # queryable provider can still complete later
     wb = env.wb
     pid, eid = env.new_episode()
     items = [dict(prompt=f"状态图 {i}", target=dict(name=f"状态{i}", category="state")) for i in (1, 2)]
@@ -664,11 +667,12 @@ def test_23_two_pass_review_and_partial_recheck(env):
     cold_run = env.claude.calls[-2] if env.claude.calls[-2].purpose == "cold_read" else None
     cold = next(c for c in env.claude.calls if c.purpose == "cold_read")
     m, text = manifest_text(wb, cold.run_id)
-    assert [e["role"] for e in m["inputs"]] == ["method", "segment_txt", "reference_order", "image"]   # 冷读只见本段 TXT 与原图
-    assert m["inputs"][0]["name"] == "独立审查的冷读观察.md"
+    assert [e["role"] for e in m["inputs"]] == ["method", "method", "segment_txt", "reference_order", "image"]   # 冷读只见本段 TXT 与原图
+    assert [e["name"] for e in m["inputs"][:2]] == ["visual-continuity-audit.md", "cold_read.md"]
     assert "便利店夜" in text and "一只过分认真" not in text and len(cold.images) == 1
     comp = next(c for c in env.claude.calls if c.purpose == "comparison")
     cm, _ = manifest_text(wb, comp.run_id)
+    assert any(e["role"] == "method" and e["name"] == "comparison.md" for e in cm["inputs"])
     assert {"cold_read_observations", "adopted_story", "project_settings", "plan_segment"} <= {e["role"] for e in cm["inputs"]}
     pr_art = env.art(eid, "prompts")
     content = json.loads(json.dumps(pr_art["versions"][-1]["content"]))
@@ -803,8 +807,7 @@ def test_28_models_and_image_channel(env):
     env.wb.image_providers_map["fake-image-2"] = type(env.images)("fake-image-2", price_cents=None)
     b2 = wb.create_batch(eid, "fake-image-2", "generate", items, "64x64", budget_cents=10)
     assert b1["summaryHash"] != b2["summaryHash"]                             # 换通道重新确认
-    with pytest.raises(Rejected, match="费用未知"):
-        wb.authorize_batch(b2["batchId"], b2["summaryHash"], "a2")
+    assert wb.authorize_batch(b2["batchId"], b2["summaryHash"], "a2")["state"] == "authorized"
 
 
 # 29 ---------------------------------------------------------------------------------------------
@@ -848,7 +851,7 @@ def test_30_local_restore(tmp_path):
     ok = wb.restore(backup["backupId"], tmp_path / "restored")
     from workbench.service import Workbench
     wb2 = Workbench(Path(ok["restoredTo"]), wb.executors, image_providers=wb.image_providers_map)
-    assert wb2.batch_view(b["batchId"])["requests"][0]["state"] == "unknown"
+    assert wb2.batch_view(b["batchId"])["requests"][0]["state"] == "failed"
     with pytest.raises(Rejected):
         wb2.execute_batch(b["batchId"])                                       # 不会自动重发原付费请求
     assert env.images.sent == 1

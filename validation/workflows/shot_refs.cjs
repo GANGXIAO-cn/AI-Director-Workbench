@@ -21,6 +21,7 @@ async function main() {
     const fixture=path.join(__dirname,"../../修复验证_20261108");
     await page.goto(base+"/#/e/"+eid+"/plan");
     await page.getByRole("button",{name:"修改本阶段",exact:true}).click();
+    await page.getByRole("button",{name:"结束修改",exact:true}).waitFor();
     await page.getByText("镜头充分性与节奏核对",{exact:true}).click();
     await page.getByText("逐镜出镜与关键道具",{exact:true}).click();
     for (let i=0;i<3;i++) {
@@ -33,6 +34,7 @@ async function main() {
     await page.locator(".actionbar").getByText(/已采用/).waitFor();
     await page.goto(base+"/#/e/"+eid+"/prompts");
     await page.getByRole("button",{name:"修改本阶段",exact:true}).click();
+    await page.getByRole("button",{name:"结束修改",exact:true}).waitFor();
     await page.getByText("阿福 的身份图作用镜头 · S03",{exact:true}).waitFor();
     const open=()=>page.getByText(/图片1 · 阿福身份图 · 看图与作用镜头/).click();
     await open();
@@ -67,6 +69,8 @@ async function main() {
       const res=await page.request.post(base+"/api/cmd/"+name,{data,headers:{"x-adw-token":token}});
       assert.equal(res.status(),200,await res.text());return res.json();
     }
+    await button("修改本阶段").click();
+    await button("结束修改").waitFor();
     const wav=path.join((await query("storage_status")).dataDir,"登记声.wav");
     require("node:child_process").execFileSync("ffmpeg",["-loglevel","error","-f","lavfi","-i","sine=frequency=880:duration=2",wav]);
     await page.getByLabel("上传本集音视频参考").setInputFiles(wav);

@@ -147,7 +147,7 @@ class ProjectLibraryMixin:
             return self._command(db, command_id, "save_product_placement",
                                  [episode_id, code, shot_id, intent, scene_version, observation], run)
 
-    def product_placements(self, episode_id):
+    def product_placements(self, episode_id, *, candidate=None, check_prompt_refs=True):
         from .sourcefiles import production
         from .storage import canonical
         with connect(self.db_path) as db:
@@ -155,9 +155,11 @@ class ProjectLibraryMixin:
             rule = db.execute("SELECT minimum FROM episode_product_rule WHERE episode_id=?", (episode_id,)).fetchone()
             minimum = rule[0] if rule else production(db, ep["project_id"]).get("minimumProductPlacements", 0)
             plan = self._adopted_content(db, episode_id, "plan") or {}
-            prompts = self._adopted_content(db, episode_id, "prompts") or {}
+            prompts = candidate if candidate is not None else self._adopted_content(db, episode_id, "prompts") or {}
             products = {p["code"]:json.loads(p["source"]) for p in db.execute("SELECT * FROM episode_product WHERE episode_id=?", (episode_id,))}
             required = {r[0] for r in db.execute("SELECT asset_version_id FROM image_choice WHERE episode_id=? AND mark='required'", (episode_id,))}
+            from .imagechoices import requirements
+            uses = {r['versionId']:r.get('autoBindings',{}) for r in requirements(db,episode_id)}
             records = [dict(r) for r in db.execute("SELECT * FROM product_placement WHERE episode_id=? ORDER BY code,shot_id", (episode_id,))]
         shots = {shot["id"]:shot for shot in plan.get("shots", [])}
         for item in records:
@@ -166,13 +168,16 @@ class ProjectLibraryMixin:
             version = item["scene_version"]
             refs = prompts.get("segments", {}).get(sid, {}).get("refs", [])
             issue = ""
-            if not shot or sha256_bytes(canonical(shot)) != item["shot_hash"]:
+            selected = uses.get(version, {}).get('product:'+item['code'])
+            if selected and item['shot_id'] not in selected['shotIds']:
+                issue = "该镜头不在当前商品入景选择中"
+            elif not shot or sha256_bytes(canonical(shot)) != item["shot_hash"]:
                 issue = "关联镜头已变动，须复核入景位置"
             elif not version:
                 issue = "待登记实际场面与看图观察"
             elif version not in required:
                 issue = "场面图未标必用"
-            elif not any(r.get("assetVersionId") == version for r in refs):
+            elif check_prompt_refs and not any(r.get("assetVersionId") == version for r in refs):
                 issue = "采用提示词的对应段未引用该场面图"
             item.update(segment=sid, issue=issue, product=products[item["code"]], dynamic="not_tested")
         return dict(minimum=minimum, products=list(products.values()), records=records,

@@ -24,11 +24,16 @@ async function main() {
     await page.locator('a.projcard[href="#/p/'+project.id+'"]').waitFor();
     await page.goBack();
     await page.locator("main.home").getByRole("link",{name:"本地交付包",exact:true}).click();
-    await page.locator('a[href="'+preview+'/delivery"]').first().click();
-    await page.waitForURL("**/"+preview+"/delivery");
+    const selectedDelivery=project.deliveries.find(d=>d.episode_id===episode).id;
+    const deliveryLink=preview+"/delivery?delivery="+selectedDelivery;
+    await page.locator('main a[href="'+deliveryLink+'"]').click();
+    await page.waitForURL(url=>url.hash===deliveryLink);
+    await page.getByRole("heading",{name:"交付记录",exact:true}).waitFor();
+    assert.equal(await page.getByRole("link",{name:"打开图文页"}).getAttribute("href"),
+      "/api/delivery-file/"+selectedDelivery+"/00_图文对照.html");
     await page.goto(base+"/"+preview+"/story");
     const btn = name => page.getByRole("button",{name,exact:true});
-    for (const [width,stage,label] of [[1440,"story","必须保留的内容与结局方向"],[800,"script","必须承接的故事动作与角色选择"]]) {
+    for (const [width,stage,label] of [[1440,"story","必须保留的内容"],[800,"script","必须保留的内容"]]) {
       await page.setViewportSize({width,height:900});
       await page.goto(base+"/"+preview+"/"+stage);
       const views=page.getByRole("navigation",{name:"本阶段工作区"});
@@ -46,18 +51,18 @@ async function main() {
     await page.setViewportSize({width:1440,height:900});
     await page.goto(base+"/"+preview+"/story");
     await page.getByRole("button",{name:"修改本阶段",exact:true}).click();
-    await btn("阶段技能").click();
+    await btn("本步需求与参考").click();
     await page.getByLabel("显示全部阶段的方法").check();
     assert.equal(await page.locator("fieldset").getByRole("checkbox").count(),72);
-    await page.getByLabel("必须保留的内容与结局方向").fill("保留最后一声关门");
+    await page.getByLabel("必须保留的内容").fill("保留最后一声关门");
     await page.getByRole("checkbox",{name:/00-A ·/}).check();
     await btn("保存本步配置").click();
     await page.getByRole("heading",{name:"本步需求",exact:true}).waitFor({state:"hidden"});
     await btn("本步需求与参考").click();
-    assert.equal(await page.getByLabel("必须保留的内容与结局方向").inputValue(),"保留最后一声关门");
+    assert.equal(await page.getByLabel("必须保留的内容").inputValue(),"保留最后一声关门");
     assert.ok(await page.getByRole("checkbox",{name:/00-A ·/}).isChecked());
     await btn("关闭").last().click();
-    const input = page.getByPlaceholder("输入你的想法，继续完善这一集");
+    const input = page.locator(".composer:visible textarea");
     await input.fill("用已勾选的方法修订。");
     await input.press("Control+Enter");
     await page.waitForFunction(()=>document.querySelector(".composer textarea")?.value==="");
@@ -67,7 +72,7 @@ async function main() {
     assert.deepEqual(selected.map(s=>s.source.enhancementIds),[["00-A"],["00-A"]]);
     await page.goto(base+"/"+preview+"/cast");
     await btn("本集出图增强方法").click();
-    await page.getByLabel("本批画面要表现的动作或状态").fill("角色穿着蓝色雨衣");
+    await page.getByLabel("本步目标").fill("角色穿着蓝色雨衣");
     await page.getByRole("checkbox",{name:/07-A ·/}).check();
     await btn("保存本步配置").click();
     await page.getByRole("heading",{name:"本步需求",exact:true}).waitFor({state:"hidden"});
@@ -87,7 +92,7 @@ async function main() {
     assert.ok(receipt.batchId,JSON.stringify(receipt));
     const batch = await q("batch_view",{batch_id:receipt.batchId});
     assert.equal(batch.state,"awaiting_authorization");
-    assert.match(batch.spec.items[0].prompt,/本批画面要表现的动作或状态：角色穿着蓝色雨衣/);
+    assert.match(batch.spec.items[0].prompt,/本步目标：角色穿着蓝色雨衣/);
     assert.match(batch.spec.items[0].prompt,/正面脸、侧面脸、正面全身、背面全身/);
     assert.ok(batch.spec.enhancements.every(source=>source.source.enhancementIds.includes("07-A")));
     await page.reload();
@@ -105,6 +110,7 @@ async function main() {
     await page.goto(base+"/"+preview+"/plan");
     const plan = async ()=>(await q("episode_view",{episode_id:episode})).artifacts.find(a=>a.stage==="plan");
     await page.getByRole("button",{name:"修改本阶段",exact:true}).click();
+    await btn("结束修改").waitFor();
     const originalPlan = await plan();
     await page.locator(".shotcard").first().click();
     await btn("删除镜头").click();

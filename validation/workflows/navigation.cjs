@@ -21,7 +21,30 @@ async function main() {
     const btn=name=>page.getByRole("button",{name,exact:true});
     const go=async route=>{await page.goto(base+"/#/"+route);await nav.waitFor();};
     await go("e/"+eid+"/story");
+    const catalog=page.locator(".catalog");
+    await catalog.locator("a.item").first().waitFor();
+    assert.equal(await catalog.locator("a.item").filter({hasText:/^0[1-9] /}).count(),9);
+    await catalog.getByText("07 素材",{exact:true}).click();
+    const tabs=page.getByRole("navigation",{name:"阶段页签"});
+    for(const name of ["备图工作单","按镜头补图","全部图片"]) await tabs.getByRole("link",{name,exact:true}).click();
+    await go("e/"+eid+"/space");
+    await page.getByRole("heading",{name:"空间与制作补充",exact:true}).waitFor();
+    await catalog.getByText("09 镜头与提示词",{exact:true}).click();
+    await tabs.getByRole("link",{name:"提示词"}).click();
+    await catalog.getByText("05 剧本",{exact:true}).click();
+    const previous=page.locator(".msgs:visible details").filter({has:page.locator("summary",{hasText:/01 故事方向.*条对话/})}).first();
+    await previous.locator(":scope > summary").click();
+    assert.ok(await previous.getAttribute("open")!==null);
+    const settings=page.locator(".composer:visible .composer-model");
+    for(const role of ["创作","独审"]) {
+      const menu=settings.filter({has:page.locator("small").getByText(role,{exact:true})});
+      await menu.locator(".model-trigger").click();
+      await menu.getByLabel(role+"执行器").waitFor();
+      await menu.locator(".model-trigger").click();
+    }
+    await catalog.getByText("01 故事方向",{exact:true}).click();
     const assistant=page.locator(".assistant:visible");
+    await page.getByRole("heading",{name:"01 故事方向",exact:true}).first().waitFor();
     const input=assistant.locator("textarea");
     await input.fill("核对站台里的雨伞，保留这条未发送的修改。");
     await btn("专注对话").click();
@@ -35,10 +58,12 @@ async function main() {
     await page.getByRole("navigation",{name:"设置分类"}).getByRole("link",{name:"界面与快捷键"}).click();
     await page.getByRole("heading",{name:"界面与快捷键"}).waitFor();
     assert.equal(await page.getByRole("checkbox",{name:"专注对话"}).isChecked(),true);
+    const heading=page.getByRole("heading",{name:"界面与快捷键"});
+    const titleSize=()=>heading.evaluate(el=>parseFloat(getComputedStyle(el).fontSize));
+    const originalTitleSize=await titleSize();
     await btn("放大字号").click();
     assert.equal(await page.locator("html").evaluate(el=>getComputedStyle(el).fontSize),"15px");
-    const heading=page.getByRole("heading",{name:"界面与快捷键"});
-    assert.ok(await heading.evaluate(el=>parseFloat(getComputedStyle(el).fontSize)>22));
+    assert.ok(await titleSize()>originalTitleSize);
     await page.reload();
     await heading.waitFor();
     assert.equal(await page.locator("output").innerText(),"15 px");
@@ -61,6 +86,7 @@ async function main() {
     await assistant.getByRole("link",{name:"定位",exact:true}).first().click();
     await page.locator(".center:visible").waitFor();
     assert.ok(new URLSearchParams(new URL(page.url()).hash.split("?")[1]).has("v"));
+    await btn("关闭预览").click();
     const layouts=[];
     for(const width of [1440,1280,1024,800]) {
       await page.setViewportSize({width,height:900});
@@ -82,7 +108,9 @@ async function main() {
     await link("选题池").click();
     await page.waitForURL("**/p/"+project.id+"/topics");
     await page.getByRole("heading",{name:"选题池与研究"}).waitFor();
+    await nav.getByRole("button",{name:"展开主导航"}).click();
     assert.equal(await link("选题池").getAttribute("aria-current"),"page");
+    await page.keyboard.press("Escape");
     await page.setViewportSize({width:1440,height:900});
     await link("设置").click();
     await page.locator("main").getByRole("link",{name:"图像通道"}).click();

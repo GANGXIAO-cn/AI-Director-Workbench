@@ -50,14 +50,14 @@ async function main() {
       },{kind,name,bytes:[...buf]});
       await page.getByRole("img",{name}).evaluate(el=>el.decode());
     }
-    await btn("风格").click(); await btn("墨绿").click(); await btn("应用到本集").click();
+    await btn("风格").click(); await page.getByLabel("本集风格说明").fill("墨绿"); await btn("应用到本集").click();
     await btn("选题").click();
     await btn(/OPEN · 站台末班车/).waitFor();
     assert.equal(await btn(/USED · 已开工候选/).count(),0);
     await btn(/OPEN · 站台末班车/).click();
     await btn(/规格预设 ·/).click(); await page.getByLabel("画幅").selectOption("16:9");
     await page.getByLabel("起草",{exact:true}).selectOption("codex"); await btn("完成").click();
-    await btn("继续").click();
+    await btn(/规格预设 ·/).click(); await btn(/调整完整开工设置/).click();
     const modal = page.locator(".modal");
     const chosen = modal.locator("select").filter({has:page.locator("option",{hasText:"选择选题卡"})});
     await chosen.locator("option",{hasText:"站台末班车"}).waitFor({state:"attached"});
@@ -66,34 +66,35 @@ async function main() {
     await modal.getByRole("button",{name:"取消",exact:true}).click();
     assert.deepEqual((await episodes()).map(e=>e.id),before.map(e=>e.id));
     assert.equal(await page.locator(".bigbox .director-files img").count(),2);
-    await btn("继续").click();
+    await btn(/规格预设 ·/).click(); await btn(/调整完整开工设置/).click();
     // Simulate a lost response after the server has committed. The same click can be retried.
     await page.route("**/api/with-files/start_episode",async route=>{
       const res = await route.fetch();assert.ok(res.ok(),await res.text());
       await route.abort("failed");
     },{times:1});
-    await btn("开工，进入故事稿").click(); await modal.locator(".error").waitFor();
-    await btn("开工，进入故事稿").click(); await page.waitForURL(/\/e\/.+\/story/);
+    await btn("开工并开始创作").click(); await modal.locator(".error").waitFor();
+    await btn("开工并开始创作").click(); await page.waitForURL(/\/e\/.+\/story/);
     const eid=page.url().split("/").at(-2);
     assert.equal((await episodes()).length,before.length+1);
     const view=await query("episode_view",{episode_id:eid});
     assert.equal(view.kickoff.topic_id,incoming.topicId);
     assert.equal(view.kickoff.spec.aspectRatio,"16:9");assert.match(view.kickoff.spec.style,/墨绿/);
     assert.equal(view.kickoff.executor_plan.create.provider,"codex");
-    await page.reload();await page.getByText(/本集开工参考图 · 2 张/).click();
+    await page.reload();await page.getByRole("link",{name:"查看稿件与版本"}).click();await page.getByText(/本集开工参考图 · 2 张/).click();
     for (const [name,buf] of [["站台.png",one],["末班车.png",two]]) {
       const image=page.getByRole("img",{name,exact:true});
       assert.equal(await image.getAttribute("src"),"/api/blob/"+hash(buf));await image.evaluate(el=>el.decode());
     }
+    await btn("关闭预览").click();
     const composer=page.locator(".composer");
     assert.equal(await composer.locator("textarea").getAttribute("maxlength"),"500");
-    await composer.getByText("⌘ / Ctrl + 回车发送").waitFor();
+    await composer.getByTitle("⌘ / Ctrl + 回车发送").waitFor();
     await page.getByLabel("添加阶段附件").setInputFiles([
       {name:"本次用图.png",mimeType:"image/png",buffer:three},
       {name:"说明.md",mimeType:"text/markdown",buffer:Buffer.from("末班车先关后门")}
     ]);
     await composer.locator("textarea").fill("按两张参考和附件起草");
-    const sent = page.waitForResponse(res=>res.url().endsWith("/with-files/create_task"));
+    const sent = page.waitForResponse(res=>res.url().match(/\/with-files\/(create_task|post_message)$/));
     await composer.locator("textarea").press("Control+Enter");
     const res=await sent;assert.ok(res.ok(),await res.text());
     const {runId}=await res.json();
@@ -101,8 +102,8 @@ async function main() {
     assert.ok(matches);
     assert.deepEqual(manifest.inputs.filter(i=>i.role==="image").map(i=>i.sha256),[one,two,three].map(hash));
     assert.ok(manifest.inputs.some(i=>i.role==="citation" && i.name.includes("说明.md")));
-    await btn("本集对话历史").click(); await modal.getByText("附件 · 本次用图.png").waitFor();
-    await modal.getByText("附件 · 说明.md").waitFor();
+    await page.locator(".msgs").getByText("附件 · 本次用图.png").waitFor();
+    await page.locator(".msgs").getByText("附件 · 说明.md").waitFor();
     assert.deepEqual(errors,[]);
     console.log("PASS 首页图片粘贴与拖入、候选资格、取消及丢失回执后重试、阶段原图与稿件送达");
   } finally {await browser.close();}

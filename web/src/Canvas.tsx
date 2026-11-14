@@ -1,5 +1,4 @@
 import { Type, Image, LockKeyhole, WandSparkles, Link2 } from "lucide-react";
-import { budgetCents } from "./budget";
 import { RequiredImage } from "./RequiredImage";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useEffect, useRef, useState } from "react";
@@ -25,7 +24,7 @@ const PRESETS: [string, string, string][] = [["身份图", "generate", "正面�
   ["状态派生", "generate", "以锁定图为准，只改本段需要的状态（光线、湿乱、持物），空间关系不变。"],
   ["局部重画", "edit", "只改指定格，其余格保持不变。"]];
 
-export default function Canvas({ ctx, providers, openBatch }: { ctx: any; providers: any; openBatch: (b: any) => void }) {
+export default function Canvas({ ctx, providers, openBatch, defaultProvider }: { defaultProvider:string; ctx: any; providers: any; openBatch: (b: any) => void }) {
   const [doc, setDoc] = useState<{ nodes: Node[]; edges: Edge[] }>({ nodes: [], edges: [] });
   const [loaded,setLoaded] = useState(false);
   const revision = useRef(0);
@@ -68,7 +67,7 @@ export default function Canvas({ ctx, providers, openBatch }: { ctx: any; provid
   const add = (type: Node["type"]) => {
     const id = `${type}-${Date.now().toString(36)}`;
     const n: Node = { id, type, x: 270 + (doc.nodes.length % 4) * 290, y: 60 + Math.floor(doc.nodes.length / 4) * 300, title: { text: "角色档案", reference: "参考图", lock: "锁定图", generate: "新的生成", usage: "下游用途" }[type],
-      data: type === "generate" ? { prompt: "", operation: "generate", provider: Object.keys(providers)[0] ?? "", count: 2, size: providers[Object.keys(providers)[0]]?.capabilities.sizes[0] ?? "" } : type === "text" ? { body: "体型：\n不可变识别点：\n服装：" } : {} };
+      data: type === "generate" ? { prompt: "", operation: "generate", provider: defaultProvider ?? "", count: 2, size: providers[defaultProvider]?.capabilities.sizes[0] ?? "" } : type === "text" ? { body: "体型：\n不可变识别点：\n服装：" } : {} };
     save({ ...doc, nodes: [...doc.nodes, n] }); setSel(id);
   };
   const patch = (id: string, p: any, persist = true) => {
@@ -83,13 +82,19 @@ export default function Canvas({ ctx, providers, openBatch }: { ctx: any; provid
     const inputNotes = inputsOf(n).filter(({ e, n: src }) => e.kind !== "pending" && src.data.assetVersionId)
       .map(({ e, n: src }, i) => `图${i + 1} · ${src.title}（${e.kind === "ref" ? "仅作风格参考" : "实际输入"}）`).join("\n");
     const prompt = [n.data.prompt, textCtx, n.data.operation === "edit" ? "" : inputNotes].filter(Boolean).join("\n");
+    const caps = providers[n.data.provider]?.capabilities;
+    if (!caps) throw new Error("请选择可用的出图通道");
+    const settings = {
+      provider: n.data.provider, size: n.data.size,
+      model: n.data.model || caps.models?.[0], quality: n.data.quality || caps.quality[0],
+    };
     let r;
     if (n.data.operation === "edit") {
       const base = assetOf(cand ?? ins[0]);
       if (!base?.grid) throw new Error("局部重画需要先选中一张九宫格候选或接入九宫格");
-      r = await cmd("redraw_cells", { episode_id: ctx.eid, base_version_id: base.id, segments:n.data.segments ?? [], cells: n.data.cells ?? [5], reference_version_ids: ins.filter((x: string) => x !== base.id), prompt, provider: n.data.provider, size: n.data.size, quality: n.data.quality ?? "low", budget_cents: budgetCents(n.data.budget ?? 2) });
+      r = await cmd("redraw_cells", { episode_id: ctx.eid, base_version_id: base.id, segments:n.data.segments ?? [], cells: n.data.cells ?? [5], reference_version_ids: ins.filter((x: string) => x !== base.id), prompt, ...settings });
     } else {
-      r = await cmd("create_batch", { episode_id: ctx.eid, provider: n.data.provider, operation: "generate", size: n.data.size, quality: n.data.quality ?? "low", budget_cents: budgetCents(n.data.budget ?? 2),
+      r = await cmd("create_batch", { episode_id: ctx.eid, operation: "generate", ...settings,
         items: Array.from({ length: n.data.count }, (_, i) => ({ prompt, inputs: ins, segments: n.data.segments ?? [], target: { name: `${n.title} ${String.fromCharCode(65 + i)}`, category: "state" } })) });
     }
     patch(n.id, { data: { batchId: r.batchId } });
@@ -213,7 +218,11 @@ export default function Canvas({ ctx, providers, openBatch }: { ctx: any; provid
           <div className="row tiny">{inputsOf(node).map((x) => <button key={x.n.id} className="tag" title="在要求中引用已连接节点" onClick={()=>patch(node.id,{data:{prompt:(node.data.prompt ?? "")+" @"+x.n.title}})}>{x.n.title}{x.e.kind === "ref" ? " · 只作画风" : ""}</button>)}</div>
           <textarea placeholder="对这个生成节点写要求，例：正面全身，中性站姿…" value={node.data.prompt} onChange={(e) => patch(node.id, { data: { prompt: e.target.value } }, false)} onBlur={() => save(doc)} style={{ marginTop: 6 }} />
           <div className="row small">
-            <select value={node.data.provider} onChange={(e) => patch(node.id, { data: { provider: e.target.value, size: providers[e.target.value]?.capabilities.sizes[0] } })}>{Object.keys(providers).map((p) => <option key={p}>{p}</option>)}</select>
+            <select value={node.data.provider} onChange={(e) => patch(node.id, { data: { provider: e.target.value, size: providers[e.target.value]?.capabilities.sizes[0], model:providers[e.target.value]?.capabilities.models?.[0], quality:providers[e.target.value]?.capabilities.quality[0] } })}>{Object.keys(providers).map((p) => <option key={p}>{p}</option>)}</select>
+            {providers[node.data.provider]?.capabilities.models?.length > 0 && <label>图像任务创作型号
+              <select value={node.data.model || providers[node.data.provider].capabilities.models[0]} onChange={e=>patch(node.id,{data:{model:e.target.value}})}>
+                {providers[node.data.provider].capabilities.models.map((m:string)=><option key={m}>{m}</option>)}
+              </select> {providers[node.data.provider].capabilities.effort}</label>}
             <select value={node.data.count} onChange={(e) => patch(node.id, { data: { count: +e.target.value } })}>{[1, 2, 3, 4].map((c) => <option key={c} value={c}>{c} 张</option>)}</select>
             <select value={node.data.size} onChange={(e) => patch(node.id, { data: { size: e.target.value } })}>{(providers[node.data.provider]?.capabilities.sizes ?? []).map((s: string) => <option key={s}>{s}</option>)}</select>
             <label>用于段 <input key={node.id+JSON.stringify(node.data.segments)} placeholder="G01、G02" style={{width:95}}
@@ -221,9 +230,8 @@ export default function Canvas({ ctx, providers, openBatch }: { ctx: any; provid
                 const segments = Array.from(new Set(e.target.value.split(/[,，、\s]+/).filter(Boolean)));
                 if (JSON.stringify(segments)!==JSON.stringify(node.data.segments ?? [])) patch(node.id,{data:{segments}});
               }}/></label>
-            <select aria-label="图像质量" value={node.data.quality ?? "low"} onChange={(e) => patch(node.id, { data: { quality: e.target.value } })}>{(providers[node.data.provider]?.capabilities.quality ?? []).map((v: string) => <option key={v}>{v}</option>)}</select>
-            <span className="muted">{node.data.operation === "edit" ? "局部重画（选中九宫格候选）" : "生成"} · 预算 {providers[node.data.provider]?.currency}</span>
-            <input style={{ width: 60 }} value={node.data.budget ?? 2} onChange={(e) => patch(node.id, { data: { budget: e.target.value } }, false)} />
+            <select aria-label="图像质量" value={node.data.quality || providers[node.data.provider]?.capabilities.quality[0] || ""} onChange={(e) => patch(node.id, { data: { quality: e.target.value } })}>{(providers[node.data.provider]?.capabilities.quality ?? []).map((v: string) => <option key={v}>{v}</option>)}</select>
+
             <span className="muted tiny" style={{ marginLeft: "auto" }}>生成前进入批次确认，不会直接扣费</span>
             <button className="btn primary" disabled={act.busy} onClick={() => generate(node)}>{node.data.operation === "edit" ? "局部重画 1 张" : `生成 ${node.data.count} 张`} ›</button>
           </div>

@@ -17,7 +17,7 @@ from .images import image_size
 from .errors import NotFound, Rejected, loads, row
 from .storage import canonical, sha256_bytes, write_atomic
 
-DEFAULT_PACKAGER = Path.home() / "Documents/自媒体 2/h3-canvas-studio/tools/project-packager/packager.py"
+DEFAULT_PACKAGER = Path(__file__).resolve().parents[2] / "resources/h3-packager/packager.py"
 from .specs import RATIOS, validate_spec, frame_geometry, h3_preset_defaults
 MAX_FILE = 30 * 1024 ** 2
 
@@ -50,6 +50,22 @@ def fmt(ms):
 
 
 class DeliveryMixin:
+    def _mark_deliveries_stale(self, db, episode_id, reason, *, stage=None, adopted=None, reviewed=None, segment=None):
+        for d in db.execute("SELECT * FROM delivery WHERE episode_id=? AND state='deliverable'", (episode_id,)).fetchall():
+            versions = json.loads(d["versions"])
+            if stage and (stage not in versions or versions[stage] == adopted):
+                continue
+            if reviewed and (versions.get("prompts") != reviewed or segment not in json.loads(d["segments"])):
+                continue
+            db.execute("UPDATE delivery SET state='needs_recheck' WHERE id=?", (d["id"],))
+            db.execute("INSERT INTO ledger VALUES(?,?,?,?,?,?,?,?,?)",
+                       (new_id(), self._episode_in(db, episode_id)["project_id"], episode_id, d["id"],
+                        "needs_recheck", reason, "", d["id"], self.clock()))
+
+    def _require_current_delivery(self, db, delivery_id):
+        if row(db, "SELECT state FROM delivery WHERE id=?", delivery_id)["state"] == "needs_recheck":
+            raise Rejected("这份交付之后有上游改动或新的审查意见，请重新核验后再出包")
+
     def script_plan_budget(self, episode_id, script_version, plan_version):
         with connect(self.db_path) as db:
             def content(stage, vid):
@@ -136,6 +152,9 @@ class DeliveryMixin:
             cfg = json.loads(snapshot[0]) if snapshot else self.publish_settings(ep["project_id"])
             frozen = db.execute("SELECT basis FROM version_publish_basis WHERE version_id=?", (vid,)).fetchone()
             basis = json.loads(frozen[0]) if frozen else self._publish_basis(db, episode_id)
+        return self._compose_publish_content(content, cfg, basis, bool(frozen))
+
+    def _compose_publish_content(self, content, cfg, basis, frozen):
         if not all(isinstance(content.get(k), str) and content[k].strip() for k in ("title","body")):
             raise Rejected("发布标题与正文须有实际内容")
         prefix = cfg.get("title_prefix", "")
@@ -180,6 +199,7 @@ class DeliveryMixin:
 
     # ============================================================ delivery checks
     def delivery_problems(self, episode_id, scope="full", segments=None):
+        from .workflow import ORDER, OPTIONAL
         if scope not in ("full", "trial"):
             raise Rejected("scope须为full或trial")
         problems = []
@@ -187,12 +207,21 @@ class DeliveryMixin:
             db.execute("BEGIN")
             ep = row(db, "SELECT * FROM episode WHERE id=?", episode_id)
             adopted = {s: db.execute("SELECT adopted_version_id FROM artifact WHERE episode_id=? AND stage=?",
-                                     (episode_id, s)).fetchone() for s in ("story", "script", "plan", "prompts", "publish")}
+                                     (episode_id, s)).fetchone() for s in (*ORDER, "publish")}
             adopted = {k: (v[0] if v else None) for k, v in adopted.items()}
-            needed = ("story", "script", "plan", "prompts", "publish") if scope == "full" else ("plan", "prompts")
+            workflow_documents = {stage: self._adopted_content(db, episode_id, stage)
+                                  for stage, vid in adopted.items() if vid}
+            skipped_stages = {r["stage"]: r["reason"] for r in db.execute(
+                "SELECT stage,reason FROM optional_stage_choice WHERE episode_id=?", (episode_id,))}
+            locked = self._kickoff(db, episode_id).get("sourceIntent") == "locked_screenplay"
+            needed = tuple(s for s in ORDER if s not in OPTIONAL and (not locked or s not in ("story","characters","treatment"))) if scope == "full" else ("plan", "prompts")
             for stage in needed:
                 if not adopted[stage]:
                     problems.append(dict(stage=stage, segment=None, file=None, problem=f"{stage} 尚未采用"))
+            if scope == "full":
+                unconfirmed=db.execute("SELECT count(*) FROM production_supplement WHERE episode_id=? AND state='proposed'",(episode_id,)).fetchone()[0]
+                if unconfirmed:
+                    problems.append(dict(stage="space",segment=None,file=None,problem=f"有 {unconfirmed} 条制作补充未经导演确认"))
             if not adopted["plan"]:
                 return problems, None
             plan = self._adopted_content(db, episode_id, "plan")
@@ -209,6 +238,10 @@ class DeliveryMixin:
             spec = json.loads(row(db, "SELECT spec FROM kickoff WHERE episode_id=?", episode_id)["spec"])
             required = imagechoices.requirements(db, episode_id)
             pending = [dict(r) for r in db.execute("SELECT * FROM impact WHERE episode_id=? AND state='pending'", (episode_id,))]
+            if scope == "full":
+                for item in pending:
+                    if item["kind"] in ("workflow_change","decision_change","supplement_change","palette_change"):
+                        problems.append(dict(stage="recheck", segment=None, file=None, problem="待复核：" + item["reason"]))
         lay = timeline.layout(plan)
         segs = [s for s in lay["segments"] if scope == "full" or s["id"] in (segments or [])]
         if scope == "trial" and (not segments or len(segs) != len(set(segments))):
@@ -248,9 +281,10 @@ class DeliveryMixin:
             scoped = {s["id"]:pr["segments"][s["id"]] for s in segs if s["id"] in pr.get("segments",{})}
             for error in self._prompt_reference_errors(db, episode_id, scoped):
                 problems.append(dict(stage="prompts", segment=None, file=None, problem=error))
-        status = self.prompt_review_status(adopted["prompts"])
         image_usage = {}
         decoded_images = {}
+        order=[s['id'] for s in sorted(plan.get('segments',[]),key=lambda s:s['order'])]
+        joints={'joint:'+a+'-'+b:[a,b] for a,b in zip(order,order[1:])}
         for seg in segs:
             entry = (pr.get("segments") or {}).get(seg["id"])
             if not entry:
@@ -275,14 +309,11 @@ class DeliveryMixin:
                     problems.append(dict(stage="assets", segment=seg["id"], file=ref.get("label"), problem=f"素材缺失或指纹不符：{exc}"))
             for reason in blocked.get(seg["id"], []):
                 problems.append(dict(stage="space", segment=seg["id"], file=None, problem=reason))
-            st = status.get(seg["id"])
-            if not st or not st["ok"]:
-                problems.append(dict(stage="review", segment=seg["id"], file=None,
-                                     problem="两遍独审未完成或有未处理意见（相关内容变化后须重新审核）"))
             for imp in pending:
                 t = imp["target_ref"]
-                if t == f"prompts:{seg['id']}" or (t.startswith("joint:") and seg["id"] in t[6:].split("-")):
-                    problems.append(dict(stage="recheck", segment=seg["id"], file=None, problem=f"待复核：{imp['reason']}"))
+                affected=joints.get(t,[])
+                if t == f"prompts:{seg['id']}" or seg['id'] in affected:
+                    problems.append(dict(stage="recheck", segment=seg["id"], affectedSegments=affected or [seg['id']], file=None, problem=f"待复核：{imp['reason']}"))
         if spec.get("aspectRatio") not in RATIOS:
             problems.append(dict(stage="spec", segment=None, file=None, problem="画幅不在 H3 支持范围"))
         rhythm_result = None
@@ -305,7 +336,7 @@ class DeliveryMixin:
                 self.store.read_blob(rule["sha256"])
             except (ValueError, OSError):
                 problems.append(dict(stage="assets", segment=None, file=rule["name"], problem="必用原版本不存在或原图指纹不符"))
-        return problems, dict(requiredImages=frozen, allRequirements=required, ep=ep, adopted=adopted, story=story, directions=directions, script=script, plan=plan, prompts=pr, lay=lay, segs=segs, spec=spec, cast=cast,
+        return problems, dict(workflowDocuments=workflow_documents, skippedStages=skipped_stages, requiredImages=frozen, allRequirements=required, ep=ep, adopted=adopted, story=story, directions=directions, script=script, plan=plan, prompts=pr, lay=lay, segs=segs, spec=spec, cast=cast,
                               rhythm=rhythm_result,placements=[p for p in placements["records"] if not p["issue"] and p["segment"] in {s["id"] for s in segs}])
 
     # ============================================================ deliver
@@ -384,8 +415,8 @@ class DeliveryMixin:
             files[rel] = sha256_bytes(data)
 
         ep, plan, pr, segs, spec = ctx["ep"], ctx["plan"], ctx["prompts"], ctx["segs"], ctx["spec"]
-        publish = self.compose_publish(ep["id"],ctx["adopted"]["publish"]) if scope == "full" else None
-        english = publish["englishTitle"] if publish else f"{ep['display_code']} trial"
+        publish = self.compose_publish(ep["id"],ctx["adopted"]["publish"]) if scope == "full" and ctx["adopted"]["publish"] else None
+        english = publish["englishTitle"] if publish else (ep["title"] or ep["display_code"]) + (" trial" if scope == "trial" else "")
         assets, seg_entries, used = [], [], set()
         def pack_asset(version, directory):
             safe = re.sub(r"[^\w\-\u4e00-\u9fff]", "_", version["name"])[:60]
@@ -424,6 +455,8 @@ class DeliveryMixin:
                                     if seg["duration_ms"] % 1000 else seg["duration_ms"] // 1000,
                                     start=fmt(package_ms), references=refs, prompt=prompt_file,
                                     generation_settings=settings, label_style="chinese", strategy=seg["strategy"]))
+            if entry.get("prompt_format") == "h3_official":
+                seg_entries[-1]["prompt_format"] = "h3_official"
             if inherited:
                 seg_entries[-1]["workbenchPresetParams"] = list(inherited)
             package_ms += seg["duration_ms"]
@@ -435,7 +468,18 @@ class DeliveryMixin:
                         aspect_ratio=spec.get("aspectRatio"), scope=scope, segments=seg_entries,
                         design_duration_s=package_ms / 1000, video_check=dict(status="not_tested"),
                         assets=[{k: a[k] for k in ("id", "path", "type", "sha256", "origin", "version", "name", "category")} for a in assets],
-                        workbench=dict(deliveryId=did, adopted=ctx["adopted"], requiredImages=ctx["requiredImages"]))
+                        workbench=dict(deliveryId=did, adopted=ctx["adopted"], requiredImages=ctx["requiredImages"], flow="storyboard-translation-v1"))
+        if scope == "full":
+            from .workflow import STAGES, METHOD_REF
+            documents = {}
+            for stage, label in STAGES:
+                if stage not in ctx["workflowDocuments"]:
+                    continue
+                rel = f"九阶段成果/{label}.json"
+                put(rel, canonical(ctx["workflowDocuments"][stage]))
+                documents[stage] = dict(path=rel, sha256=files[rel], version=ctx["adopted"][stage])
+            manifest["workbench"]["workflow"] = dict(method=METHOD_REF, documents=documents,
+                                                       skipped=ctx["skippedStages"])
         if all(seg.get("prompt_format") == "readable_v3" for seg in seg_entries):
             manifest["h3_rules"] = "v1"
         budget = dict(scriptVersion=ctx["adopted"]["script"], planVersion=ctx["adopted"]["plan"],
@@ -454,12 +498,29 @@ class DeliveryMixin:
                 manifest["workbench"]["partialShotRhythm"] = dict(**config, segments=list(review["report"]["segment_shot_counts"]))
             else:
                 manifest["shot_rhythm"] = config
-        status = self.prompt_review_status(ctx["adopted"]["prompts"])
-        manifest["prompt_review"], review_lines, waivers = promptreceipt.delivery_records(self, status, segs, put)
-        if shotrefs.plan_enabled(plan):
-            shotrefs.export_packets(root, manifest, put)
-        if waivers:
-            manifest["workbench"]["promptReviewWaivers"] = waivers
+        review_lines = ["# 本次图文交付", "09按采用分镜编写，内容检查在写作任务内完成；未执行提示词后的整体独审。", "实际视频动态效果：not_tested。"]
+        with connect(self.db_path) as db:
+            plan_review=self._latest_review(db,ctx["adopted"]["plan"])
+            if plan_review:
+                review_lines.append("08分镜审核原结论："+plan_review['original_decision'])
+                manifest["workbench"]["planReview"] = dict(id=plan_review['id'],decision=plan_review['original_decision'])
+            else:
+                ancestor=db.execute("""WITH RECURSIVE lineage(id,depth) AS (
+                    SELECT base_id,1 FROM version WHERE id=? UNION ALL
+                    SELECT v.base_id,l.depth+1 FROM version v JOIN lineage l ON v.id=l.id)
+                    SELECT v.display_no,r.id FROM lineage l JOIN version v ON v.id=l.id
+                    JOIN review r ON r.version_id=v.id ORDER BY l.depth,r.pass_no DESC LIMIT 1""",
+                    (ctx["adopted"]["plan"],)).fetchone()
+                if ancestor:
+                    review_lines.append(f"08采用稿沿用 R{ancestor['display_no']:02d} 的版本链。独审记录属于该前序版本。")
+                    manifest["workbench"]["ancestorPlanReview"] = ancestor["id"]
+                else:
+                    review_lines.append("08采用稿暂无独审记录。")
+            if shotrefs.plan_enabled(plan):
+                matrix=self._cast_matrix(db,ctx['ep']['id'])
+                packets={seg['id']:shotrefs.segment_packet(self,db,ctx['ep']['id'],plan,matrix,seg['id'],
+                           ctx['prompts']['segments'][seg['id']]) for seg in segs}
+                shotrefs.export_packets(root,manifest,put,packets=packets)
         placements = ctx["placements"]
         for p in placements:
             review_lines.append(f"- 商品 {p['code']} {p['product']['name']} · {p['segment']}/{p['shot_id']} · 场面版本 {p['scene_version']} · "
@@ -468,8 +529,9 @@ class DeliveryMixin:
         pack = deliverypage.publish_snapshot(publish) if publish else None
         if publish:
             put("01_发布包.md", deliverypage.publish_markdown(english,pack).encode())
-            handoff = finecut.snapshot(ctx, did, publish)
-            handoff["sourceFiles"] = {}
+        if scope == "full":
+            handoff = finecut.snapshot(ctx, did, publish or dict(englishTitle=english, music="未配置剪辑配乐", cues=[]))
+            handoff["sourceFiles"] = dict(manifest["workbench"]["workflow"]["documents"])
             for key,label in (("story","故事稿"),("script","剧本"),("plan","制作方案")):
                 path = f"交接来源/{label}.json"
                 put(path, canonical(ctx[key]))
@@ -487,7 +549,10 @@ class DeliveryMixin:
                 continue
             rel = by_id[v["id"]]["path"] if v["id"] in used else pack_asset(v, "补选区")
             uses = [s["id"] for s in seg_entries if any(r["asset_id"] == v["id"] for r in s["references"])]
-            gallery.append(dict(id=v["id"], name=v["name"], version=f"v{v['version_no']}", path=rel,
+            with connect(self.db_path) as db:known=[dict(r) for r in db.execute("SELECT * FROM accepted_image_issue WHERE asset_version_id=?",(v["id"],))]
+            from .progress_expert import provisional_image_issues
+            with connect(self.db_path) as db:provisional=provisional_image_issues(db,ep['id'],v['id'])
+            gallery.append(dict(provisionalIssues=provisional,knownIssues=known,id=v["id"], name=v["name"], version=f"v{v['version_no']}", path=rel,
                                 segments=uses, marks=v.get("marks", [])))
         image_paths = {v["id"]: v["path"] for v in gallery}
         bindings = []
@@ -522,18 +587,30 @@ class DeliveryMixin:
                 roster[role]["path"] = image_paths[vid]
         manifest["workbench"]["page"] = dict(version=2, project=ctx["ep"]["display_code"]+" · "+english,
                                              images=gallery, requiredImages=ctx["requiredImages"], publish=pack, bindings=bindings, roster=roster)
+        with connect(self.db_path) as db:
+            fix=db.execute("SELECT scope FROM continuous_run WHERE episode_id=? AND mode='fix' AND state='running' ORDER BY created_at DESC,rowid DESC LIMIT 1",(ctx['ep']['id'],)).fetchone()
+        if fix:
+            manifest['workbench']['changes']=[dict(type=item['type'],segments=item['segments'],scenes=item['scenes'],needKeys=item['needKeys'],instruction=item['instruction'],reason=item['reason']) for item in json.loads(fix['scope'])]
         manifest["workbench"]["frameGeometry"] = package_geometry(root, manifest, files)
         put("episode.json", json.dumps(manifest, ensure_ascii=False, indent=2).encode())
         put("00_图文对照.html", deliverypage.render(root, manifest, files).encode())
         imagechoices.verify_manifest(manifest, files)
         verify_sound_fields(root, manifest, files)
-        promptreceipt.verify_package(root, manifest, files)
         deliverypage.verify(root, manifest, files)
         return files
+
+    def package_file(self,package_id):
+        with connect(self.db_path) as db:
+            rel=row(db,"SELECT relpath FROM package WHERE id=?",package_id)["relpath"]
+        path=(self.store.root / rel).resolve()
+        if (self.store.root / "packages").resolve() not in path.parents or not path.is_file():raise NotFound("未找到已导出的 H3 包")
+        return path
 
     def delivery_view(self, delivery_id):
         with connect(self.db_path) as db:
             d = loads(row(db, "SELECT * FROM delivery WHERE id=?", delivery_id), "segments", "versions")
+            d["packages"]=[dict(id=r["id"],filename=Path(r["relpath"]).name) for r in db.execute("SELECT id,relpath FROM package WHERE delivery_id=? ORDER BY created_at DESC,rowid DESC",(delivery_id,))]
+            d["revision"] = db.execute("SELECT count(*) FROM delivery WHERE episode_id=? AND scope=? AND rowid<=(SELECT rowid FROM delivery WHERE id=?)",(d["episode_id"],d["scope"],delivery_id)).fetchone()[0]
         root = self.store.root / d["relpath"]
         manifest = json.loads((root / "manifest.json").read_text())
         d["files"] = manifest["files"]
@@ -664,6 +741,8 @@ class DeliveryMixin:
                 or any(not isinstance(values, dict) or values.keys() - h3export.OPTIONS
                        for values in segment_overrides.values())):
             raise Rejected("单段覆盖须指定本次导出的段号和有效参数")
+        with connect(self.db_path) as db:
+            self._require_current_delivery(db, delivery_id)
         verified = self.verify_delivery(delivery_id)
         if not verified["ok"]:
             errors = verified["errors"]
@@ -695,7 +774,8 @@ class DeliveryMixin:
                 text = raw.decode("utf-8")
                 if packed["prompt"] != text.replace("\r\n", "\n").replace("\r", "\n"):
                     raise ValueError(f"{name} 与打包器读入的内容不同")
-                packed["prompt"] = text
+                from .officialh3 import package_text
+                packed["prompt"] = package_text(text) if seg.get("prompt_format") == "h3_official" else text
             h3export.prepare(package, files, project, lambda aid:h3export.asset_origin(self.asset_version(aid)))
         except (ValueError, OSError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
             raise Rejected(f"打包器拒绝：{exc}") from exc
@@ -732,6 +812,7 @@ class DeliveryMixin:
         if expected_preview is not None:
             payload["preview"] = expected_preview
         with connect(self.db_path) as db:
+            self._require_current_delivery(db, delivery_id)
             prior = self._existing_command(db, command_id, "package", payload)
             if prior:
                 return self._local_output(db, prior)
@@ -757,6 +838,7 @@ class DeliveryMixin:
                 for block in iter(lambda: stream.read(1024 * 1024), b""):
                     digest.update(block)
             with transaction(self.db_path) as db:
+                self._require_current_delivery(db, delivery_id)
                 def register():
                     if path.exists():
                         raise Rejected("目标 ZIP 已存在，请重新出包")

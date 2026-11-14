@@ -142,18 +142,20 @@ def test_duration_rules_check_selected_segments_and_full_length(tmp_path):
     assert any("严格超过 60" in p["problem"] for p in problems)
     scoped,_=wb.delivery_problems(eid,"trial",["G01"])
     assert not any("上限" in p["problem"] or "严格超过 60" in p["problem"] for p in scoped)
-    assert wb.episode_view(eid)["productionStatus"] == dict(space=False,cast=False,assets=False,review=False,package=False)
+    assert wb.episode_view(eid)["productionStatus"] == dict(materialsConfirmed=False,space=False,cast=False,assets=False,review=False,package=False)
 
 
-def test_episode_pack_survives_project_switch(tmp_path):
+def test_historical_pack_cannot_restore_parallel_workflow(tmp_path):
     env = Env(tmp_path)
     pid,eid = env.new_episode()
-    env.wb.adopt_pack(pid, "short-film@v1", "switch-v1")
+    with pytest.raises(Rejected):
+        env.wb.adopt_pack(pid, "short-film@v1", "switch-v1", expected_ref="unified-film@draft")
     task=env.wb.create_task(eid,"story","按本集开工时的方法起草")
     header=env.wb.run_manifest(task["runId"])["manifest"]
-    assert header["methodPack"]["id"]=="short-film@v7"
+    assert header["methodPack"]["id"]=="unified-film@draft"
     _, newer = env.new_episode(project_id=pid, code="E02")
-    assert env.wb.stage_methods(newer, "script") == dict(ref="short-film@v1", sections=[],disabled=[])
+    assert env.wb.stage_methods(newer, "script")["ref"] == "unified-film@draft"
+    assert env.wb.stage_methods(newer, "script")["sections"]
 
 
 def test_versioned_source_sync_and_old_episode_replay(tmp_path, monkeypatch):
@@ -180,17 +182,19 @@ def test_versioned_source_sync_and_old_episode_replay(tmp_path, monkeypatch):
     delta = env.wb.compare_packs("short-film@v7","short-film@v8",pid)
     assert set(delta["stages"])=={"plan","script"}
     assert {s["key"] for s in delta["sections"] if s["kind"]=="edited"} == {TITLE,"设备视点、观看窗口、声音与剪点"}
-    env.wb.adopt_pack(pid, "short-film@v8", "upgrade", expected_ref="short-film@v7")
+    with pytest.raises(Rejected):
+        env.wb.adopt_pack(pid, "short-film@v8", "upgrade", expected_ref="unified-film@draft")
     assert env.wb.run_methods(old_task)==saved
     _,new_eid = env.new_episode(project_id=pid, code="E02")
     for eid, is_new in [(old_eid, False), (new_eid, True)]:
         env.adopt_story(eid)
         task = env.wb.create_task(eid,"script","展开剧情阶段")
         manifest = env.wb.run_manifest(task["runId"])["manifest"]
-        assert manifest["methodPack"]["id"] == ("short-film@v8" if is_new else "short-film@v7")
-        text = next(e["text"] for e in env.wb.store.manifest_texts(manifest) if e["name"]=="动作能量与反应.md")
-        assert (EXTRA in text) is is_new
-        assert "这段文件导语" not in text
+        assert manifest["methodPack"]["id"] == "unified-film@draft"
+        texts = env.wb.store.manifest_texts(manifest)
+        assert not any(EXTRA in entry["text"] for entry in texts)
+        assert any("film-screenplay" in entry.get("path", "")
+                   for entry in manifest["methodPack"]["files"].values())
         assert env.wb.run_methods(task["runId"])["ref"]==manifest["methodPack"]["id"]
 
 
@@ -243,18 +247,18 @@ def test_custom_palette_scope_and_frozen_provenance(tmp_path):
     assert wb.episode_palettes(eid,"assets")["cards"][0]["id"]==cid
 
 
-def test_method_override_applies_to_next_creation_run_only(tmp_path):
+def test_unified_core_cannot_be_disabled_and_run_methods_stay_frozen(tmp_path):
     env = Env(tmp_path)
     wb = env.wb
     _, eid = env.new_episode()
     before = wb.create_task(eid, "story", "写出故事")
-    key = "可选的故事开发辅助.md"
-    wb.set_stage_methods(eid, "story", [key])
-    after = wb.create_task(eid, "story", "简短故事")
-    for run, expected in ((before, True), (after, False)):
-        assert (key in wb.run_manifest(run["runId"])["manifest"]["methodPack"]["files"]) == expected
+    frozen = wb.run_methods(before["runId"])
     with pytest.raises(Rejected):
-        wb.set_stage_methods(eid, "story", ["story-standard.md"])
+        wb.set_stage_methods(eid, "story", ["SKILL.md"])
+    with pytest.raises(Rejected):
+        wb.set_stage_methods(eid, "story", ["可选的故事开发辅助.md"])
+    wb.set_stage_methods(eid, "story", [])
+    assert wb.run_methods(before["runId"]) == frozen
 
 
 def test_restoring_historical_publish_requires_adoption_and_keeps_settings(tmp_path):
@@ -318,6 +322,16 @@ def test_prompt_author_reads_only_bound_originals_when_selected(tmp_path):
         binaries = [i["sha256"] for i in frozen["inputs"] if i.get("binary")]
         assert binaries == ([image["sha256"]] if include else [])
         assert any(i["role"] == "prompt_scaffold" for i in frozen["inputs"])
+        if include:
+            from workbench.executors.fake import directed
+
+            def notes_first(request):
+                result = directed(request, "codex")
+                target = result["changes"][0]["targetId"]
+                result["changes"].insert(0, dict(targetId=target, field="decisionNotes", value="[]"))
+                return result
+
+            env.codex.script.append(notes_first)
         env.drain(task["runId"])
         version=env.art(eid,"prompts")["versions"][-1]
         assert version["content"]["segments"]["G01"]["refs"][0]["assetVersionId"] == image["versionId"]
@@ -328,8 +342,10 @@ def test_prompt_author_reads_only_bound_originals_when_selected(tmp_path):
     edited=wb.save_manual(task["artifactId"],version["id"],version["content"],"edit-with-reference")
     inherited=wb.segment_palette_trace(edited["versionId"],"G01")
     assert not inherited["direct"] and inherited["cards"]==trace["cards"]
-    with pytest.raises(Rejected, match="不支持本次原图输入"):
-        wb.create_task(eid, "prompts", "看图", executor={"create":{"provider":"antigravity"}}, prompt_images=True)
+    task = wb.create_task(eid, "prompts", "看图", executor={"create":{"provider":"antigravity"}}, prompt_images=True)
+    entries = wb.store.manifest_texts(wb.run_manifest(task["runId"])["manifest"])
+    assert not any(i.get("binary") for i in entries)
+    assert any("本次未提供原图" in i["text"] for i in entries)
 
 
 def test_project_library_scope_pins_and_product_scene_evidence(tmp_path):

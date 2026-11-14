@@ -2,11 +2,12 @@ import { useState } from "react";
 import { cmd, upload } from "./api";
 import { ErrorLine, useAction, useQuery } from "./ui";
 
-const stages = {story:"故事稿", script:"剧本", plan:"制作方案", prompts:"分段提示词", publish:"发布包"};
+import { FILM_STAGES } from "./workflow";
+const stages = {...Object.fromEntries(FILM_STAGES),publish:"发布文案"};
 export const canUseUploadedMethods = (stage:string) => Object.prototype.hasOwnProperty.call(stages,stage);
 type Edition = {id:string; number:number; filename:string; sha256:string};
 type Method = {id:string; title:string; versions:Edition[]};
-type Library = {methods:Method[]; selected:string[]};
+type Library = {configured:{stage:string;path:string;synced:boolean}[];projectSelected:string[];configuredFiles:string[];methods:Method[]; selected:string[]};
 
 function EditionReader({project, method}:{project:string; method:Method}) {
   const [chosen,setChosen]=useState("");
@@ -26,6 +27,35 @@ function EditionReader({project, method}:{project:string; method:Method}) {
     {result.error && <p className="error">{result.error}</p>}
     {result.data && <>{result.data.difference!=null && <details open><summary>版本差异</summary><pre>{result.data.difference || "两版正文一致"}</pre></details>}
       <pre>{result.data.text}</pre></>}
+  </section>;
+}
+
+export function ProjectMethodSync({pid,eid,stage}:{pid:string;eid?:string;stage?:string}) {
+  const library=useQuery<Library>("custom_methods",{project_id:pid,episode_id:eid,stage});
+  const act=useAction();
+  const [notice,setNotice]=useState("");
+  if(library.error)return <p className="error">{library.error}</p>;
+  const data=library.data;
+  if(!data)return null;
+  if(!Array.isArray(data.configured) || !Array.isArray(data.projectSelected))
+    return <p role="status">后台服务版本较旧，请重启工作台以使用项目方法同步。</p>;
+  const missing=data.configured.filter(item=>!item.synced);
+  const different=eid && stage && JSON.stringify(data.selected)!==JSON.stringify(data.projectSelected);
+  if(!missing.length && !different && !notice)return null;
+  return <section className="card">
+    {!!missing.length && <><b>本项目有 {missing.length} 份项目方法尚未同步</b>
+      {eid ? <a className="btn" href={`#/p/${pid}/settings`}>去项目设置同步</a> : <>
+        <ul>{missing.map(item=><li key={item.stage+item.path}>{item.path} · {stages[item.stage]}</li>)}</ul>
+        <button className="btn" disabled={act.busy} onClick={()=>act.run(async()=>{
+          await cmd("sync_project_methods",{project_id:pid});await library.reload();setNotice("已备份并同步项目方法。");
+        })}>同步项目方法</button></>}
+    </>}
+    {different && <><p>{stages[stage!]} 从下一次任务起采用项目选择的 {data.projectSelected.length} 份方法。</p>
+      <button className="btn" disabled={act.busy} onClick={()=>act.run(async()=>{
+        await cmd("adopt_project_stage_methods",{project_id:pid,episode_id:eid,stage,expected:data.selected,
+          project_expected:data.projectSelected});await library.reload();setNotice("本步之后发起的任务将使用项目当前的方法。");
+      })}>本集采用项目当前的方法</button></>}
+    {notice && <p role="status">{notice}</p>}<ErrorLine error={act.error}/>
   </section>;
 }
 

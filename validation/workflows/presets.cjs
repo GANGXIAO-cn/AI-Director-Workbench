@@ -39,7 +39,7 @@ async function main(){
     assert.equal(await page.getByPlaceholder("一句话想法").inputValue(),"两位值班员认错了伞");
     await page.getByLabel("本集使用的规格预设").selectOption(square);
     await page.getByLabel("本集画幅覆盖").selectOption("4:3");
-    await btn("开工，进入故事稿").click();
+    await btn("开工并开始创作").click();
     await page.waitForURL(/\/e\/.+\/story/);
     const eid=new URL(page.url()).hash.split("/")[2];
     const kicked=await get("episode_view",{episode_id:eid});

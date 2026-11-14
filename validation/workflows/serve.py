@@ -12,7 +12,9 @@ from helpers import Env
 from workbench.app import create_app
 
 if __name__ == "__main__":
-    folder = Path(tempfile.mkdtemp(prefix="adw-workflows-"))
+    reuse = os.environ.get("ADW_WORKFLOW_FIXTURE_DIR") or (os.environ.get("ADW_IMAGE_FIXTURE_DIR") if os.environ.get("ADW_TEST_CONTINUOUS_IMAGES") else None)
+    folder = Path(reuse) if reuse else Path(tempfile.gettempdir())/"adw-workflows-continuous-preview" if os.environ.get("ADW_TEST_CONTINUOUS_PREVIEW") else Path(tempfile.mkdtemp(prefix="adw-workflows-"))
+    folder.mkdir(parents=True,exist_ok=True)
     if os.environ.get("ADW_TEST_INTERRUPTION"):
         from interrupted_history import prepare
         prepare(folder/"data")
@@ -21,15 +23,57 @@ if __name__ == "__main__":
         # Historical receipt inspection must not dispatch unrelated queued jobs from the source snapshot.
         for rid in env.wb.pending_runs():
             env.wb.stop_run(rid)
+    elif os.environ.get("ADW_TEST_CONTINUOUS_PREVIEW"):
+        from continuous_preview_fixture import prepare
+        prepare(env,folder)
+    elif os.environ.get("ADW_TEST_CONTINUOUS_IMAGES"):
+        from continuous_images_fixture import prepare
+        prepare(env)
+    elif os.environ.get("ADW_TEST_FILL_DEFAULTS"):
+        from fill_defaults_fixture import prepare
+        prepare(env)
+    elif os.environ.get("ADW_TEST_QUICKSTART"):
+        from test_quickstart import reply
+        env.wb.create_project("_template","一句话开拍验收")
+        env.codex.script=[reply]
+    elif os.environ.get("ADW_TEST_CONTINUOUS"):
+        from continuous_fixture import prepare
+        prepare(env)
     elif os.environ.get("ADW_TEST_KICKOFF_CHECKS"):
         from test_kickoff_checks import setup_case, report
         setup_case(env)
+        env.codex.script = [report]
         env.claude.script = [report]
     elif os.environ.get("ADW_TEST_TOPIC_RESEARCH"):
         from topic_research_fixture import prepare
         prepare(env)
     elif os.environ.get("ADW_TEST_STORY_SKILL"):
-        env.wb.create_project("puggy", "PUGGY 故事技能验收")
+        project=env.wb.create_project("puggy", "PUGGY 故事技能验收")
+        env.wb.sync_project_methods(project["projectId"],"fixture-sync")
+    elif os.environ.get("ADW_TEST_AUTO_CHAT_PREVIEW"):
+        _, eid = env.new_episode()
+        env.adopt_story(eid)
+    elif os.environ.get("ADW_TEST_STRESS_REPAIRS"):
+        import json
+        from test_stress_repairs import fixture, discussion
+        from workbench.executors.fake import draft
+        fixture(folder,env)
+        def compare(quote):
+            return lambda req:discussion(req,[dict(id=i,note="核对了动作和次序",quote=quote) for i in ("I01","I02")])
+        env.codex.script=[lambda req:draft(req,rules=json.dumps([dict(id="r1",rule="柜台钥匙由值班员交接",choiceImpact="先查门锁")])),
+                          compare("巡店检查"),compare("巡店员检查门锁"),
+                          lambda req:discussion(req,[dict(id=i,status="已解决",note="钥匙交接与检查顺序明确") for i in ("I01","I02")])]
+    elif os.environ.get("ADW_TEST_ASSET_WORKSHEET"):
+        pid, eid = env.new_episode()
+        env.adopt_story(eid)
+        env.script(eid)
+        art = env.art(eid, "asset_design")
+        env.wb.save_manual(art["id"], art["adopted_version_id"], dict(strategy="lightweight",assets=[
+            dict(id="room",title="钟表铺空景",kind="scene",description="木门和柜台",imagePrompt="钟表铺空景",dependsOn=[]),
+            dict(id="bell",title="门铃",kind="prop",description="铜制门铃",imagePrompt="铜制门铃",dependsOn=[])
+        ]), "fresh-list")
+    elif os.environ.get("ADW_TEST_PROJECT_STAGE_METHODS"):
+        env.new_episode(config="puggy")
     elif os.environ.get("ADW_TEST_METHOD_SYNC"):
         import json
         from method_sync import prepare
@@ -50,6 +94,18 @@ if __name__ == "__main__":
     elif os.environ.get("ADW_TEST_LAYOUT_CONTROLS"):
         pid,eid=env.new_episode(name="站台灯光与人物轮廓")
         env.image(pid,eid,"侧光参考")
+    elif os.environ.get("ADW_TEST_SUPPLEMENTS"):
+        _,eid=env.new_episode()
+        env.adopt_story(eid)
+        env.save_adopt(eid,"script",dict(scenes=[dict(id="场01",heading="夜",action="取出手机。")],
+            supplements=[dict(subject="手机.位置",statement="手机在左侧口袋",scenes=["场01"],reason="原文未说明")]))
+    elif os.environ.get("ADW_TEST_REVIEW_SCOPE"):
+        env.full_episode(segments={"G01": [8000], "G02": [8000]}, deliver=False)
+    elif os.environ.get("ADW_TEST_STAGE_INPUTS"):
+        _, eid = env.new_episode()
+        env.adopt_story(eid)
+        env.script(eid)
+        env.drain(env.wb.create_task(eid, "plan", "完成镜头方案")["runId"])
     elif os.environ.get("ADW_TEST_STAGE_CHECKLIST"):
         pid,eid=env.new_episode(name="车站检查清单")
         wb=env.wb
@@ -102,7 +158,9 @@ if __name__ == "__main__":
                               cells=[dict(cell=3,moment="列车进站")])
     elif os.environ.get("ADW_TEST_SCRIPT_METHODS"):
         for profile in ["puggy","_template"]:
-            pid,eid = env.new_episode(config=profile,name=profile,code="九格")
+            pid=env.wb.create_project(profile,profile)["projectId"]
+            if profile=="puggy": env.wb.sync_project_methods(pid,"fixture-sync")
+            pid,eid = env.new_episode(config=profile,name=profile,code="九格",project_id=pid)
             env.adopt_story(eid)
             env.script(eid)
             env.save_adopt(eid,"plan",env.plan86({"G01":[8000]},{"G01":"grid"}))
@@ -130,6 +188,8 @@ if __name__ == "__main__":
         env.wb.set_cast(eid,"G02","阿福","absent")
         pv, _ = env.save_adopt(eid,"prompts",prompts,"delivery-multiline")
         env.review_segments(pv,["G01","G02"])
+        publish = env.art(eid,"publish")
+        env.save_adopt(eid, "publish", publish["versions"][-1]["content"], "recheck-publish")
         env.wb.deliver(eid,"full",eid+"-delivery-page")
     elif os.environ.get("ADW_TEST_STORY_COMPARE"):
         from workbench.executors.fake import draft
@@ -146,7 +206,13 @@ if __name__ == "__main__":
                             shared_limits="收银台位置沿用本集设定")
         env.wb.mark_image(eid,seed["img"]["versionId"],"required",["S01"],
                           requirement=dict(targetSegments=["G01"],reason="看清角色耳缘",fitness="limited",limitations="只用正面"))
-        env.review_segments(seed["prompts"],["G01","G02"],"with-required-image")
+        for stage in ("plan", "prompts"):
+            art=env.art(eid, stage)
+            content=art["versions"][-1]["content"]
+            where,quote=("S01",content["shots"][0]["action"]) if stage=="plan" else ("G01","阿福推回抽屉")
+            content["decisionNotes"]=[dict(decision="D01",status="applied",where=where,quote=quote)]
+            vid,_=env.save_adopt(eid,stage,content,"acknowledge-keep-"+stage)
+        env.review_segments(vid,["G01","G02"],"with-required-image")
     elif os.environ.get("ADW_TEST_H3_SOUND"):
         from h3_sound_fixture import prepare
         seed = prepare(env)

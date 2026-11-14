@@ -15,10 +15,11 @@ async function main() {
     const [project] = await query("list_projects");
     await page.goto(base);
     await page.locator(".bigbox textarea").fill("钟楼的最后一次报时");
-    await page.getByRole("button",{name:"继续",exact:true}).click();
+    await page.getByRole("button",{name:/规格预设/}).click();
+    await page.getByRole("button",{name:/调整完整开工设置/}).click();
     const modal = page.locator(".modal:visible");
     await modal.getByLabel("合作档位").selectOption("beginner");
-    await modal.getByRole("button",{name:"开工，进入故事稿"}).click();
+    await modal.getByRole("button",{name:"开工并开始创作"}).click();
     await page.waitForURL(/\/e\/.+\/story/);
     const eid = page.url().split("/").at(-2);
     const view = ()=>query("episode_view",{episode_id:eid});
@@ -31,23 +32,23 @@ async function main() {
       await page.goto(base+"/#/e/"+eid+"/"+stage);
       await page.getByRole("button",{name:"跳过这一步"}).click();
       const confirm=page.getByRole("button",{name:"确认跳过"});
-      assert.ok(await confirm.isDisabled());
+      assert.equal(await confirm.isDisabled(),false); // W-A3: empty reason now uses the documented default.
       await page.getByLabel("跳过原因").fill("本集沿用已定资料 "+stage);await confirm.click();
       await page.getByText("本步已跳过 · 本集沿用已定资料 "+stage).waitFor();
       await page.reload();
-      await page.locator(".catalog .item.on").getByText("已跳过").waitFor();
+      await page.getByText("本步已跳过 · 本集沿用已定资料 "+stage).waitFor();
       assert.equal((await view()).skippedStages[stage],"本集沿用已定资料 "+stage);
     }
     await page.getByRole("button",{name:"恢复这一步"}).click();
     await page.getByRole("button",{name:"跳过这一步"}).waitFor();
     assert.deepEqual(Object.keys((await view()).skippedStages),["space"]);
     await page.goto(base+"/#/e/"+eid+"/script");
-    await page.getByRole("button",{name:"讨论与试写"}).click();
+    await page.locator(".assistant:visible summary").filter({hasText:"更多工具"}).click();await page.getByRole("button",{name:"讨论与试写"}).click();
     await modal.getByLabel("讨论或试写要求").fill("先试写钟楼停摆的一场");
     await modal.getByRole("button",{name:/发送给/}).click();
     await modal.getByText(/已按本轮资料回应/).waitFor();
     assert.equal(await modal.getByRole("button",{name:/引用此回复/}).count(),0);
-    await page.reload();await page.getByRole("button",{name:"讨论与试写"}).click();
+    await page.reload();await page.locator(".assistant:visible summary").filter({hasText:"更多工具"}).click();await page.getByRole("button",{name:"讨论与试写"}).click();
     await modal.getByText(/已按本轮资料回应/).waitFor();
     assert.ok(!(await view()).artifacts.some(a=>a.stage==="script"));
     const chat=await query("free_chat",{project_id:project.id,episode_id:eid,stage:"script"});

@@ -22,6 +22,9 @@ def _digest(path: Path) -> str:
 
 
 def pack_dir(ref: str) -> Path:
+    from .workflow import METHOD_REF
+    if ref == METHOD_REF:
+        return REPO / "resources" / "skills" / "unified-film"
     if not re.fullmatch(r"[a-z][a-z0-9-]*@v[1-9][0-9]*", ref):
         raise ValueError("invalid method pack reference")
     name, version = ref.split("@")
@@ -43,6 +46,10 @@ def write_manifest(ref: str):
 
 def load_pack(ref: str) -> dict:
     """Load and verify a pack against its committed manifest."""
+    from .workflow import METHOD_REF
+    if ref == METHOD_REF:
+        from .unifiedmethods import load
+        return load()
     root = pack_dir(ref)
     manifest = json.loads((root / "manifest.json").read_text())
     if not isinstance(manifest,dict) or manifest.get("id") != ref:

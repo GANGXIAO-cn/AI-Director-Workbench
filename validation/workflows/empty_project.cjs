@@ -18,13 +18,13 @@ async function main() {
     await page.getByText("可读",{exact:true}).waitFor();
     assert.equal((await q("project_knowledge",{project_id:project.id}))[0].title,"站台.txt");
     await page.goto(base+"/#/p/"+project.id+"/preset");
-    await page.getByText(/本项目还没有已开工的集/).waitFor();
+    await page.getByText(/暂无已开工的剧集/).waitFor();
     await page.getByRole("link",{name:"去项目选择或新增一集"}).click();
     const button=name=>page.getByRole("button",{name,exact:true});
     await button("＋ 新增一集").click();
     await button("新增并去开工").click();
     await page.getByPlaceholder("一句话想法").fill("列车员在空站台听到返程广播。");
-    await button("开工，进入故事稿").click();
+    await button("开工并开始创作").click();
     await page.waitForURL(/#\/e\/[^/]+\/story$/);
     const eid=page.url().split("/").at(-2);
     await page.goto(base+"/#/e/"+eid+"/assets?tab=canvas");

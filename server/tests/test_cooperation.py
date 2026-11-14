@@ -23,11 +23,14 @@ def test_skip_is_scoped_and_cannot_waive_delivery(tmp_path):
     with pytest.raises(Rejected):
         wb.deliver(eid,"full","skip-is-no-waiver")
     wb.set_optional_stage(eid,"space",False,expected_reason="导演采用现有资料")
-    assert wb.episode_view(eid)["skippedStages"] == {"cast":"导演采用现有资料"}
+    choices = wb.episode_view(eid)["skippedStages"]
+    assert choices["cast"] == "导演采用现有资料" and "space" not in choices
     with pytest.raises(Rejected):
         wb.set_optional_stage(eid,"assets",True,"忽略")
-    with pytest.raises(Rejected):
-        wb.set_optional_stage(eid,"space",True,"  ")
+    # W-A3: whitespace reason now saves the documented default, without waiving delivery.
+    wb.set_optional_stage(eid,"space",True,"  ")
+    assert wb.episode_view(eid)['skippedStages']['space']=='导演选择跳过本步'
+    assert wb.delivery_problems(eid)[0]==before
 
 
 def test_trial_freezes_stage_and_user_materials_without_adopting(tmp_path):
@@ -65,6 +68,7 @@ def test_trial_freezes_stage_and_user_materials_without_adopting(tmp_path):
         wb.create_task(eid,"script","正式起草",trial_turn_id=prev)
     env.drain(wb.submit_review(draft,"review-original")["runId"])
     wb.adopt(art["id"],draft,None,"author-adopts",and_continue=True)
+    env.prepare_stage(eid,"script")
     env.drain(wb.create_task(eid,"script","参考这份试写",trial_turn_id=prev)["runId"])
     assert prev in env.codex.calls[-1].prompt and reply["reply"] in env.codex.calls[-1].prompt
     script = env.art(eid,"script")
@@ -151,7 +155,7 @@ def test_adoption_protects_a_and_records_only_real_story_dependents(tmp_path,mod
     wb.adopt(art["id"],b,a,"adopt-b",False)
     assert story()["editState"]==("open" if mode=="expert" else "protected")
     assert env.art(eid,"script")["adopted_version_id"]==script
-    assert [i["target_ref"] for i in wb.impacts(eid)]==["剧本场次 场01"]
+    assert {i["target_ref"] for i in wb.impacts(eid)} == {"剧本场次 场01","workflow:characters","workflow:treatment","workflow:script"}
     restore=wb.restore_version(a,b,"restore")["versionId"]
     assert not wb.compare(a,restore)["fields"] and story()["adopted_version_id"]==b
 

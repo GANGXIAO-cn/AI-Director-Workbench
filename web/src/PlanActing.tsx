@@ -62,7 +62,7 @@ export function PlanActing({locked,version, episodeId, assets, onSave}: Props) {
       <button className="btn" disabled={!dirty || act.busy} onClick={() => act.run(async () => {
         setPreview({changes, report:await cmd("preview_acting",{version_id:version.id,changes})});
       })}>核算本次调整</button>
-      <button className="btn primary" disabled={!dirty || act.busy} onClick={() => act.run(() => onSave(shots.map(s => ({...s,...changes[s.id]}))))}>保存表演方案新版</button>
+      <button className="btn primary" disabled={!dirty || act.busy} onClick={() => act.run(() => onSave(shots.map(s => ({...s,...changes[s.id]}))))}>保存分镜新版</button>
     </div>
     </fieldset>
     {dirty && !report && <p className="muted small">调整后可重新核算各句时长。</p>}

@@ -47,6 +47,7 @@ export function ExecutorConnection({provider,settings,models,reload,probe,pathDi
       {verification.login&&<p>在本机终端运行 <code>{loginCommand}</code>，按提示登录，然后再点“验证连接”。</p>}</div>}
 
     <label>默认型号 <select value={model??""} onChange={e=>{setModel(e.target.value||null);setEffort(null);}}>
+      {model&&!models.some(m=>m.id===model)&&<option value={model}>{model}（已保存）</option>}
       {models.map(m=><option key={m.id??""} value={m.id??""}>{m.label}</option>)}</select></label>
     {choices.length>1&&<label>默认强度 <select value={effort??""} onChange={e=>setEffort(e.target.value||null)}>
       {choices.map(v=><option key={v??""} value={v??""}>{v??"执行器默认"}</option>)}</select></label>}

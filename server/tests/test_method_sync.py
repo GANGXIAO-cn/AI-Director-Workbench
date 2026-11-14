@@ -65,7 +65,7 @@ def test_pack_comparison_uses_project_profile_and_preserves_adoption_on_conflict
     assert any(r["scope"]=="puggy" and r["key"]=="商品入景规划模板" for r in changed(branded))
     with pytest.raises(Conflict):
         wb.adopt_pack(plain,"short-film@v1","switch",expected_ref="short-film@v2")
-    assert wb.project_view(plain)["method_pack"]=="short-film@v7"
+    assert wb.project_view(plain)["method_pack"]=="unified-film@draft"
 
 
 def test_pack_stage_integrity_and_frozen_read_after_source_is_offline(tmp_path, monkeypatch):
@@ -82,7 +82,7 @@ def test_pack_stage_integrity_and_frozen_read_after_source_is_offline(tmp_path, 
     damaged=sandbox/"short-film/v9"
     damaged.mkdir()
     (damaged/"manifest.json").write_text("unfinished")
-    assert wb.pack_versions()==["short-film@v3","short-film@v9"]
+    assert wb.pack_versions()==["unified-film@draft"]
     assert wb.regress_pack("short-film@v3")["ok"]
     with pytest.raises(Rejected,match="读取"):
         wb.regress_pack("short-film@v9")

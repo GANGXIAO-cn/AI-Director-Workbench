@@ -22,6 +22,17 @@ async function main(){
       const r=await page.request.post(base+"/api/cmd/"+name,{data:args,headers:{"x-adw-token":token}});
       const value=await r.json();assert.equal(r.status(),200,JSON.stringify(value));return value;
     };
+    const puggy = await cmd("create_project",{config_id:"puggy",name:"项目原文同步验收"});
+    await page.goto(base+"/#/p/"+puggy.projectId+"/settings");
+    await page.getByText("本项目有 5 份项目方法尚未同步",{exact:true}).waitFor();
+    const sync=page.getByRole("button",{name:"同步项目方法",exact:true});
+    for(const stage of ["story","script","asset_design","acting","prompts"])
+      await page.locator("li").filter({hasText:"puggy-methods/"+stage+".md"}).waitFor();
+    await sync.click();
+    await page.getByRole("status").filter({hasText:"已备份并同步项目方法"}).waitFor();
+    const imported=await q("custom_methods",{project_id:puggy.projectId});
+    assert.equal(imported.methods.length,5);
+    assert.ok(imported.methods.every(m=>m.versions.length===1));
     const name="雨棚下的停顿", testProject="技能上传验证";
     const {projectId:pid}=await cmd("create_project",{config_id:"_template",name:testProject});
     const start=async code=>(await cmd("start_episode",{episode_id:null,project_id:pid,display_code:code,

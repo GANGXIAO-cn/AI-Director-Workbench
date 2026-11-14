@@ -1,7 +1,7 @@
 """Read the selected stage's evidence. Opening the checklist never starts an executor."""
 import json
 
-from . import imagechoices, stages, timeline
+from . import imagechoices, stages, timeline, workflow
 from .db import connect
 from .enhancements import entries
 from .errors import Rejected
@@ -9,9 +9,11 @@ from .specs import validate_spec
 from .storage import file_sha256
 
 NAMES = dict(story="故事稿",script="剧本",plan="制作方案",space="空间锁定",cast="角色出镜",assets="素材与选图",
-             prompts="提示词",review="两遍独审",publish="发布包",delivery="交付核验",package="H3 出包")
+             prompts="提示词",review="08分镜审核",publish="发布包",delivery="交付核验",package="H3 出包")
+NAMES.update(workflow.LABELS)
 FORMATS = dict(story="故事结构与交接字段",script="分场剧本结构",plan="镜号、时长与镜头结构",
                prompts="提示词结构与实际引用",publish="项目发布格式与字段")
+FORMATS.update({stage: label + "结构" for stage, label in workflow.STAGES if stage in workflow.FIELDS})
 PREVIOUS = {stage:prior for prior, stage in stages.NEXT.items()}
 
 
@@ -44,17 +46,20 @@ def version_methods(wb, db, version):
 
 def write_checks(wb, db, eid, stage, art, version):
     checks = []
-    prior = PREVIOUS.get(stage)
-    if prior:
-        ready = bool(wb._adopted_content(db,eid,prior))
-        checks.append(check("上游"+NAMES[prior],ready,"已有采用稿" if ready else "须先采用"+NAMES[prior]))
+    if workflow.DEPENDENCIES.get(stage):
+        try:
+            wb._require_workflow_inputs(db, eid, stage)
+            checks.append(check("本阶段上游成果", True, "必需成果已采用，可选阶段已采用或记录跳过理由"))
+        except Rejected as error:
+            checks.append(check("本阶段上游成果", False, str(error)))
     if not version:
         return checks+[check("本阶段稿件",False,"尚无可检查的版本")]
     gate = wb.adoption_gate(version["id"],db)
     checks += checks_for_errors(FORMATS[stage],gate["formatErrors"],"该版通过工作台的结构校验")
     if stage == "story":
         review = gate["review"]
-        checks.append(check("本版独立审查",bool(review),f"已登记第 {review['passNo']} 遍审查" if review else "尚无本版独审回执"))
+        checks.append(check("本版独立审查（可选）",bool(review) or not gate.get("reviewRequired"),
+                            f"已登记第 {review['passNo']} 遍审查" if review else "未执行补充独审；不作为采用必需条件"))
         if review:
             remaining = set(gate["blocking"]+gate["unresolved"])
             rows = db.execute("SELECT i.id,i.reason,w.reason waived FROM issue i LEFT JOIN waiver w ON w.issue_id=i.id "
@@ -81,23 +86,14 @@ def write_checks(wb, db, eid, stage, art, version):
 
 def review_checks(wb, db, eid, version):
     if not version:
-        return [check("提示词版本",False,"先保存要送审的提示词稿")]
-    plan = wb._adopted_plan(db,eid) or {}
-    if not plan.get("segments"):
-        return [check("本集生成段",False,"须先采用制作方案")]
-    states = wb.prompt_review_status(version["id"])
-    checks = []
-    for seg in plan["segments"]:
-        for key,label in (("coldRead","冷读"),("comparison","对照")):
-            item = states.get(seg["id"],{}).get(key,{})
-            state = item.get("state")
-            reasons = [i["reason"]+(" · 放行理由："+i["waiver_reason"] if i.get("waiver_reason") else "")
-                       for i in item.get("issues",[])]
-            if not reasons:
-                reasons = [item.get("observation") or {"passed":"已有匹配当前内容的通过回执",
-                           "waived":"已登记放行理由"}.get(state,"缺少匹配当前内容的审查回执")]
-            checks.append(check(seg["id"]+" · "+label,state in ("passed","waived"),"；".join(reasons)))
-    return checks
+        return [check("分镜版本",False,"先保存分镜稿")]
+    gate=wb.adoption_gate(version['id'],db)
+    if not gate['review']:
+        if version.get('base_id') and wb._latest_review(db,version['base_id']):
+            return [dict(label='08分镜独审',status='已修订，未另审',reason='审稿记录保留在上一版；本版已修订，不再追加整体独审')]
+        return [dict(label="08分镜独审",status="未启用",reason="本版无独审记录；09仍在写作内检查自身结果")]
+    return [check("08分镜审核",not gate['blocking'] and not gate['unresolved'],
+                  "原结论："+gate['review']['decision'])]
 
 
 def asset_checks(wb, db, eid):
@@ -185,7 +181,7 @@ def stage_checklist(wb, episode_id, stage, version_id=None, delivery_id=None, sc
     with connect(wb.db_path) as db:
         db.execute("BEGIN")
         wb._kickoff(db,episode_id)
-        version_stage = "prompts" if stage=="review" else stage
+        version_stage = "plan" if stage=="review" else stage
         version = None
         if version_stage in FORMATS:
             art = db.execute("SELECT * FROM artifact WHERE episode_id=? AND stage=?",(episode_id,version_stage)).fetchone()

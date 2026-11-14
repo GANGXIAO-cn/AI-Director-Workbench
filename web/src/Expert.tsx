@@ -1,12 +1,11 @@
-import { budgetAmount, budgetCents } from "./budget";
 import { useProjectRoute } from "./projectNavigation";
 import { useEffect, useState } from "react";
 import { cmd, deliveryFile } from "./api";
-import { ErrorLine, Modal, PROVIDER_LABEL, STAGES, Tag, rno, useAction, usePoll, useQuery } from "./ui";
+import { ErrorLine, Modal, PROVIDER_LABEL, STAGES, pickable, Tag, rno, useAction, usePoll, useQuery } from "./ui";
 
 const stages = ["story", "script", "plan", "prompts", "publish", "delivery"];
 const names = Object.fromEntries(STAGES);
-const fixed = ["每批付费出图须确认", "自动修订满两轮", "结构阻断", "两模型结论冲突", "请求结果未知",
+const fixed = ["出图内容须批准（可批量）", "自动修订满两轮", "结构阻断", "两模型结论冲突", "请求结果未知",
   "违反必须守住的设定", "项目设定新增或修改", "审核隔离未验证或执行器额度不足"];
 const optional = [["confirm_story", "故事稿给我看"], ["confirm_plan", "制作方案给我看"], ["confirm_delivery", "交付核验前给我看"]];
 const states: Record<string, string> = { authorized: "待开始", running: "运行中", stopped: "等待导演处理", manual: "已切回手工", done: "已完成授权范围" };
@@ -19,7 +18,6 @@ function Authorize({ id, episodes, pre, close, started }: { id: string; episodes
   const [eps, setEps] = useState<string[]>(pre ? [pre] : episodes.length === 1 ? [episodes[0].id] : []);
   const [target, setTarget] = useState("delivery");
   const [stops, setStops] = useState(["confirm_story", "confirm_delivery"]);
-  const [budget, setBudget] = useState("0");
   const [division, setDivision] = useState<Record<string, string>>({});
   const preview = useQuery<Record<string, Start>>("expert_preview", { project_id: id, episodes: eps });
   const act = useAction();
@@ -27,7 +25,7 @@ function Authorize({ id, episodes, pre, close, started }: { id: string; episodes
   const authorize = async () => {
     const overrides = Object.fromEntries(Object.entries(division).filter(([, p]) => p).map(([r, p]) => [r, { provider: p }]));
     const a = await cmd("authorize_expert", { project_id: id, episodes: eps, stop_stage: target, stops, division: overrides,
-      budget_cents: budgetCents(budget), expected: preview.data });
+      expected: preview.data });
     started(a.authId);
   };
   return <Modal onClose={close} width={640}><div className="expert-form">
@@ -41,18 +39,15 @@ function Authorize({ id, episodes, pre, close, started }: { id: string; episodes
       })}</div></div>
       <label className="formrow"><span>做到</span><select value={target} onChange={e => setTarget(e.target.value)}>
         {stages.map(s => <option key={s} value={s}>{s === "delivery" ? "图文可交付（含发布包、交付核验）" : names[s] + "采用"}</option>)}</select></label></section>
-    <section className="card"><b>图像预算</b><label className="formrow"><span>每集上限（USD）</span>
-      <input type="number" min="0" step="0.01" value={budget} onChange={e => setBudget(e.target.value)} /></label>
-      <div className="muted small">每批单独确认，按本批授权金额占用预算。填 0 可继续文本工作。</div></section>
     <section className="card"><b>停点</b><div className="label">你可以加的确认点</div>
       {optional.map(([key,label]) => <label key={key}><input type="checkbox" checked={stops.includes(key)}
         onChange={e => setStops(e.target.checked ? [...stops,key] : stops.filter(k => k !== key))} /> {label}</label>)}
       <div className="label">程序守住的停点</div>{fixed.map(x => <div key={x} className="small muted">☑ {x}</div>)}</section>
     <section className="card"><b>执行与分工</b>{[["create","起草与修订"],["review","独立审核"]].map(([role,label]) =>
       <label key={role} className="formrow"><span>{label}</span><select value={division[role] ?? ""} onChange={e => setDivision({...division,[role]:e.target.value})}>
-        <option value="">按本集开工设置</option>{Object.entries(PROVIDER_LABEL).filter(([p]) => ["codex","claude","antigravity"].includes(p)).map(([p,l]) => <option key={p} value={p}>{l}</option>)}</select></label>)}</section>
+        <option value="">按本集开工设置</option>{Object.entries(PROVIDER_LABEL).filter(([p]) => pickable(["codex","claude","antigravity"]).includes(p)).map(([p,l]) => <option key={p} value={p}>{l}</option>)}</select></label>)}</section>
     <div className="row" style={{justifyContent:"flex-end"}}><button className="btn" onClick={close}>取消</button>
-      <button className="btn primary" disabled={!ready || act.busy || !/^\d+(\.\d{1,2})?$/.test(budget)}
+      <button className="btn primary" disabled={!ready || act.busy}
         onClick={() => act.run(authorize)}>授权并开始</button></div>
     <ErrorLine error={act.error} />{act.error && <button className="btn" onClick={preview.reload}>刷新范围</button>}{preview.error && <div className="error">{preview.error}</div>}
   </div></Modal>;
@@ -95,7 +90,7 @@ export default function Expert({ id, episodes, arg }: { id: string; episodes: Ep
       onChange={e => {setForm(false); go(`#/p/${id}/expert/${e.target.value}`);}}>{history.data.map(h =>
       <option key={h.id} value={h.id}>{new Date(h.created_at*1000).toLocaleString()} · 到{names[h.stop_stage]}</option>)}</select></label>}
     {a && <><div className="spread"><div><b>{a.baseline ? states[a.state] : "历史授权（未记录起始版本）"}</b>
-      {a.baseline && <div className="small muted">{completed.length} / {a.episodes.length * range.length} 个阶段 · 每集图像预算 {budgetAmount(a.budget_cents,a.currency)}</div>}</div>
+      {a.baseline && <div className="small muted">{completed.length} / {a.episodes.length * range.length} 个阶段</div>}</div>
       <div className="row">{a.state === "running" && <button className="btn" disabled={act.busy || a.pause_requested}
         onClick={() => act.run(async () => {await cmd("pause_expert",{auth_id:active}); await status.reload();})}>{a.pause_requested ? "等待当前步骤结束" : "暂停"}</button>}
       {a.state === "authorized" && a.baseline && <button className="btn primary" onClick={() => act.run(() => start(a.id))}>开始本次授权</button>}
@@ -113,7 +108,6 @@ export default function Expert({ id, episodes, arg }: { id: string; episodes: Ep
             {done?.deliveryId ? <a href={deliveryFile(done.deliveryId,"00_图文对照.html")} target="_blank" rel="noreferrer">查看已核验图文 ↗</a> :
               <span className="muted small">{done ? (done.reused ? "沿用采用版 " : "已采用 ") + rno(done.number) : current ? states[a.state] : "待进行"}</span>}</div>;
         })}</section>)}</div><aside className="expert-aside"><h2>执行记录</h2>
-          {a.episodes.map((eid: string) => <div className="small" key={eid}>{a.baseline[eid].code} · 已授权批次预算 {budgetAmount(a.reserved?.[eid] ?? 0,a.currency)} / {budgetAmount(a.budget_cents,a.currency)}</div>)}
           {a.log.filter((x: {resumed?: string}) => x.resumed).map((x: {checkpoint?:string;stage:string;episode:string},i:number) =>
             <div className="muted small" key={i}>{a.baseline[x.episode]?.code} · {names[x.stage]} · {x.checkpoint ? "导演已确认" : "已重新核对"}</div>)}
           <a className="btn ghost" href="#/sys/tasks">查看执行器任务记录</a>

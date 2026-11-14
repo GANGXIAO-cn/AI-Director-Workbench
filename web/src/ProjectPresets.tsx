@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Clapperboard, Copy, Pencil, SlidersHorizontal, Volume2, Package } from "lucide-react";
 import { cmd } from "./api";
 import { specChoices, specLabels, frameOrientation } from "./specs";
 import { ErrorLine, useAction, useQuery } from "./ui";
@@ -10,9 +11,9 @@ const nameOf=(name:string)=>name==="default"?"项目默认":name;
 const revision=(rev:number)=>rev===0?"初始版":`第 ${rev} 版`;
 const format=(key:string,value:string|number)=>specChoices[key]?.[String(value)] || String(value);
 const groups = [
-  {title:"形态与时长",keys:["filmFormat","targetDuration","segmentMaxSeconds","aspectRatio"]},
-  {title:"画面与声音",keys:["style","shootingFormat","shotRhythm","postText","sound"]},
-  {title:"交付与 H3 默认",keys:["packaging","h3Resolution","h3Candidates","h3InstanceType"]},
+  {title:"形态与时长",Icon:Clapperboard,keys:["filmFormat","targetDuration","segmentMaxSeconds","aspectRatio"]},
+  {title:"画面与声音",Icon:Volume2,keys:["style","shootingFormat","shotRhythm","postText","sound"]},
+  {title:"交付与 H3 默认",Icon:Package,keys:["packaging","h3Resolution","h3Candidates","h3InstanceType"]},
 ];
 type Draft = {source:Preset; values:Values; copying:boolean; name:string};
 
@@ -62,27 +63,27 @@ export function ProjectPresets({pid,showProjectLink=false}:{pid:string;showProje
     setNotice(`已保存「${nameOf(result.name)}」${revision(result.rev)}`);
   }
   return <section className="project-presets">
-    <header className="spread"><div><h1>规格预设 · {frameOrientation(String(values.aspectRatio))}</h1>
-      <p className="muted small">每集开工时复制选定版本，可单独调整。</p></div>
-      <div className="row"><select aria-label="查看项目预设" disabled={!!draft} value={selected.name} onChange={e=>{setName(e.target.value);setNotice("");}}>
+    <header className="preset-heading"><div className="preset-title"><SlidersHorizontal size={22} aria-hidden="true"/><div><h1>规格预设 · {frameOrientation(String(values.aspectRatio))}</h1>
+      <p className="muted small">每集开工时复制选定版本，可单独调整。</p></div></div>
+      <div className="preset-actions"><select aria-label="查看项目预设" disabled={!!draft} value={selected.name} onChange={e=>{setName(e.target.value);setNotice("");}}>
         {data.data.presets.map(p=><option key={p.name} value={p.name}>{nameOf(p.name)} · {revision(p.rev)}</option>)}</select>
-        {!draft&&<><button className="btn" onClick={()=>edit(true)}>复制为新预设</button><button className="btn" onClick={()=>edit(false)}>改这个预设</button></>}</div></header>
+        {!draft&&<><button className="btn" onClick={()=>edit(true)}><Copy size={15} aria-hidden="true"/>复制为新预设</button><button className="btn primary" onClick={()=>edit(false)}><Pencil size={15} aria-hidden="true"/>改这个预设</button></>}</div></header>
     {draft?.copying&&<label className="field">新预设名称 <input maxLength={80} value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value})}/></label>}
     <div className="preset-layout"><div className="preset-fields">
-      {groups.map(group=><section className="card" key={group.title}><h2>{group.title}</h2>
-        {group.keys.filter(key=>draft || key.startsWith("h3") || values[key]!=null && values[key]!=="").map(key=><div key={key} className="preset-row">
+      {groups.map(group=><section className="preset-group" key={group.title}><h2><group.Icon size={17} aria-hidden="true"/>{group.title}</h2><div className="preset-values">
+        {group.keys.filter(key=>draft || key.startsWith("h3") || values[key]!=null && values[key]!=="").map(key=><div key={key} className={key === "sound" ? "preset-value preset-sound" : "preset-value"}>
           <span className="muted">{specLabels[key]}</span>{draft ? specChoices[key]?<select aria-label={specLabels[key]} value={values[key]??""} onChange={e=>setDraft({...draft,values:{...values,[key]:e.target.value}})}>
             {Object.entries(specChoices[key]).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select>:
           <input aria-label={specLabels[key]} type={key==="segmentMaxSeconds"?"number":"text"} min={key==="segmentMaxSeconds"?5:undefined} max={key==="segmentMaxSeconds"?15:undefined} value={values[key]??""} onChange={e=>setDraft({...draft,values:{...values,[key]:e.target.value}})}/>:
-          <span>{format(key,values[key]??"")}{key==="segmentMaxSeconds"?" 秒":""}</span>}</div>)}</section>)}
-      </div><aside className="card"><h2>{draft?"本次改动的影响":"已开工集的有效规格"}</h2>
+          <span>{format(key,values[key]??"")}{key==="segmentMaxSeconds"?" 秒":""}</span>}</div>)}</div></section>)}
+      </div><aside className="preset-episodes"><h2>{draft?"本次改动的影响":"已开工集的有效规格"}</h2>
         {draft&&<><p>{draft.copying?"新集可选用这个副本。":"之后选用该预设的新集会读取保存后的规格。"}</p>
           {differences.map(k=><p key={k}>{specLabels[k]||k} · {format(k,selected.values[k]??"未设置")} → {format(k,values[k]??"未设置")}</p>)}
           <p>已有 {existing.length} 集登记选用「{nameOf(selected.name)}」，保留各自的开工副本及单集调整。</p></>}
         {data.data.episodes.map(ep=><details key={ep.id}><summary>{ep.code} · {ep.effective.aspectRatio} · {ep.name?nameOf(ep.name)+" "+revision(ep.rev!):"旧集，未登记预设来源"}</summary>
           {Object.entries(ep.effective).map(([k,v])=><div className="preset-row" key={k}><span>{specLabels[k]??k}</span>
             <span>{format(k,v)} {ep.base && ep.base[k]!==v && <b> · 本集覆盖</b>}</span></div>)}{!draft&&<EpisodeOverride ep={ep} refresh={data.reload}/>}</details>)}
-        {!data.data.episodes.length&&<><p>本项目还没有已开工的集。开工时选择预设，之后可在这里查看该集的有效规格。</p>
+        {!data.data.episodes.length&&<><p>暂无已开工的剧集。</p>
           {showProjectLink && !draft && <a className="btn" href={`#/p/${pid}`}>去项目选择或新增一集</a>}</>}</aside></div>
     {draft&&<div className="row"><button className="btn primary" disabled={action.busy || (draft.copying?!draft.name.trim():!differences.length)} onClick={()=>action.run(save)}>
       {draft.copying?"保存新预设":"保存修改"}</button><button className="btn" onClick={()=>{setDraft(null);action.clear();data.reload();}}>取消</button></div>}

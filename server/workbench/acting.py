@@ -1,5 +1,6 @@
 """Dialogue timing uses the versioned shot list and an explicit reading or speaking rate."""
 import unicodedata
+import re
 
 from .timeline import layout
 from . import readable
@@ -123,6 +124,9 @@ def prompt_errors(plan, entries):
         for cue in cues:
             body = entry["txt"] if windows is None else next(
                 (w["body"] for w in windows if w["start_ms"] <= cue["start_ms"] < w["end_ms"]), "")
-            if cue["text"] not in body:
+            spoken = ' '.join(re.findall(r'<speaker_?\d+>(.*?)</speaker_?\d+>', body, re.S))
+            body = re.sub(r'</?speaker_?\d+>', '', body)
+            words = ' '.join(cue["text"].split())
+            if words not in ' '.join(body.split()) and words not in ' '.join(spoken.split()):
                 errors.append(f"{sid}/{cue['shot']} 第{cue['number']}句的起声处缺少采用台词「{cue['text']}」")
     return errors

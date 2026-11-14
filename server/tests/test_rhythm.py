@@ -24,14 +24,14 @@ def test_adoption_and_scoped_delivery_check_real_prompt_against_plan(tmp_path):
     for i, (old, new, error) in enumerate([
         ("同镜延续，", "切镜，", "表文接续标记"),
         ("00:03.000", "00:04.000", "联合表与正文时间不同"),
-        ("动作 2", "另一只手", "定位短句"),
     ]):
         edited = deepcopy(content)
         entry = edited["segments"]["G01"]
         assert old in entry["txt"]
         entry["txt"] = entry["txt"].replace(old, new)
-        with pytest.raises(Rejected, match=error):
-            env.save_adopt(eid, "prompts", edited, "invalid"+str(i))
+        changed, _ = env.save_adopt(eid, "prompts", edited, "auxiliary"+str(i))
+        assert wb.rhythm_review(changed)['report']['unparsed_segments']
+    content['segments']['G01']['txt'] = content['segments']['G01']['txt'].replace('动作 2', '另一只手')
     version, _ = env.save_adopt(eid, "prompts", content)
     report = wb.rhythm_review(version)
     assert report["report"]["shot_seconds"] == {"G01":[8], "G02":[8]}
@@ -61,3 +61,19 @@ def test_adoption_and_scoped_delivery_check_real_prompt_against_plan(tmp_path):
     assert "shot_rhythm" not in manifest
     assert manifest["workbench"]["partialShotRhythm"]["segments"] == ["G01"]
     assert wb.verify_delivery(delivery["deliveryId"])["ok"]
+
+
+def test_segment_first_window_uses_opening_marker_after_split(tmp_path):
+    env=Env(tmp_path)
+    plan=env.plan86({'G01':[8000], 'G02':[8000]})
+    plan['shots'][1]['continuation']='same'
+    rows=rhythm.plan_rows(plan)
+    assert rows[1]['接续方式']=='起镜'
+
+
+def test_flex_body_bracket_annotation_is_not_a_section():
+    from workbench import readable
+    text=readable.render({title:'【主观视点】普通正文。' for title in readable.FLEX})
+    assert len(readable.sections(text,'flex'))==len(readable.FLEX)
+    with pytest.raises(ValueError,match='栏目缺失'):
+        readable.sections(text.replace('【开场】',''),'flex')

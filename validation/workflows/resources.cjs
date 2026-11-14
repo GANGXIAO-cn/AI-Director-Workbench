@@ -42,7 +42,7 @@ async function main() {
     assert.equal((await query("project_palettes",{project_id:project.id}))[0].id,"001");
     await page.goto(base+"/#/e/"+episode.id+"/story");
     await page.getByRole("button",{name:"本步需求与参考"}).click();
-    await page.getByLabel("本步创作目标").fill("搜神记");
+    await page.getByLabel("本步目标").fill("搜神记");
     await page.getByLabel("参考与知识库").selectOption("match");
     await page.getByRole("button",{name:"选择参考片段"}).click();
     await page.locator(".script-list button").filter({has:page.getByText("搜神记",{exact:true})}).click();
@@ -60,7 +60,7 @@ async function main() {
     const config=await query("step_config",{episode_id:episode.id,stage:"story"});
     assert.equal(config.revision,1);
     assert.equal(await countRuns(),countBefore);
-    assert.match(await page.getByPlaceholder("输入你的想法，继续完善这一集").inputValue(),/搜神记[\s\S]*1 段资料/);
+    assert.match(await page.locator(".assistant:visible .composer textarea").inputValue(),/搜神记[\s\S]*1 段资料/);
     assert.equal(config.references[0].title,"搜神记");assert.equal(config.references[0].offset,2400);
     const token=(await (await page.request.get(base+"/api/session")).json()).token;
     const command=async(name,body)=>{
@@ -108,9 +108,9 @@ async function main() {
     await page.screenshot({path:path.join(output,"26_导演色卡实际出图片段.png")});
     await page.goto(base+"/#/e/"+episode.id+"/script");
     await page.getByRole("button",{name:"制作方法",exact:true}).click();
-    const section=page.locator("details").filter({hasText:"剧情阶段与可见表演"}).first();
+    const section=page.locator("details").filter({has:page.locator("summary").getByText("script · 工作台本地化规则",{exact:true})}).last();
     await section.locator("summary").click();
-    await section.getByText(/主稿写：阶段/).waitFor();
+    assert.equal((await section.locator(".field").textContent()).trim(),require("fs").readFileSync(path.join(__dirname,"../../resources/skills/unified-film/script.md"),"utf8").trim());
     await page.screenshot({path:path.join(output,"03_剧本阶段方法来源.png")});
     await page.getByRole("button",{name:"关闭",exact:true}).last().click();
     await page.goto(base+"/#/palette");
@@ -194,13 +194,13 @@ async function main() {
     await page.screenshot({path:path.join(output,"23_图像批次锁定图与有序输入.png")});
     let sends=0;
     page.on("request",req=>{ if(req.url().endsWith("/api/cmd/execute_batch")) sends++; });
-    await modal.getByLabel("授权预算（USD）").fill("2.15");
+    assert.equal(await modal.getByLabel("授权预算（USD）").count(),0); // 已确认取消费用输入，保留出图授权。
     await page.getByRole("button",{name:"确认授权 1 张"}).click();
     await modal.getByText("授权回执",{exact:true}).waitFor();
     const approved=(await query("episode_batches",{episode_id:episode.id})).find(b=>b.spec.items[0].prompt.startsWith("雨中站台"));
     assert.equal(approved.state,"authorized");
     assert.equal(approved.authorization.currency,"USD");
-    assert.equal(approved.authorization.budget_cents,215);
+    assert.equal(approved.authorization.budget_cents,null);
     assert.equal(approved.requests[0].submitted_at,null);
     await page.reload();
     const batchCard=page.locator(".card.line").filter({hasText:"已授权"}).filter({hasText:"64x64"}).last();

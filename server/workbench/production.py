@@ -12,7 +12,7 @@ from .palette_inputs import stage_card
 from .db import connect, dumps, new_id, transaction
 from .errors import Conflict, NotFound, Rejected, loads, row
 from .images import image_attachment
-from .storage import sha256_bytes
+from .storage import canonical, sha256_bytes
 
 
 # ---------------------------------------------------------------- local media tools (real, no network)
@@ -51,6 +51,27 @@ def line_diff(a: str, b: str) -> list[dict]:
     return out
 
 
+def story_review_materials(current, frozen):
+    """Merge review inputs in reading order while identifying divergent copies."""
+    materials = {}
+    revisions = {}
+    for origin, sources in (("审查时", current), ("起草时", frozen)):
+        for source in sources:
+            role, name, text = source["role"], source["name"], source["text"]
+            digest = sha256_bytes(text.encode("utf-8"))
+            revisions.setdefault((role, name), set()).add(digest)
+            origins = materials.setdefault((role, name, digest), (text, []))[1]
+            if origin not in origins:
+                origins.append(origin)
+
+    entries = []
+    for (role, name, digest), (text, origins) in materials.items():
+        if len(revisions[role, name]) > 1:
+            name = f"{name}（{'、'.join(origins)} · {digest[:12]}）"
+        entries.append(dict(role=role, name=name, text=text))
+    return entries
+
+
 class ProductionMixin:
     def stage_checklist(self, episode_id, stage, version_id=None, delivery_id=None, scope="full", segments=None):
         from .checklist import stage_checklist
@@ -75,6 +96,11 @@ class ProductionMixin:
                                       "ORDER BY seq DESC", (thread,)).fetchone()
                 request = f"{original['text']}\n澄清：{q['text']}\n导演答复：{answer}"
                 selection = json.loads(original["selection"]) if original["selection"] else None
+                if info.get("kickoffChoice") and answer == "从选题池挑":
+                    card = db.execute("SELECT * FROM topic WHERE project_id=? AND status='候选' AND episode_id IS NULL ORDER BY RANDOM() LIMIT 1",(task["project_id"],)).fetchone()
+                    if not card: raise Rejected("选题池已无可用卡，可改选「想一个新故事」")
+                    self._topic_on_kickoff(db,task["episode_id"],card["id"])
+                    db.execute("UPDATE kickoff SET source_type='topic',topic_id=?,goal=? WHERE episode_id=?",(card["id"],original["text"],task["episode_id"]))
                 run_id = self._queue_run(db, task_id, "revise" if info.get("baseVersionId") else "create",
                                          info.get("baseVersionId"), request, None)
                 mid = self._message(db, thread, "user", answer, selection, None, run_id, kind="answer")
@@ -237,6 +263,46 @@ class ProductionMixin:
         return items
 
     def _after_adopt(self, db, art, version_id, previous_id):
+        from .workflow import DEPENDENCIES, LABELS
+        self._mark_deliveries_stale(db, art["episode_id"], LABELS.get(art["stage"], art["stage"]) + "已采用新稿",
+                                    stage=art["stage"], adopted=version_id)
+        self._register_supplements(db,art,version_id)
+        if art["stage"] == "prompts":
+            self._resolve_adopted_prompt_impacts(db,art["episode_id"],version_id)
+        if art["stage"] == "asset_design":
+            self._sync_asset_needs(db, art["episode_id"], version_id)
+        # A new adoption is the author's explicit resolution for this document;
+        # drafts leave its old adoption and its dependent documents untouched.
+        db.execute("UPDATE impact SET state='resolved' WHERE episode_id=? AND kind IN ('workflow_change','decision_change','supplement_change','palette_change') AND target_ref=? AND state='pending'",
+                   (art["episode_id"], "workflow:" + art["stage"]))
+        out = self._stage_specific_impacts(db, art, version_id, previous_id)
+        if not previous_id:
+            return out
+        before, after = [db.execute("SELECT content FROM version WHERE id=?", (vid,)).fetchone()[0] for vid in (previous_id, version_id)]
+        old, new = json.loads(before), json.loads(after)
+        from .productionnotes import same_handoff
+        if art['stage']=='stress' and same_handoff(old,new):
+            return out
+        if all(old.get(k) == new.get(k) for k in (old.keys() | new.keys()) - {"decisionNotes"}):
+            return out
+        # plan already emits segment/joint impacts; a second whole-prompts impact
+        # would force unchanged segments back through the complete workflow.
+        if art['stage']=='plan':
+            return out
+        if art['stage']=='script' and all(old.get(k)==new.get(k) for k in (old.keys()|new.keys())-{'shootingSegments','decisionNotes'}):
+            return out
+        changed = {art["stage"]}
+        while True:
+            expanded = changed | {s for s,deps in DEPENDENCIES.items() if changed.intersection(deps)}
+            if expanded == changed:
+                break
+            changed = expanded
+        items = [dict(target="workflow:" + r["stage"], reason=f"{LABELS.get(art['stage'],art['stage'])}已采用新稿，须核对依赖内容")
+                 for r in db.execute("SELECT stage FROM artifact WHERE episode_id=? AND adopted_version_id IS NOT NULL", (art["episode_id"],))
+                 if r["stage"] in changed - {art["stage"]}]
+        return out + self._record_impacts(db, art, items, "workflow_change", art["stage"] + ":" + version_id)
+
+    def _stage_specific_impacts(self, db, art, version_id, previous_id):
         content = json.loads(db.execute("SELECT content FROM version WHERE id=?", (version_id,)).fetchone()[0])
         old = json.loads(db.execute("SELECT content FROM version WHERE id=?", (previous_id,)).fetchone()[0]) \
             if previous_id else None
@@ -253,11 +319,19 @@ class ProductionMixin:
             plan = self._adopted_content(db, art["episode_id"], "plan") or {}
             items = [dict(target=f"镜头 {sh['id']}", reason=f"引用的场次 {sh.get('origin', {}).get('scene')} 已修改")
                      for sh in plan.get("shots", []) if sh.get("origin", {}).get("scene") in changed]
+            before={s['id']:s for s in old.get('shootingSegments',[])}
+            after={s['id']:s for s in content.get('shootingSegments',[])}
+            if plan:
+                items += [dict(target='plan:'+sid,reason='拍摄段界或段内要求更新，只同步对应分镜及相邻衔接')
+                          for sid in sorted(before.keys()|after.keys()) if before.get(sid)!=after.get(sid)]
             return self._record_impacts(db, art, items, "script_change", ref)
         if art["stage"] == "plan":
             pre = timeline.preview(old, content) if old else None
             if not pre:
                 return []
+            for sid in set(pre['changedSegments'])|set(pre['removed']):
+                db.execute("UPDATE impact SET state='resolved' WHERE episode_id=? AND kind='script_change' AND target_ref=? AND state='pending'",
+                           (art['episode_id'],'plan:'+sid))
             items = [dict(target=f"prompts:{sid}", reason="段内镜头或时长变化，TXT 需复核")
                      for sid in pre["changedSegments"] if sid not in pre["removed"]]
             items += [dict(target=f"joint:{a}-{b}", reason="相邻接点需复核") for a, b in pre["joints"]]
@@ -274,7 +348,9 @@ class ProductionMixin:
     def resolve_impact(self, impact_id, command_id):
         with transaction(self.db_path) as db:
             def run():
-                row(db, "SELECT id FROM impact WHERE id=?", impact_id)
+                impact = row(db, "SELECT * FROM impact WHERE id=?", impact_id)
+                if impact["kind"]=="workflow_change" and impact["target_ref"] in ("workflow:story","workflow:characters","workflow:world","workflow:treatment","workflow:script") and impact["state"]=="pending":
+                    raise Rejected("请从返修与核对检查下游采用稿，或提交并采用对应的新稿")
                 db.execute("UPDATE impact SET state='resolved' WHERE id=?", (impact_id,))
                 return dict(impactId=impact_id)
             return self._command(db, command_id, "resolve_impact", dict(i=impact_id), run)
@@ -480,7 +556,7 @@ class ProductionMixin:
                 if not ref or image["kind"]!="image" or expected_sha256!=image["sha256"]:
                     raise Rejected("当前提示词引用的图片与所看原图不一致")
                 if not isinstance(observed,str) or not observed.strip() or not isinstance(conflicts,list) or any(
-                    not isinstance(c,str) or not c.strip() for c in conflicts):
+                    (not isinstance(c,str) or not c.strip()) if not isinstance(c,dict) else (not isinstance(c.get("text"),str) or not c["text"].strip() or not (isinstance(c.get("acceptedIssue"),str) or isinstance(c.get("provisionalIssue"),str))) for c in conflicts):
                     raise Rejected("请填写实际看图观察，冲突须逐条说明")
                 if not isinstance(prominent_props,dict) or any(not re.fullmatch("[a-z][a-z0-9-]*",k) or
                        not isinstance(v,str) or not v.strip() for k,v in prominent_props.items()):
@@ -562,13 +638,26 @@ class ProductionMixin:
             extra.append(dict(role="step_requirements", name="本步需求", text=dumps({k:v for k,v in config.items() if k != "references"})))
             for ref in config["references"]:
                 extra.append(dict(role="citation", name=ref["title"], text=dumps({k:v for k,v in ref.items() if k != "metadata"})))
-        if stage == "prompts":
-            for card in self.episode_palettes(episode_id, "prompts")["cards"]:
-                extra.append(dict(role="visual_reference", name=card["name"], text=dumps(stage_card(card, "prompts"))))
+        if stage in ("asset_design", "plan", "prompts"):
+            visual_stage = "assets" if stage == "asset_design" else "prompts"
+            for card in self.episode_palettes(episode_id, visual_stage)["cards"]:
+                extra.append(dict(role="visual_reference", name=card["name"], text=dumps(stage_card(card, visual_stage))))
         return extra
 
     def _extra_creation_inputs(self, db, task):
         extra = self._source_entries(db, task["episode_id"], task["stage"])
+        if task["stage"] == "asset_design":
+            fixed = [dict(r) for r in db.execute("""SELECT f.role AS roleId,f.asset_version_id AS assetVersionId,a.name,a.category FROM fixed_role_asset f
+                JOIN asset_version v ON v.id=f.asset_version_id JOIN asset a ON a.id=v.asset_id WHERE f.episode_id=?""",
+                (task["episode_id"],))]
+            baselines=[dict(r) for r in db.execute("""SELECT f.role AS roleId,f.asset_version_id AS assetVersionId,a.name,a.category
+                FROM episode_role_baseline f JOIN asset_version v ON v.id=f.asset_version_id JOIN asset a ON a.id=v.asset_id
+                WHERE f.episode_id=?""",(task['episode_id'],))]
+            fixed=list({item['roleId']:item for item in [*fixed,*baselines]}.values())
+            library = [dict(r) for r in db.execute("""SELECT a.name,a.category,l.usage,l.limits FROM library_entry l
+                JOIN asset_version v ON v.id=l.asset_version_id JOIN asset a ON a.id=v.asset_id
+                WHERE l.project_id=? AND l.status IN ('approved','limited') ORDER BY a.name""",(task["project_id"],))]
+            extra.append(dict(role="asset_inventory",name="已有身份图和复用库摘要",text=dumps(dict(fixed=fixed,library=library))))
         if task["stage"] == "prompts":
             rules = imagechoices.requirements(db, task["episode_id"])
             if rules:
@@ -604,7 +693,18 @@ class ProductionMixin:
         for c in db.execute("SELECT k.title,k.body,k.source,c.reason FROM citation c JOIN knowledge k ON k.id=c.knowledge_id "
                             "WHERE c.task_id=?", (task["id"],)):
             extra.append(dict(role="citation", name=c["title"], text=f"来源：{c['source']}\n理由：{c['reason']}\n{c['body']}"))
+        if task["stage"] in ("plan","prompts"):
+            states=self._role_states(db,task["episode_id"])
+            if states:
+                extra.append(dict(role="role_states",name="本集角色状态对图记录.json",text=canonical(states).decode()))
         if task["stage"] == "plan":
+            versions = db.execute("SELECT av.id FROM asset_version av JOIN asset a ON a.id=av.asset_id "
+                                  "WHERE a.episode_id=? OR av.id IN "
+                                  "(SELECT asset_version_id FROM fixed_role_asset WHERE episode_id=?) "
+                                  "ORDER BY a.name,av.version_no", (task["episode_id"],task["episode_id"]))
+            inventory = [{k:v[k] for k in ("id","name","category","roles","grid")}
+                         for r in versions for v in [self.asset_version(r[0],db)]]
+            extra.append(dict(role="plan_asset_inventory",name="当前实际可用参考图.json",text=dumps(inventory)))
             bookmarks = self.episode_bookmarks(task["episode_id"])
             extra.append(dict(role="bookmarks", name="bookmarks.json", text=dumps(bookmarks)))
         if task["stage"] == "publish":
@@ -614,6 +714,20 @@ class ProductionMixin:
                               text=dumps(self.publish_settings(task["project_id"]) or {})))
         if task["stage"] == "prompts":
             plan = self._adopted_content(db, task["episode_id"], "plan") or {}
+            packets = self._script_scene_packets(db, task["episode_id"], plan)
+            scenes, bindings = {}, {}
+            for sid, packet in packets.items():
+                bindings[sid] = []
+                for group in packet["scenes"]:
+                    binding = {k:v for k,v in group.items() if k != "original"}
+                    bindings[sid].append(binding)
+                    if group["original"] is not None:
+                        scenes[group["sceneId"]] = group["original"]
+            if packets:
+                basis = next(iter(packets.values()))
+                extra.append(dict(role="script_scene_source",name="逐段剧本原文.json",
+                                  text=canonical(dict(scriptVersion=basis["scriptVersion"],scriptRevision=basis["scriptRevision"],
+                                                      scenes=scenes,segments=bindings)).decode()))
             if any(shot.get("dialogueCues") for shot in plan.get("shots", [])):
                 extra.append(dict(role="dialogue_timing", name="台词读秒.json", text=dumps(acting.report(plan))))
             assets = [dict(assetVersionId=a["id"], name=a["name"], kind=a["kind"], category=a["category"],
@@ -621,19 +735,33 @@ class ProductionMixin:
             extra.append(dict(role="episode_assets", name="assets.json", text=dumps(assets)))
             extra.append(dict(role="cast_bindings", name="cast.json", text=dumps(self.cast_matrix(task["episode_id"]))))
             binding = db.execute("SELECT include_images FROM prompt_draft_task WHERE task_id=?", (task["id"],)).fetchone()
-            if binding:
+            reads_images = task.get("reads_images")
+            try:
                 scaffold = self.draft_prompts(task["episode_id"])["segments"]
-                extra.append(dict(role="prompt_scaffold", name="本集逐段参考与时间骨架.json", text=dumps(scaffold)))
-                extra.append(dict(role="shot_rhythm",name="镜头充分性联合表.json",text=dumps(rhythm.plan_table(plan))))
-                if binding[0]:
-                    index = {a["id"]:a for a in self.episode_assets(task["episode_id"])}
-                    seen = set()
-                    for segment in scaffold.values():
-                        for ref in segment["refs"]:
-                            vid = ref["assetVersionId"]
-                            if vid not in seen and index[vid]["kind"] == "image":
-                                seen.add(vid)
-                                extra.append(image_attachment(vid, self.store.read_blob(index[vid]["sha256"])))
+            except Rejected:
+                if binding:
+                    raise
+                # Ordinary discussions and revisions can begin before a complete scaffold exists.
+                scaffold = self._adopted_content(db, task["episode_id"], "prompts") or {}
+                scaffold = scaffold.get("segments", {})
+            from .materialcontext import material_context
+            inherited={sid:material_context(db,task['episode_id'],[r for r in entry.get('refs',[]) if r.get('kind')=='image']) for sid,entry in scaffold.items()}
+            extra.append(dict(role='material_use_conclusions',name='素材既定用途与观察.json',text=dumps(inherited)))
+            extra.append(dict(role='request',name='提示词组装职责',text='接收既定剧本、表演、镜头、分段与素材绑定。只翻译、排列图片标签并组装提示词；继承素材用途及接受限制，不重新看图评质量、不要求静态参考证明剧情动作或声音，不重选图片。原始props是观察，不要求全部映射为剧情道具。'))
+            if scaffold:
+                frozen = {sid: dict(refs=entry["refs"], materialUses=entry.get("materialUses", []),
+                                    sound=entry.get("sound", {}), prompt_format="h3_official")
+                          for sid,entry in scaffold.items()}
+                extra.append(dict(role="prompt_scaffold", name="本段实际参考与用途.json", text=dumps(frozen)))
+                extra.append(dict(role="shot_rhythm", name="分镜窗口与切镜.json", text=dumps(rhythm.plan_table(plan))))
+            if reads_images and (not binding or binding[0]):
+                index = {a["id"]:a for a in self.episode_assets(task["episode_id"])}
+                ids = dict.fromkeys(ref["assetVersionId"] for segment in scaffold.values() for ref in segment["refs"])
+                for vid in ids:
+                    if vid in index and index[vid]["kind"] == "image":
+                        extra.append(image_attachment(vid, self.store.read_blob(index[vid]["sha256"])))
+            if reads_images is False:
+                extra.append(dict(role="stage_contract", name="原图输入范围", text="本次未提供原图，不得描述图中细节"))
             downstream = [dict(s, refs=[r for r in s.get("refs", []) if r.get("mode") != "D"]) for s in plan.get("shots", [])]
             extra.append(dict(role="plan_layout", name="layout.json",
                               text=json.dumps(dict(layout=timeline.layout(plan), shots=downstream,
@@ -641,10 +769,56 @@ class ProductionMixin:
         return extra
 
     def _extra_review_inputs(self, db, task, version):
+        from .decisions import decision_entries
         entries = self._source_entries(db, task["episode_id"], task["stage"])
+        entries += decision_entries(db,task["episode_id"],task["stage"])
+        if task["stage"] == "plan":
+            from .materialcontext import material_context, RULE
+            from .progress_expert import provisional_image_issues
+            content=json.loads(version["content"])
+            eid=task["episode_id"]
+            script=self._adopted_content(db,eid,"script")
+            if script:
+                entries.append(dict(role="adopted_script",name="分镜对应剧本.json",text=dumps(script)))
+            refs={}
+            def add(vid,usage,shots):
+                if not vid:return
+                item=refs.setdefault(vid,dict(assetVersionId=vid,role=usage,shots=[]))
+                item['shots'].extend(sid for sid in shots if sid not in item['shots'])
+            for segment in content.get('segments',[]):
+                shots=[shot['id'] for shot in content.get('shots',[]) if shot['segment']==segment['id']]
+                for ref in segment.get('referenceImages',[]):
+                    if isinstance(ref,dict):add(ref.get('imageId'),ref.get('purpose') or '分镜指定参考',shots)
+            for shot in content.get('shots',[]):
+                for field,use in (('startAssetId','起幅'),('endAssetId','落幅')):
+                    add(shot.get(field),use,[shot['id']])
+                for role in shot.get('visibleRoles',[]):
+                    baseline=db.execute('SELECT asset_version_id FROM episode_role_baseline WHERE episode_id=? AND role=?',(eid,role)).fetchone()
+                    if not baseline:
+                        baseline=db.execute('SELECT asset_version_id FROM fixed_role_asset WHERE episode_id=? AND role=?',(eid,role)).fetchone()
+                    if baseline:add(baseline[0],role+'身份',[shot['id']])
+            for rule in imagechoices.requirements(db,eid):
+                targets=set(rule.get('targetSegments',[]));bound=set(rule.get('shotIds',[]))
+                shots=[shot['id'] for shot in content.get('shots',[]) if shot['segment'] in targets or shot['id'] in bound]
+                if shots:add(rule['versionId'],rule.get('usage') or '已指定参考',shots)
+            if refs:
+                entries.append(dict(role="material_use_conclusions",name="实际图片用途与既有结论.json",text=dumps(material_context(db,eid,list(refs.values())))))
+                entries.append(dict(role="review_boundary",name="素材用途尺度",text=RULE))
+                for vid,ref in refs.items():
+                    av=self.asset_version(vid,db)
+                    entries.append(image_attachment(av['name']+'-'+vid,self.store.read_blob(av['sha256'])))
+                    accepted=[dict(r) for r in db.execute('SELECT * FROM accepted_image_issue WHERE asset_version_id=?',(vid,))]
+                    provisional=provisional_image_issues(db,eid,vid)
+                    if accepted:entries.append(dict(role="accepted_image_issue",name=vid+"-已接受差异.json",text=dumps(accepted)))
+                    if provisional:entries.append(dict(role="provisional_image_issue",name=vid+"-暂收结论.json",text=dumps(provisional)))
+            return entries
         if task["stage"] == "story":
-            for source in self._version_materials(db,version,{"citation","step_requirements","reference_pack","adaptation_source"}):
-                entries.append(dict(role=source["role"],name=source["name"],text=source["text"]))
+            adopted = db.execute("SELECT adopted_version_id FROM artifact WHERE id=?", (task["artifact_id"],)).fetchone()[0]
+            if adopted and adopted != version["id"]:
+                entries.append(dict(role="adopted_story", name="已采用01:" + adopted,
+                                    text=self._adopted_stage_text(db, task["episode_id"], "story")))
+            frozen = self._version_materials(db, version, {"citation", "step_requirements", "reference_pack", "adaptation_source"})
+            return story_review_materials(entries, frozen)
         return entries
 
     def _has_table(self, db, name):
@@ -676,7 +850,8 @@ class ProductionMixin:
                     raise Rejected("原片或切点已更新，旧参考包证据不能用于新稿")
                 kickoff = self._kickoff(db,episode_id)
                 aid = row(db,"SELECT id FROM artifact WHERE episode_id=? AND stage='story'",episode_id)["id"]
-                tid,thread = self._draft_thread(db,ep["project_id"],episode_id,aid,"story",request,kickoff["executor_plan"])
+                tid,thread = self._draft_thread(db,ep["project_id"],episode_id,aid,"story",request,
+                                              {**kickoff["executor_plan"],**self._stage_executors(db,episode_id,"story")})
                 db.execute("INSERT INTO task_pack VALUES(?,?)",(tid,pack_id))
                 rid = self._queue_run(db,tid,"create",None,request)
                 return dict(taskId=tid,threadId=thread,runId=rid,artifactId=aid)
@@ -736,17 +911,31 @@ class ProductionMixin:
                           "JOIN episode e ON e.id=s.episode_id LEFT JOIN asset_version v ON v.id=s.lock_asset_version_id "
                           "LEFT JOIN asset a ON a.id=v.asset_id AND a.project_id=e.project_id AND a.kind='image' "
                           "AND (a.episode_id=e.id OR a.episode_id IS NULL) WHERE s.episode_id=? ORDER BY s.created_at,s.id", (episode_id,))
-        return [dict(id=r["id"],label=r["label"],relation=r["relation"],segments=json.loads(r["depends"]),status=r["status"],
+        plan = self._adopted_plan(db, episode_id) or {}
+        def scope(raw):
+            stored = json.loads(raw)
+            if isinstance(stored, list):
+                return dict(segments=stored,sceneIds=[])
+            scenes = stored["scenes"]
+            segments = dict.fromkeys(sh["segment"] for sh in plan.get("shots",[]) if (sh.get("origin") or {}).get("scene") in scenes)
+            return dict(segments=list(segments),sceneIds=scenes)
+        return [dict(id=r["id"],label=r["label"],relation=r["relation"],**scope(r["depends"]),status=r["status"],
                      versionId=r["lock_asset_version_id"] if r["name"] else None, name=r["name"],
                      version=r["version_no"] if r["name"] else None, sha256=r["sha256"] if r["name"] else None) for r in rows]
 
     def add_space_item(self, episode_id, label, relation, source, depends, status="pending", count=None,
-                       lock_asset_version_id=None, command_id=None):
+                       lock_asset_version_id=None, command_id=None, scope="segments"):
         with transaction(self.db_path) as db:
             def run():
                 self._episode_in(db, episode_id)
                 if not isinstance(depends, list) or any(not isinstance(s, str) or not s.strip() for s in depends):
                     raise Rejected("空间依赖段须为段号列表")
+                if scope not in ("segments","scenes"):
+                    raise Rejected("空间锁定范围无效")
+                if scope == "scenes":
+                    scenes = {s["id"] for s in (self._adopted_content(db, episode_id, "script") or {}).get("scenes",[])}
+                    if not depends or not set(depends) <= scenes:
+                        raise Rejected("请选择采用剧本中的场号")
                 if status not in ("confirmed", "pending"):
                     raise Rejected("空间锁定状态无效")
                 if lock_asset_version_id or status == "confirmed":
@@ -754,9 +943,11 @@ class ProductionMixin:
                 sid = new_id()
                 db.execute("INSERT INTO space_item VALUES(?,?,?,?,?,?,?,?,?,?)",
                            (sid, episode_id, label, relation, count, source, lock_asset_version_id, status,
-                            dumps(depends), self.clock()))
+                            dumps(dict(scenes=depends) if scope=="scenes" else depends), self.clock()))
                 return dict(itemId=sid)
             payload = dict(e=episode_id, l=label, r=relation, d=depends)
+            if scope=="scenes":
+                payload["scope"] = scope
             if lock_asset_version_id or status != "pending" or count is not None:
                 payload.update(lock=lock_asset_version_id, status=status, count=count)
             return self._command(db, command_id, "space_add", payload, run)
@@ -770,7 +961,7 @@ class ProductionMixin:
                            "WHERE id=?", (lock_asset_version_id, relation, item_id))
                 ep = row(db, "SELECT * FROM episode WHERE id=?", item["episode_id"])
                 items = [dict(target=f"prompts:{s}", reason=f"空间锁定「{item['label']}」已确认新锁定图，需复核")
-                         for s in json.loads(item["depends"])]
+                         for s in next(r["segments"] for r in self._space_locks(db,item["episode_id"]) if r["id"]==item_id)]
                 self._record_impacts(db, dict(project_id=ep["project_id"], episode_id=ep["id"]), items, "space_lock",
                                      f"space:{item_id}")
                 return dict(itemId=item_id, recheck=[i["target"] for i in items])
@@ -782,9 +973,10 @@ class ProductionMixin:
     def blocked_segments(self, episode_id) -> dict:
         with connect(self.db_path) as db:
             out = {}
-            for r in db.execute("SELECT label,depends FROM space_item WHERE episode_id=? AND status='pending'", (episode_id,)):
-                for seg in json.loads(r["depends"]):
-                    out.setdefault(seg, []).append(f"空间锁定待确认：{r['label']}")
+            for lock in self._space_locks(db, episode_id):
+                if lock["status"]=="pending":
+                    for seg in lock["segments"]:
+                        out.setdefault(seg, []).append(f"空间锁定待确认：{lock['label']}")
         return out
 
     def set_cast(self, episode_id, segment_id, role, status, asset_version_id=None, cells=(), note="", command_id=None, opening_confirmed=False):
@@ -851,10 +1043,51 @@ class ProductionMixin:
                 payload["opening"] = True
             return self._command(db, command_id, "cast", payload, run)
 
-    def set_role_baseline(self, episode_id, role, asset_version_id, appearance, command_id):
-        if not isinstance(role, str) or not role.strip() or not isinstance(appearance, str) or not appearance.strip():
+    def _fixed_standards(self,db,eid):
+        from .sourcefiles import production
+        source = db.execute("SELECT * FROM episode_source WHERE episode_id=? AND kind='characterStandard'",(eid,)).fetchone()
+        if not source:
+            return {}
+        config = production(db,self._episode_in(db,eid)["project_id"])
+        registered = (config.get("roleAssets") or {}).get("roles",[])
+        standards = json.loads(self._effective_bytes(db,eid,source)).get("roles",{})
+        return {alias.casefold():dict(id=key,text=r["video_zh"],detail=r.get("zh",""),ref="characterStandard#/roles/"+key+"/video_zh")
+                for key,r in standards.items() if key in registered and r.get("video_zh")
+                for alias in (key,r.get("name") or key)}
+
+    def _role_states(self, db, eid):
+        designs=(self._adopted_content(db,eid,"asset_design") or {}).get("assets",[])
+        checked={(r["role"],r["state_id"]):r for r in db.execute("SELECT * FROM role_state_check WHERE episode_id=?",(eid,))}
+        result=[]
+        for design in designs:
+            if not design.get("roleId") or not design.get("stateId"):
+                continue
+            digest=sha256_bytes(canonical(design))
+            check=checked.get((design["roleId"],design["stateId"]))
+            confirmed=bool(check and check["design_hash"]==digest)
+            result.append(dict(role=design["roleId"],stateId=design["stateId"],description=design["description"],
+                               designHash=digest,confirmed=confirmed,imageId=check["image_id"] if confirmed else None,
+                               observation=check["observation"] if confirmed else None))
+        return result
+
+    def confirm_role_state(self,episode_id,role,state_id,design_hash,image_id,observation,command_id):
+        with transaction(self.db_path) as db:
+            def run():
+                state=next((r for r in self._role_states(db,episode_id) if r["role"]==role and r["stateId"]==state_id),None)
+                if not state or state["designHash"]!=design_hash:
+                    raise Rejected("角色状态设计已变化，请刷新后对图核对")
+                image=self.asset_version(image_id,db)
+                if image["episode_id"]!=episode_id or image["kind"]!="image" or not observation.strip():
+                    raise Rejected("请选择本集状态对应的图片并填写对图观察")
+                db.execute("INSERT OR REPLACE INTO role_state_check VALUES(?,?,?,?,?,?)",
+                           (episode_id,role,state_id,design_hash,image_id,observation.strip()))
+                return dict(confirmed=True)
+            return self._command(db,command_id,"confirm_role_state",[episode_id,role,state_id,design_hash,image_id,observation],run)
+
+    def set_role_baseline(self, episode_id, role, asset_version_id, appearance="", command_id=None):
+        if not isinstance(role,str) or not role.strip() or not isinstance(appearance,str):
             raise Rejected("请填写角色和可用于核对的外观短描述")
-        role, appearance = role.strip(), appearance.strip()
+        role=role.strip()
         with connect(self.db_path) as db:
             project = self._episode_in(db, episode_id)["project_id"]
         fixed = self.project_role_assets(project)["roles"]
@@ -870,10 +1103,26 @@ class ProductionMixin:
                 if db.execute("SELECT 1 FROM episode_role_baseline b JOIN asset_version a ON a.id=b.asset_version_id "
                               "WHERE b.episode_id=? AND b.role<>? AND a.sha256=?", (episode_id,role,asset["sha256"])).fetchone():
                     raise Rejected("两个角色不能共用同一张身份原图")
+                standard=self._fixed_standards(db,episode_id).get(role.casefold())
+                fixed_role=any(role.casefold() in (r["id"].casefold(),(r.get("name") or "").casefold()) for r in fixed)
+                if fixed_role:
+                    if not standard:
+                        raise Rejected("固定角色缺少项目外观标准")
+                    if appearance and appearance!=standard["text"]:
+                        raise Rejected("固定角色身份外观必须逐字引用项目标准，请在项目设定修改")
+                    stored=standard["ref"]
+                else:
+                    designs=(self._adopted_content(db,episode_id,"asset_design") or {}).get("assets",[])
+                    stored=appearance.strip() or next((r["description"] for r in designs if r.get("roleId")==role),"")
+                    if not stored:
+                        raise Rejected("请填写对图核对的外观短描述")
+                previous=db.execute("SELECT appearance FROM episode_role_baseline WHERE episode_id=? AND role=?",(episode_id,role)).fetchone()
+                if previous and previous[0]!=stored and self._adopted_content(db,episode_id,"prompts"):
+                    self._record_impacts(db,dict(project_id=project,episode_id=episode_id),[dict(target="workflow:prompts",reason=role+" 的外观说明已修改")],"workflow_change","cast:"+role)
                 db.execute("INSERT INTO episode_role_baseline VALUES(?,?,?,?) ON CONFLICT(episode_id,role) DO UPDATE SET "
                            "asset_version_id=excluded.asset_version_id,appearance=excluded.appearance",
-                           (episode_id,role,asset_version_id,appearance))
-                return dict(role=role, assetVersionId=asset_version_id, appearance=appearance)
+                           (episode_id,role,asset_version_id,stored))
+                return dict(role=role, assetVersionId=asset_version_id, appearance=standard["text"] if fixed_role else stored)
             return self._command(db, command_id, "set_role_baseline", [episode_id,role,asset_version_id,appearance], run)
 
     def cast_matrix(self, episode_id):
@@ -894,8 +1143,44 @@ class ProductionMixin:
             roster = cast_records(story.get("cast",""))
         except ValueError:
             roster = {}
+        characters = self._adopted_content(db, episode_id, "characters") or {}
+        for role in characters.get("characters", []):
+            roster[role["id"]] = dict(description=role.get("identity", role.get("name", "")),
+                                     identityRequired=role.get("identityRequired", True))
+        # A locked screenplay can enter at05 without inventing a02 adoption.
+        # Its adopted07 role designs provide identity requirements downstream.
+        design = self._adopted_content(db, episode_id, "asset_design") or {}
+        for asset in design.get("assets", []):
+            role_id = asset.get("roleId")
+            if isinstance(role_id, str) and role_id.strip():
+                roster.setdefault(role_id, dict(description=asset.get("description", ""), identityRequired=True))
+        standards=self._fixed_standards(db,episode_id)
         for b in baselines:
-            roster.setdefault(b["role"], {}).update(assetVersionId=b["asset_version_id"], appearance=b["appearance"], sha256=b["sha256"])
+            roster.setdefault(b["role"], {}).update(assetVersionId=b["asset_version_id"], appearance=standards.get(b["role"].casefold(),{}).get("text",b["appearance"]), sha256=b["sha256"])
+        identities = db.execute(
+            "SELECT n.role_id,n.description,n.adopted_version_id,v.sha256 FROM asset_need n "
+            "JOIN asset_version v ON v.id=n.adopted_version_id JOIN asset a ON a.id=v.asset_id "
+            "WHERE n.episode_id=? AND n.removed=0 AND n.kind IN ('character','identity') "
+            "AND a.category='identity' AND n.role_id IS NOT NULL ORDER BY n.updated_at", (episode_id,))
+        for identity in identities:
+            role = identity["role_id"]
+            registered=roster.get(role,{})
+            appearance=registered.get('appearance') if registered.get('assetVersionId')==identity['adopted_version_id'] else None
+            roster.setdefault(role, {}).update(
+                assetVersionId=identity["adopted_version_id"], sha256=identity["sha256"],
+                appearance=standards.get(role.casefold(),{}).get("text",appearance or identity["description"]))
+        # A one-off role may already have an adopted appearance/state reference.
+        # Reuse that binding rather than requiring an additional neutral portrait.
+        for reference in db.execute(
+            "SELECT n.role_id,n.description,n.adopted_version_id,v.sha256 FROM asset_need n "
+            "JOIN asset_version v ON v.id=n.adopted_version_id JOIN asset a ON a.id=v.asset_id "
+            "WHERE n.episode_id=? AND n.removed=0 AND a.category='state' "
+            "AND n.role_id IS NOT NULL ORDER BY n.updated_at DESC", (episode_id,)):
+            role = reference['role_id']
+            entry = roster.setdefault(role, {})
+            if not entry.get('assetVersionId') and role.casefold() not in standards:
+                entry.update(assetVersionId=reference['adopted_version_id'], sha256=reference['sha256'],
+                             appearance=reference['description'])
         active_segments = {s["id"] for s in lay["segments"]}
         for c in cells:
             if c["segment_id"] in active_segments:
@@ -913,18 +1198,37 @@ class ProductionMixin:
                         entry["options"] = (["按身份参考修格", "改用 flex"] if seg["strategy"] == "grid"
                                             else ["补身份参考", "改动作让身份可见"])
                     row_["cells"][c["role"]] = entry
+            segment_shots = [shot for shot in plan.get("shots", []) if shot["id"] in seg["shots"]]
+            if segment_shots and all(isinstance(shot.get("visibleRoles"), list) for shot in segment_shots):
+                visible = {role for shot in segment_shots for role in shot["visibleRoles"]}
+                for role in roles:
+                    baseline = roster[role].get("assetVersionId")
+                    explicit = row_["cells"].get(role)
+                    if baseline and not explicit:
+                        row_["cells"][role] = dict(
+                            status="ok" if role in visible else "absent",
+                            assetVersionId=baseline if role in visible else None,
+                            cells=[], note="", automatic=True)
             matrix.append(row_)
-        return dict(roles=roles, roster=roster, rows=matrix)
+        return dict(roles=roles, roster=roster, rows=matrix, fixedStandards=standards, roleStates=self._role_states(db,episode_id))
 
     def _cast_prompt_errors(self, db, episode_id, segment, entry):
-        rows = db.execute(
-            "SELECT b.role,b.asset_version_id AS baseline,b.appearance,c.status,c.note,c.asset_version_id AS bound,"
-            "a.category,o.segment_id AS opening FROM episode_role_baseline b LEFT JOIN cast_cell c ON c.episode_id=b.episode_id "
-            "AND c.role=b.role AND c.segment_id=? LEFT JOIN asset_version v ON v.id=c.asset_version_id "
-            "LEFT JOIN asset a ON a.id=v.asset_id LEFT JOIN cast_opening o ON o.episode_id=b.episode_id AND o.sha256=v.sha256 "
-            "WHERE b.episode_id=?", (segment, episode_id))
+        matrix = self._cast_matrix(db, episode_id)
+        bindings = next((item["cells"] for item in matrix["rows"] if item["segment"] == segment), {})
+        rows = []
+        for role, baseline in matrix["roster"].items():
+            if not baseline.get("assetVersionId"):
+                continue
+            binding = bindings.get(role, {})
+            bound = binding.get("assetVersionId")
+            asset = self.asset_version(bound, db) if bound else {}
+            rows.append(dict(role=role, baseline=baseline["assetVersionId"],
+                             appearance=baseline.get("appearance", ""), status=binding.get("status"),
+                             note=binding.get("note"), bound=bound, category=asset.get("category"),
+                             opening=binding.get("depictsMoment", {}).get("segment")))
         errors = []
         uploaded = {r["assetVersionId"] for r in entry["refs"] if isinstance(r, dict) and isinstance(r.get("assetVersionId"), str)}
+        standards=self._fixed_standards(db,episode_id)
         for r in rows:
             prefix = segment + " · " + r["role"] + "："
             if r["status"] == "absent":
@@ -939,7 +1243,7 @@ class ProductionMixin:
                     errors.append(prefix + "使用其他图片须选本段状态图或九宫格并填写与基准的对照观察")
                 elif r["opening"] != segment:
                     errors.append(prefix + "身份来源尚未核对为本段开场")
-            if r["appearance"] not in (entry.get("txt") or ""):
+            if entry.get("prompt_format") != "h3_official" and standards.get(r["role"].casefold(),{}).get("text",r["appearance"]) not in (entry.get("txt") or ""):
                 errors.append(prefix + "提示词缺少已登记的本集外观短描述")
         return errors
 
@@ -1087,6 +1391,14 @@ class ProductionMixin:
             def run():
                 content = json.loads(json.dumps(v["content"]))
                 updated = dict(entry, sound=sound)
+                if entry.get("prompt_format") == "h3_official":
+                    from .officialh3 import set_audio
+                    try:
+                        updated["txt"] = set_audio(entry["txt"], change, sound["silent"])
+                    except ValueError as exc:
+                        raise Rejected(str(exc)) from exc
+                    if "audio" in entry.get("generation_settings", {}):
+                        updated["generation_settings"] = dict(entry["generation_settings"], audio=not sound["silent"])
                 if structured:
                     settings = entry.get("generation_settings")
                     if isinstance(settings, dict) and "audio" in settings:
@@ -1192,12 +1504,12 @@ class ProductionMixin:
 
     def open_stage(self, episode_id, stage):
         """Open the next stage once its upstream is adopted (also after a plain 「只采用」)."""
-        from .stages import NEXT
-        prev = next((k for k, v in NEXT.items() if v == stage), None)
+        from .stages import WRITABLE
+        if stage not in WRITABLE:
+            raise Rejected("未知成果阶段")
         with transaction(self.db_path) as db:
             ep = row(db, "SELECT * FROM episode WHERE id=?", episode_id)
-            if prev and not self._adopted_content(db, episode_id, prev):
-                raise Rejected(f"上一步（{prev}）尚未采用")
+            self._require_workflow_inputs(db, episode_id, stage)
             return dict(artifactId=self._ensure_artifact(db, ep, stage))
 
     # ============================================================ 拉片问答：这一刻是不是切镜

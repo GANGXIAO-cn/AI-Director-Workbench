@@ -91,7 +91,7 @@ def test_writing_stages_and_comparison_use_scoped_enhancements(tmp_path, profile
         assert sections and {tuple(s["source"]["enhancementIds"]) for s in sections} == {(code,)}
         assert all(s["text"] in prompt for s in sections)
         schema = wb.step_form(eid,stage)
-        assert schema["pack"]=="short-film@v7" and schema["section"] in prompt
+        assert schema["pack"]=="unified-film@draft" and schema["section"] in prompt
         assert schema["sourceHash"] in prompt and all(label in prompt for label in schema["fields"].values())
         assert marker in prompt and enhancements.SCOPE in prompt
         if profile == "_template":

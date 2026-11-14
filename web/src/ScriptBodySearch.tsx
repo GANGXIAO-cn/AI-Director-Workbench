@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { q } from "./api";
 
 export type ScriptRow = { title:string; path:string; sha256:string; category:string; kind:string; evidence?:string; matchOffset?:number; match?:{offset:number;text:string} };
-export const scriptTypes:Record<string,string> = {method:"方法资料", reference:"参考剧本", novel:"小说"};
+export const scriptTypes:Record<string,string> = {method:"方法资料", reference:"参考资料", novel:"小说"};
+export const isMaterial=(r:ScriptRow)=>r.path.split("/").at(-1)!=="来源清单.md";
 type Cursor = {stamp:string; after:number};
 type Issue = {path:string; reason:string};
 type Batch = {rows:ScriptRow[]; issues:Issue[]; total:number; scanned:number; cursor:Cursor|null};
@@ -29,7 +30,7 @@ export function ScriptBodySearch({query, category, kind, recommended, open}:{
         const batch = await q<Batch>("search_script_bodies", {query, category, kind, recommended, cursor, limit:40-accumulated.rows.length});
         if (!active) return;
         cursor = batch.cursor;
-        const rows = [...accumulated.rows,...batch.rows];
+        const rows = [...accumulated.rows,...batch.rows.filter(isMaterial)];
         accumulated = {rows, issues:[...accumulated.issues,...batch.issues],
           scanned:accumulated.scanned+batch.scanned, total:batch.total, cursor,
           done:cursor===null || rows.length>=40};

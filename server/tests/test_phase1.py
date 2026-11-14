@@ -71,6 +71,7 @@ def test_method_pack_is_versioned_and_generic():
 def test_same_pack_puggy_and_shiba_inputs_do_not_leak(env):
     wb, codex, _ = env
     pid, n06, n07, imp = puggy_n07(wb)
+    wb.sync_project_methods(pid, "load-project-methods")
     _, ptask = started_story(wb, n07, imp, n06)
     sid = wb.create_project("_template", "夜班柴犬")["projectId"]
     e1 = wb.create_episode(sid, "E01")["episodeId"]
@@ -89,12 +90,14 @@ def test_same_pack_puggy_and_shiba_inputs_do_not_leak(env):
     assert len(shiba_runs) == 2
     for run_id in shiba_runs:
         m, text = manifest_text(wb, run_id)
-        assert m["methodPack"]["id"] == pm["methodPack"]["id"] == "short-film@v7"
+        assert m["methodPack"]["id"] == pm["methodPack"]["id"] == "unified-film@draft"
         shared = {e["name"] for e in m["inputs"] if e["role"] == "method"}
         assert set(m["methodPack"]["files"]) == shared
         if m["purpose"] == "create":
             assert shared == {e["name"] for e in pm["inputs"] if e["role"] == "method"}
-            assert any(e["role"] == "project_method" for e in pm["inputs"])
+            assert any(e["role"] == "project_method" and "story.md" in e["name"] for e in pm["inputs"])
+            assert not any(e["role"] == "project_method" for e in m["inputs"])
+            assert any(e["role"] == "project_settings" for e in pm["inputs"])
         assert not PUGGY_TERMS.search(text), run_id
         assert "本项目尚无设定条目" in text
     # the first shiba draft is traceable to the director's sentence
@@ -121,7 +124,7 @@ def test_j49_import_kickoff_to_same_episode_draft(env):
     assert len(story["versions"]) == 1 and story["versions"][0]["origin"] == "ai"
     assert story["adopted_version_id"] is None      # import is a source, not an adopted/reviewed story
     _, text = manifest_text(wb, task["runId"])
-    assert "厨房门上了锁" in text and "洗车店的泡沫枪" in text and "不当作已审稿" in text
+    assert "厨房门上了锁" in text and "洗车店的泡沫枪" in text and "不当作已采用稿" in text
     rec = wb.read_import(imp)
     assert rec["intact"] and (wb.store.root / rec["relpath"]).read_bytes() == CARWASH
     # duplicate kickoff: same command id -> same result; new command -> conflict
@@ -152,7 +155,7 @@ def test_first_episode_of_new_project_can_only_be_independent(env):
         wb.start_episode(e1, "idea", plan(), idea_text="柴犬值夜班", relation="continue", predecessor_ids=[])
 
 
-def test_imported_script_is_story_source_and_script_waits_for_review(env):
+def test_adapted_import_enters_synopsis_then_character_stage(env):
     wb, *_ = env
     pid = wb.create_project("puggy")["projectId"]
     ep = wb.create_episode(pid, "N08", "雨巷")["episodeId"]
@@ -160,20 +163,19 @@ def test_imported_script_is_story_source_and_script_waits_for_review(env):
     wb.start_episode(ep, "import", plan(), source_import_id=imp)
     task = wb.create_task(ep, "story", "从剧本整理故事")
     drain(wb, task["runId"])
-    with pytest.raises(Rejected, match="独审"):
+    with pytest.raises(Rejected, match="04 分场尚未采用"):
         wb.create_task(ep, "script", "写分场剧本")
     view = wb.episode_view(ep)
     story = view["artifacts"][0]
     vid = story["versions"][0]["id"]
-    with pytest.raises(Rejected, match="必需独审未执行"):
-        wb.adopt(story["id"], vid, None, "adopt-early")
-    drain(wb, wb.submit_review(vid, "rv")["runId"])
     result = wb.adopt(story["id"], vid, None, "adopt-1", and_continue=True)
-    assert result["next"]["stage"] == "script"
-    script_task = wb.create_task(ep, "script", "写分场剧本")
-    assert script_task["artifactId"] == result["next"]["artifactId"]
-    _, text = manifest_text(wb, script_task["runId"])
-    assert STORY["synopsis"] in text      # script reads the adopted story
+    assert result["next"]["stage"] == "characters"
+    task = wb.create_task(ep, "characters", "写人物小传")
+    assert task["artifactId"] == result["next"]["artifactId"]
+    _, text = manifest_text(wb, task["runId"])
+    assert STORY["synopsis"] in text
+    with pytest.raises(Rejected, match="04 分场尚未采用"):
+        wb.create_task(ep, "script", "不能绕过分场")
 
 
 def test_broken_import_keeps_diagnostic(env):
@@ -209,9 +211,9 @@ def test_j59_required_violation_cannot_be_waived_ordinary_can(env):
     assert soft["blocking"] == 0
     with pytest.raises(Rejected, match="不能放行"):
         wb.waive(hard["id"], v1, "我觉得可以", "w-hard")
-    with pytest.raises(Rejected, match="理由"):
-        wb.waive(soft["id"], v1, "  ", "w-soft-empty")
-    wb.waive(soft["id"], v1, "结尾笑点保留给下一集", "w-soft")
+    wb.waive(soft["id"], v1, "  ", "w-soft-empty")
+    with db(wb) as conn:
+        assert "未填备注" in conn.execute("SELECT reason FROM waiver WHERE issue_id=?", (soft["id"],)).fetchone()[0]
     gate = wb.adoption_gate(v1)
     assert gate["blocking"] == [hard["id"]] and gate["unresolved"] == [] and not gate["adoptable"]
     with pytest.raises(Rejected, match="必守"):
@@ -243,13 +245,11 @@ def test_review_runs_in_new_isolated_session_with_manifest_only(env):
     assert req.purpose == "review" and req.session_mode == "ephemeral"
     m, text = manifest_text(wb, rv["runId"])
     assert m["isolationLevel"] == "session" and m["sessionMode"] == "ephemeral"
-    assert [e["role"] for e in m["inputs"]] == ["method"] * 8 + ["project_method"] * 3 + [
-        "reviewed_version", "project_settings", "requirements"]
+    # 01 review loads SKILL.md + story_review.md only (benchmark stress test dropped 2026-11-11)
+    assert [e["role"] for e in m["inputs"]] == ["method"] * 2 + [
+        "reviewed_version", "project_settings", "requirements", "characterStandard"]
     assert [e["name"] for e in m["inputs"] if e["role"] in ("method", "project_method")] == [
-        "story-review.md", "story-standard.md", "六问复核.md", "选题三问初筛.md",
-        "故事阶段、因果推演与复读.md", "可读性、因果、时间与节奏的审读清单.md",
-        "审读依据与角色交接.md", "故事标准的参考出处.md", "系列风格.md",
-        "系列人物、风格与近期差异审读.md", "系列空间关系与结局兑现.md",
+        "SKILL.md", "story_review.md",
     ]
     assert "别让审稿人知道" not in req.prompt and "别让审稿人知道" not in text
     with db(wb) as conn:
@@ -295,15 +295,15 @@ def test_ai_draft_and_manual_draft_coexist(env):
 
 def test_hard_format_error_blocks_adoption_even_after_pass(env):
     wb, codex, _ = env
-    codex.script = [lambda req: draft(req, synopsis="有梗概", cast="没有表格", handoff="无")]
+    codex.script = [lambda req: draft(req, synopsis=" ", cast="不再强制人物表", handoff="无")]
     pid, n06, n07, imp = puggy_n07(wb)
     started_story(wb, n07, imp, n06)
     story = wb.episode_view(n07)["artifacts"][0]
-    v1 = story["versions"][0]
-    assert v1["gate"]["formatErrors"]
-    drain(wb, wb.submit_review(v1["id"], "rv")["runId"])
+    assert len(story["versions"]) == 1 and not story["versions"][0]["gate"]["formatErrors"]
+    vid = wb.save_manual(story["id"], story["versions"][0]["id"], {"synopsis":" "}, "manual-invalid")["versionId"]
+    drain(wb, wb.submit_review(vid, "rv")["runId"])
     with pytest.raises(Rejected, match="结构错误"):
-        wb.adopt(story["id"], v1["id"], None, "adopt")
+        wb.adopt(story["id"], vid, None, "adopt")
 
 
 # ---------------------------------------------------------------- rounds and messages
@@ -429,6 +429,7 @@ def test_http_guard_and_conflict(env):
     story = client.get(f"/api/episodes/{eid}").json()["artifacts"][0]
     vid = story["versions"][0]["id"]
     client.post(f"/api/versions/{vid}/reviews", json={"commandId": "rv"}, headers=h).raise_for_status()
+    client.post("/api/cmd/record_decisions",json={"episode_id":eid,"items":[],"dismissed":[m["id"] for t in story["tasks"] for m in t["messages"] if m["role"]=="user"],"command_id":"local"},headers=h).raise_for_status()
     ok = client.post(f"/api/artifacts/{story['id']}/adoptions",
                      json={"versionId": vid, "expectedAdoptedVersionId": None, "commandId": "a1"}, headers=h)
     assert ok.status_code == 200

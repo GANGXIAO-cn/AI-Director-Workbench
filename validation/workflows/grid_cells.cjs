@@ -29,6 +29,9 @@ async function main() {
       await button("放大 站台九格 v1").click();
       await page.getByRole("img",{name:"第 9 格",exact:true}).waitFor();
     };
+    await page.goto(base+"/#/e/"+eid+"/plan");
+    await page.getByText("还有状态图或九宫格待出",{exact:true}).waitFor();
+    assert.equal(await page.getByRole("link",{name:"追加素材条目"}).getAttribute("href"),"#/e/"+eid+"/asset_design");
     await openGrid();
     await page.getByText("列车进站",{exact:true}).waitFor();
     assert.equal(await page.getByRole("img",{name:/^第 \d 格$/}).count(),9);
@@ -37,6 +40,7 @@ async function main() {
     await page.getByLabel("距镜头开始（秒）").fill("1.250");
     await button("保存关联").click();
     await page.getByText("段内 4.250 秒",{exact:true}).waitFor();
+    assert.deepEqual((await get("episode_view",{episode_id:eid})).pendingShotImages,[]);
     const payload = {episode_id:eid,version_id:image.id,plan_version_id:original.id,shot_id:"S02",offset_ms:1000};
     await command("set_grid_cell",{...payload,cell:3,expected_revision:0},409);
     await command("set_grid_cell",{...payload,cell:4,expected_revision:0,offset_ms:5001},422);

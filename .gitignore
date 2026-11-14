@@ -37,3 +37,47 @@ build/
 .vscode/
 *.tsbuildinfo
 web/public/e2e-film*.mp4
+
+# 本地完整资料库随工作台目录交付，大体积原件独立于源码提交。
+/resources/知识库~MD压缩版(1)/
+/resources/导演色卡.zip
+
+# 开发文档、设计对照及本地验收记录
+/docs/
+/*.md
+/*.docx
+/*.pdf
+/修复验证_*/
+/审查证据_*/
+/validation/phase1/live-*.json
+
+# 私有凭证、登录状态和本机配置
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.ppk
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+.ssh/
+.aws/
+.netrc
+.pypirc
+.npmrc
+.envrc
+auth.json
+token.json
+tokens.json
+client_secret*.json
+service-account*.json
+service_account*.json
+api_keys.*
+api-keys.*
+*.local.json
+*.db-wal
+*.db-shm
+
+# 已分类移出的测试遗留，由用户手动删除
+/待手动删除_20261111/

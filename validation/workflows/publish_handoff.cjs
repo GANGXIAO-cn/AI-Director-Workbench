@@ -28,6 +28,8 @@ async function main(){
       await button(name).click();const r=await reply;assert.equal(r.status(),200,await r.text());return r.json();
     }
     await page.goto(base+"/#/e/"+eid+"/publish?v="+orig);
+    await button("修改本阶段").click();
+    await button("结束修改").waitFor();
     await page.getByLabel("配乐使用状态").selectOption("enabled");
     await button("补齐各段设计时间").click();
     const times=page.getByLabel("全片设计时间"),actions=page.getByLabel("动作与音乐处理");

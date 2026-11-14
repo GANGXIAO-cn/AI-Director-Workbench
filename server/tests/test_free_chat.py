@@ -11,6 +11,27 @@ from workbench.executors.fake import quota_exhausted
 from workbench.service import Workbench
 
 
+def test_chat_reads_current_project_progress_for_each_new_turn(tmp_path):
+    env = Env(tmp_path)
+    wb = env.wb
+    pid = wb.create_project("_template", "夜班车站")["projectId"]
+    other = wb.create_project("_template", "隔壁项目")["projectId"]
+    wb.add_topic(other, "X01", "不应传入的选题")
+    first = wb.send_free_chat(pid, "我现在可以做什么？", "codex")
+    _, eid = env.new_episode(project_id=pid, code="E07")
+    wb.add_topic(pid, "T02", "站长认错末班车")
+    wb.add_space_item(eid, "候车厅出口", "站台旁", "现场", ["S01"])
+    wb.execute_free_chat(first["turnId"], first["attemptId"])
+    prompt = env.codex.calls[-1].prompt
+    assert '"项目":"夜班车站"' in prompt
+    assert all(field in prompt for field in ('"候选选题数":0', '"剧集数":0', '"项目页待办数":0'))
+    follow = wb.send_free_chat(pid, "现在呢？", "codex", first["threadId"], first["turnId"])
+    wb.execute_free_chat(follow["turnId"], follow["attemptId"])
+    prompt = env.codex.calls[-1].prompt
+    assert all(value in prompt for value in ("T02", "站长认错末班车", "E07", "已开工", "候车厅出口待确认"))
+    assert "不应传入的选题" not in prompt and "隔壁项目" not in prompt
+
+
 def test_free_workflow_without_episode_and_project_copy(tmp_path):
     env = Env(tmp_path)
     wb = env.wb

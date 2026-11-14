@@ -65,7 +65,7 @@ async function main() {
     await page.goto(base+"/#/e/"+eid+"/delivery");
     await page.getByRole("link",{name:"将这次交付打包给 H3"}).first().click();
     await page.getByLabel("出包声音",{exact:true}).selectOption("on");
-    await page.getByRole("button",{name:"验包并导出 ZIP"}).click();
+    await page.getByRole("button",{name:"下载 H3 包"}).click();
     await page.getByText(/打包器拒绝：G02：全段静音/).waitFor();
     await page.getByLabel("出包声音",{exact:true}).selectOption("");
     async function inspect(){
@@ -128,7 +128,7 @@ async function main() {
       viewports.push({width,shot,...geometry});
     }
     const pending=page.waitForResponse(r=>r.url().endsWith("/api/cmd/package"));
-    await page.getByRole("button",{name:"验包并导出 ZIP"}).click();
+    await page.getByRole("button",{name:"下载 H3 包"}).click();
     const zip=await (await pending).json();
     await page.getByText("已导出",{exact:true}).waitFor();
     const {execFileSync}=require("node:child_process");

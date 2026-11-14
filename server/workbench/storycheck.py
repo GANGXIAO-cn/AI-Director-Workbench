@@ -7,16 +7,21 @@ import json
 import re
 
 CAST_COLUMNS = ("角色ID", "身份与作用", "独立身份基准")
+# 实测 116：报错直接说明所需格式，连续制作把报错作为修正提示，模型据此才能改回表格。
+CAST_FORMAT = ("格式要求：cast 字段须为 Markdown 表格，不能写成标题或分条列表；表头一行至少含「角色ID」「身份与作用」「独立身份基准」三列"
+               "（可另加列），下一行为分隔行 |---|---|---|；每个角色一行；角色ID 用小写英文字母开头，可含数字和连字符，各行唯一；"
+               "独立身份基准一格只填「需要」或「不需要」，外观等细节写进另加的列或身份与作用。示例："
+               "| 角色ID | 身份与作用 | 独立身份基准 |\n|---|---|---|\n| milo | 主角，…… | 需要 |")
 PLACEHOLDER = re.compile(r"<[^>]*>|待填|TODO", re.I)
 STORY_AIDS = {"spine": "故事脊", "timeline": "时间线", "props": "规则与道具表", "causes": "因果核对表"}
-STORY_FIELDS = ("synopsis", "cast", "handoff", "notes", *STORY_AIDS)
+STORY_FIELDS = ("title", "synopsis", "cast", "handoff", "notes", *STORY_AIDS)
 SCRIPT_FIELDS = ("scenes", "notes")
 WRITABLE = {"story": STORY_FIELDS, "script": SCRIPT_FIELDS}
 
 
 def cast_records(block: str) -> dict:
     if not isinstance(block,str):
-        raise ValueError("本集角色表须为 Markdown 表格文本")
+        raise ValueError("本集角色表须为 Markdown 表格文本。" + CAST_FORMAT)
     header, roles = None, {}
     for line in block.splitlines():
         if not line.strip().startswith("|"):
@@ -24,24 +29,24 @@ def cast_records(block: str) -> dict:
         cells = [c.strip() for c in re.split(r"(?<!\\)\|", line.strip().strip("|"))]
         if set(CAST_COLUMNS) <= set(cells):
             if header or len(set(cells)) != len(cells):
-                raise ValueError("本集角色表列名重复")
+                raise ValueError("本集角色表列名重复。" + CAST_FORMAT)
             header = cells
             continue
         if not header or all(re.fullmatch(r":?-{3,}:?", c) for c in cells):
             continue
         if len(cells) != len(header):
-            raise ValueError("本集角色表列数与表头不符")
+            raise ValueError("本集角色表列数与表头不符。" + CAST_FORMAT)
         row = dict(zip(header, cells))
         if not all(row[k] and not PLACEHOLDER.search(row[k]) for k in CAST_COLUMNS):
-            raise ValueError("本集角色表缺少实际角色信息")
+            raise ValueError("本集角色表缺少实际角色信息（三列都须填写实际内容）。" + CAST_FORMAT)
         rid = row["角色ID"]
         if not re.fullmatch(r"[a-z][a-z0-9-]*", rid) or rid in roles:
-            raise ValueError("角色ID无效或重复：" + rid)
+            raise ValueError("角色ID无效或重复：" + rid + "。" + CAST_FORMAT)
         if row["独立身份基准"] not in ("需要", "不需要"):
-            raise ValueError("独立身份基准须写需要／不需要")
+            raise ValueError("独立身份基准须写需要／不需要。" + CAST_FORMAT)
         roles[rid] = dict(description=row["身份与作用"], identityRequired=row["独立身份基准"] == "需要")
     if not roles:
-        raise ValueError("本集角色表须含角色ID、身份与作用、独立身份基准及实际数据")
+        raise ValueError("本集角色表须含角色ID、身份与作用、独立身份基准及实际数据，未找到含这三列表头的表格。" + CAST_FORMAT)
     return roles
 
 

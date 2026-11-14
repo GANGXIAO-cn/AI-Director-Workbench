@@ -3,7 +3,7 @@ import re
 
 FLEX = ("【参考素材】", "【基本设定】", "【开场】", "【镜头与动作】", "【声音与文字】")
 GRID = ("【分镜参考】", "【主角】", "【环境】", "摘要与衔接：", "镜头描述：", "运镜边界：", "声音与音乐：", "画面文字：")
-CLOCK = r"(\d{2}):([0-5]\d)\.(\d{3})"
+CLOCK = r"(\d{2}):([0-5]\d)(?:\.(\d{3}))?"
 WINDOW = re.compile(CLOCK + "[-–—]" + CLOCK)
 SECONDS = re.compile(r"第?\s*\d+(?:\.\d+)?\s*(?:秒\s*)?[–—~～至到-]\s*第?\s*\d+(?:\.\d+)?\s*秒")
 STAGE = re.compile(r"阶段\s*[一二三四五六七八九十\d]+\s*[｜|：:]|^\s*阶段\s*[一二三四五六七八九十\d]+", re.M)
@@ -68,8 +68,6 @@ def sections(text, strategy):
     split = re.split("(" + "|".join(map(re.escape, headings)) + ")", text)
     if split[0].strip() or tuple(split[1::2]) != headings:
         raise ValueError("栏目缺失、重复或顺序有误：" + "、".join(headings))
-    if strategy != "grid" and tuple(re.findall(r"【[^】\n]+】", text)) != headings:
-        raise ValueError("flex 出现约定之外的栏目")
     return {heading:body.strip() for heading,body in zip(split[1::2], split[2::2])}
 
 
@@ -112,8 +110,17 @@ def render(parts):
 
 
 def _clock_ms(groups):
-    minutes, seconds, millis = map(int,groups)
+    minutes, seconds, millis = (int(value or 0) for value in groups)
     return (minutes*60+seconds)*1000+millis
+
+
+def compact_window_headers(text):
+    """Use whole seconds for integral windows, retaining exact legacy fractional timing."""
+    def compact(match):
+        if any(value not in (None, '000') for value in (match[3],match[6])):
+            return match.group()
+        return f"{match[1]}:{match[2]}-{match[4]}:{match[5]}"
+    return re.sub("^" + WINDOW.pattern + r"(?=\r?$)", compact, text, flags=re.M)
 
 
 def flat_windows(motion, duration_ms, segment_id="本段"):
@@ -256,3 +263,12 @@ def check_project_blocks(entry, strategy, blocks, cast_standard, on_screen, labe
         pair = cast_standard.get("pair_rules",{}).get("milo+leo",{}).get("video_zh")
         if not pair or definitions.count(pair) != 1 or text.count(pair) != 1:
             raise ValueError("同框短标准须在角色定义区出现一次")
+
+
+def strip_matching_window_prefix(text, start_ms, end_ms):
+    """Only remove an exact leading duplicate; never rewrite semantic timing."""
+    if not isinstance(text, str):return text
+    match = re.match(r"^\s*(?:段内\s*)?" + CLOCK + r"[-–—]" + CLOCK + r"[。．，,:：\s]*", text)
+    if match and (_clock_ms(match.groups()[:3]), _clock_ms(match.groups()[3:])) == (start_ms,end_ms):
+        return text[match.end():]
+    return text

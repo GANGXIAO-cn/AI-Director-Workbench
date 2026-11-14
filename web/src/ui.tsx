@@ -21,12 +21,19 @@ export function useQuery<T = any>(name: string | null, args: Record<string, any>
   return { data: name && loadedKey===key ? data : null, error: name && loadedKey===key ? error : null, reload:load, setData };
 }
 
-export function usePoll(active: boolean, fn: () => void, ms = 1500) {
+export function usePoll(active: boolean, fn: () => void | Promise<unknown>, ms = 1500) {
   const ref = useRef(fn);
   ref.current = fn;
   useEffect(() => {
     if (!active) return;
-    const t = setInterval(() => ref.current(), ms);
+    let pending=false;
+    const t = setInterval(async () => {
+      if (pending) return;
+      pending=true;
+      try { await ref.current(); }
+      catch { /* Query/action callbacks surface their own errors. */ }
+      finally { pending=false; }
+    }, ms);
     return () => clearInterval(t);
   }, [active, ms]);
 }
@@ -74,11 +81,12 @@ export function Pills<T extends string>({ value, options, onChange }: { value: T
     <button key={v} className={`pill ${value === v ? "on" : ""}`} onClick={() => onChange(v)}>{label}</button>))}</div>;
 }
 
-export const STAGES: [string, string][] = [
-  ["story", "故事稿"], ["script", "剧本"], ["plan", "制作方案"], ["space", "空间锁定"], ["cast", "角色出镜"],
-  ["assets", "素材与选图"], ["prompts", "提示词"], ["review", "两遍独审"], ["publish", "发布包"], ["delivery", "交付核验"],
-  ["package", "H3 出包"],
-];
+import { FILM_STAGES } from "./workflow";
+export const PRODUCTION_STEPS: [string,string][] = [...FILM_STAGES];
+export const DELIVERY_STEPS: [string,string][] = [["delivery","交付核验"],["package","H3 出包"],["publish","发布文案·可选"]];
+export const MATERIAL_TABS: [string,string][] = [["asset_design","素材清单"],["worksheet","备图工作单"],["shot_assets","按镜头补图"],["assets","全部图片"]];
+export const SHOT_TABS: [string,string][] = [["plan","分镜表"],["review","分镜审核"]];
+export const STAGES: [string,string][] = [...FILM_STAGES,...MATERIAL_TABS.slice(1),...DELIVERY_STEPS];
 
 export const fmtMs = (ms: number) => `${String(Math.floor(ms / 60000)).padStart(2, "0")}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}`;
 export const rno = (n?: number) => `R${String(n ?? 0).padStart(2, "0")}`;
@@ -89,6 +97,9 @@ export function SegBar({ total, done, now }: { total: number; done: number; now?
 }
 
 export const PROVIDER_LABEL: Record<string, string> = { codex: "Codex", claude: "Claude Code", antigravity: "Antigravity" };
+// 实测 137：需要暂时隐藏某个执行器时写进此列表（曾隐藏 Claude，已按导演要求恢复）；当前值仍是隐藏项时保留显示，避免选择框显示错值。
+export const HIDDEN_PROVIDERS: string[] = ["claude"];
+export const pickable = (keys: string[], _current?: string) => keys.filter(k => !HIDDEN_PROVIDERS.includes(k));
 export function Avatars({create, review}: {create?:string; review?:string}) {
   return <span className="tiny muted">{create ? "创作 " + (PROVIDER_LABEL[create] ?? create) : ""} {review ? "· 独审 " + (PROVIDER_LABEL[review] ?? review) : ""}</span>;
 }

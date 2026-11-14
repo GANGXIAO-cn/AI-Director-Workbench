@@ -140,10 +140,10 @@ def test_prompt_receipt_preserves_review_return_and_user_waiver(tmp_path):
     with pytest.raises(Rejected,match="交付核验未通过"):
         wb.deliver(case["eid"],"trial","not-adopted",["G01"])
     issue, = status["comparison"]["issues"]
-    wb.waive_segment_issue(issue["id"],"保留门外人物的反应拍","accept")
+    wb.waive_segment_issue(issue["id"],command_id="accept")
     accepted = wb.deliver(case["eid"],"trial","accepted",["G01"])
     text = (Path(accepted["path"])/"review.md").read_text()
     entry, = records(text)
     assert entry["verdict"] == "退回" and "工作台处置 用户放行" in text
-    assert entry["issues"].startswith("已接受：") and "保留门外人物的反应拍" in entry["issues"]
+    assert entry["issues"].startswith("已接受：") and "导演按本版放行（未填备注）" in entry["issues"]
     assert "对照 退回" in text and wb.verify_delivery(accepted["deliveryId"])["ok"]

@@ -1,3 +1,7 @@
+import {ExecutorPlanFields,useExecutorPlan} from "./ExecutorDefaults";
+import { explainStop, stageLabel } from "./Attention";
+import {ResourceBrowser} from "./Resources";
+import {useStoryImport} from "./storyExcerpt";
 import { KickoffCheck } from "./KickoffCheck";
 import { CooperationSelect } from "./Cooperation";
 import { Wrench } from "lucide-react";
@@ -9,7 +13,7 @@ import {specLabels,specChoices} from "./specs";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useEffect, useState } from "react";
 import { blob, cmd, q, commandId, importManuscript } from "./api";
-import { ErrorLine, Modal, Pills, PROVIDER_LABEL, SegBar, Tag, fmtMs, useAction, useQuery } from "./ui";
+import { ErrorLine, Modal, Pills, PROVIDER_LABEL, pickable, SegBar, Tag, fmtMs, useAction, useQuery } from "./ui";
 
 export default function Project({ id }: { id: string }) {
   const { hash, active } = useProjectRoute();
@@ -49,7 +53,7 @@ export default function Project({ id }: { id: string }) {
         <div className="row">
           <a className="chip" href="#/sys/executors"><Wrench size={14} aria-hidden="true"/> 技能与分工</a>
           <a className="chip" href={`#/p/${id}/preset`}>规格预设</a>
-          <span className="chip"><span className="dot" />Claude Code</span><span className="chip"><span className="dot" />Codex</span>
+          <span className="chip">Codex</span><span className="chip">Antigravity</span>
         </div>
       </div>
       <div className="page project-overview">
@@ -57,6 +61,8 @@ export default function Project({ id }: { id: string }) {
           <div><h1>{project.name}</h1>
             <div className="muted small" style={{ marginTop: 6 }}>{episodes.length} 集 · 各集规格可以不同 · 进行中 {inProduction} 集</div></div>
           <div className="row">
+            {/* 实测 124：设定从待办行移到标题右侧按钮，待办行只放待办。 */}
+            <a className="btn" href={`#/p/${id}/settings`} title={`必须守住 ${settings.required} 条 · 可变着用 ${settings.variable} 条；各集只读引用，改动只对之后的集生效`}>设定 {settings.total} 条 ›</a>
             <button className="btn" onClick={() => setAdding(true)} disabled={act.busy}>＋ 新增一集</button>
             <a className="btn" href={`#/p/${id}/groups`}>≡ 连续故事</a>
           </div>
@@ -67,24 +73,24 @@ export default function Project({ id }: { id: string }) {
           else act.run(async () => { await cmd("create_episode", { project_id: id, display_code: c, leftover_facts: f.split("\n").map((x) => x.trim()).filter(Boolean) }); o.reload(); });
         }} />}
         <div className="project-todos">
-          {todos.map((t: any, i: number) => (
+          {todos.map((t: any, i: number) => t.kind === "continuous" ? (
+            <div key={i} className="card amber">
+              <div className="row"><Tag tone="amber">{t.state === "blocked" ? "已停下" : "待你选择"}</Tag><b>{t.displayCode}</b></div>
+              <div className="muted small project-card-detail">{t.state === "blocked" ? explainStop(t.reason ?? "", stageLabel(t.stage, t.phase)).summary : "AI 已备好选项，等你选择"}</div>
+              <a className="btn primary" href={`#/e/${t.episodeId}/${t.stage || "story"}`}>{t.action} ›</a>
+            </div>) : (
             <div key={i} className={`card ${t.kind === "closure" ? "cyan" : "amber"}`}>
               <div className="row"><Tag tone={t.kind === "closure" ? "cyan" : "amber"}>{t.kind === "closure" ? "下一步" : "缺口"}</Tag><b>{t.title}</b></div>
               <div className="muted small project-card-detail">{t.kind === "closure" ? "可逐条查看出处，写进设定或只留台账。" : "只阻塞依赖它的段；其他段可以继续。"}</div>
               <a className="btn primary" href={t.kind === "closure" ? `#/p/${id}/closure/${t.objectId}` : t.kind==="reconcile" ? `#/e/${t.episodeId}/assets?batch=${t.objectId}` : `#/e/${t.episodeId}/space`}>{t.action} ›</a>
             </div>))}
           {todos.length === 0 && <div className="card"><b>没有待办</b><div className="muted small" style={{ marginTop: 6 }}>可以新增一集，或查看已交付的集。</div></div>}
-          <div className="card">
-            <div className="spread"><b>设定 · {settings.total} 条</b><a className="btn" href={`#/p/${id}/settings`}>查看设定 ›</a></div>
-            <div className="row project-card-detail"><Tag tone="red">必须守住 {settings.required}</Tag><Tag tone="blue">可变着用 {settings.variable}</Tag></div>
-            <div className="muted tiny">各集只读引用；改动只对之后的集生效</div>
-          </div>
         </div>
         <div className="grid2">
           {episodes.map((e: any) => <EpisodeCard key={e.id} e={e} projectId={id} onKick={() => setKick({ episodeId: e.id })} reload={o.reload} />)}
         </div>
         <div className="row project-links">
-          {[["free", "自由对话"], ["library", "复用资产库"], ["knowledge", "知识库"], ["topics", "选题池"], ["baseline", "制作基准"], ["expert", "专家模式授权"]].map(([k, l]) => (
+          {[["free", "自由对话"], ["library", "复用资产库"], ["knowledge", "知识库"], ["topics", "选题池"], ["baseline", "制作基准"]].map(([k, l]) => (
             <a key={k} className="btn ghost" href={`#/p/${id}/${k}`}>{l}</a>))}
         </div>
         <ErrorLine error={act.error} />
@@ -112,17 +118,15 @@ function AddEpisode({ code, onClose, onAdd }: any) {
 }
 
 function EpisodeCard({ e, projectId, onKick, reload }: { e: any; projectId: string; onKick: () => void; reload: () => void }) {
-  const [importing,setImporting] = useState(false);
   const [editing, setEditing] = useState(false);
   const [facts, setFacts] = useState((e.leftover_facts ?? []).join("\n"));
   const act = useAction();
-  const [cover, setCover] = useState<string>();
-  useEffect(() => { if (e.segments) q("episode_assets", { episode_id: e.id }).then((a: any[]) => setCover(blob(a.find((x) => !x.grid)?.sha256))); }, [e.id, e.segments]);
+  // 实测 124：封面用本集已采用的主场景等图；没有图时显示集号与一句话故事。
+  const cover = blob(e.cover);
   const delivered = e.deliveries.some((d: any) => d.scope === "full");
   return (
     <div className="epcard">
-      {importing && <EpisodeManuscript pid={projectId} episode={e} close={()=>setImporting(false)}/>}
-      <div className="thumb" style={{ backgroundImage: cover ? `url(${cover})` : undefined, display: "grid", placeItems: "center", color: "#3a3b42", fontSize: "2.31rem" }}>{cover ? "" : "☺"}</div>
+      <div className={"thumb"+(cover?"":" thumb-text")} style={{ backgroundImage: cover ? `url(${cover})` : undefined }}>{cover ? "" : <><b>{e.display_code}</b><span>{e.oneline || (e.kickoff_id ? "故事构思中" : "尚未开工")}</span></>}</div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <Tag tone={e.tone}>{e.label}</Tag>
         <div style={{ fontWeight: 700, margin: "6px 0 4px" }}>{e.display_code} · {e.title || "未命名"}</div>
@@ -133,8 +137,7 @@ function EpisodeCard({ e, projectId, onKick, reload }: { e: any; projectId: stri
         <div style={{ margin: "10px 0" }}><SegBar total={11} done={e.progress} now={!delivered && !!e.kickoff_id} /></div>
         <div className="row actions-end">
           {!e.kickoff_id && <button className="btn primary" onClick={onKick}>开工</button>}
-          {e.kickoff_id && !delivered && <button className="btn" onClick={()=>setImporting(true)}>我有故事稿</button>}
-          {e.kickoff_id && !delivered && <a className="btn primary" href={`#/e/${e.id}/${e.adopted.story ? (e.adopted.plan ? "assets" : "script") : "story"}`}>{e.adopted.story ? "开始制作" : "继续"}</a>}
+          {e.kickoff_id && !delivered && <a className="btn primary" href={`#/e/${e.id}/${e.aiStage || (e.adopted.story ? (e.adopted.plan ? "assets" : "script") : "story")}`}>继续</a>}
           {delivered && <a className="btn" href={`#/e/${e.id}/delivery`}>图文页</a>}
           {delivered && e.closure && e.closure.state !== "confirmed" && <a className="btn primary" href={`#/p/${projectId}/closure/${e.closure.id}`}>收尾</a>}
           {delivered && !e.closure && <a className="btn primary" href={`#/e/${e.id}/delivery`}>交付页</a>}
@@ -144,28 +147,12 @@ function EpisodeCard({ e, projectId, onKick, reload }: { e: any; projectId: stri
   );
 }
 
-function EpisodeManuscript({pid,episode,close}:{pid:string;episode:any;close:()=>void}) {
-  const [file,setFile] = useState<File|null>(null);
-  const [request,setRequest] = useState(commandId);
-  const [result,setResult] = useState<any>(null);
-  const action = useAction();
-  return <Modal onClose={()=>{if (!action.busy) close();}} width={560}><h2>导入本集故事来源 · {episode.display_code}</h2>
-    <p>保存的原文会随本集下一次故事任务发送。已经采用的稿件可继续查看。</p>
-    <label>选择本地稿件 <input type="file" disabled={action.busy} accept=".md,.txt,.docx,.pdf"
-      onChange={e=>{setFile(e.target.files?.[0] ?? null);setResult(null);setRequest(commandId());action.clear();}}/></label>
-    {result?.parseStatus==="parsed" && <><p>已导入 {file?.name}</p><pre className="field">{result.preview}</pre>
-      <a className="btn primary" href={`#/e/${episode.id}/story`} onClick={close}>查看本集故事稿</a></>}
-    {result?.parseStatus==="failed" && <p className="error">{result.diagnostic}</p>}
-    <ErrorLine error={action.error}/>
-    <div className="row"><button className="btn" disabled={action.busy} onClick={close}>{result?"关闭":"取消"}</button>
-      {!result && <button className="btn primary" disabled={!file || action.busy}
-        onClick={()=>action.run(async()=>setResult(await importManuscript(pid,file!,"story_source",episode.id,request)))}>导入为本集故事来源</button>}</div>
-  </Modal>;
-}
 
 export function Kickoff({ projectId, prefill, onClose, pictures=[] }: { projectId: string; prefill: any; onClose: () => void; pictures?:File[] }) {
   const { go } = useProjectRoute();
   const submit = useDirectorCommand();
+  const storyImport=useStoryImport();
+  const [browseOriginal,setBrowseOriginal]=useState(false);
   const [source, setSource] = useState<"idea" | "topic" | "import">(prefill.importId ? "import" : prefill.topicId ? "topic" : "idea");
   const [idea, setIdea] = useState(prefill.idea ?? "");
   const [goal,setGoal] = useState(prefill.goal ?? "");
@@ -175,12 +162,11 @@ export function Kickoff({ projectId, prefill, onClose, pictures=[] }: { projectI
   const [topicId, setTopicId] = useState(prefill.topicId ?? "");
   const [cooperation, setCooperation] = useState("advanced");
   const [mode, setMode] = useState<"manual" | "expert">(prefill.mode ?? "manual");
-  const [split, setSplit] = useState<"default" | "custom">(prefill.creator && (prefill.creator !== "claude" || prefill.reviewer !== "codex") ? "custom" : "default");
-  const [creator, setCreator] = useState(prefill.creator ?? "claude");
-  const [reviewer, setReviewer] = useState(prefill.reviewer ?? "codex");
-  const [cm, setCm] = useState<{ model: string | null; effort: string | null }>({ model: null, effort: null });
-  const [rm, setRm] = useState<{ model: string | null; effort: string | null }>({ model: null, effort: null });
+  const {plan:executorPlan,setPlan:setExecutorPlan}=useExecutorPlan(prefill.executorPlan);
+  const creator=executorPlan.create.provider, reviewer=executorPlan.review.provider;
+  const cm=executorPlan.create, rm=executorPlan.review;
   const [conflictBlocked,setConflictBlocked]=useState(false);
+  const [sourceIntent,setSourceIntent]=useState("adapt");
   const [managePresets,setManagePresets]=useState(false);
   const [ratioOverride,setRatioOverride]=useState(prefill.ratio || "");
   const [presetName,setPresetName]=useState("default");
@@ -204,26 +190,37 @@ export function Kickoff({ projectId, prefill, onClose, pictures=[] }: { projectI
   const hasSource=Boolean(source==="idea"?idea.trim():source==="topic"?topicId:importId);
   const start = () => act.run(async () => {
     const started=await submit("start_episode", {
-      episode_id: prefill.episodeId ?? null, project_id:projectId, display_code:prefill.displayCode, leftover_facts:prefill.leftoverFacts, source_type: source, executor_plan: { create: { provider: creator, ...cm }, review: { provider: reviewer, ...rm } },
-      preset_name:chosen.name,preset_revision:chosen.rev,cooperation_mode:cooperation,
+      episode_id: prefill.episodeId ?? null, project_id:projectId, display_code:prefill.displayCode, leftover_facts:prefill.leftoverFacts, source_type: source, executor_plan: executorPlan,
+      palette_ids:prefill.paletteCards?.map((c:{id:string})=>c.id),
+      preset_name:chosen.name,preset_revision:chosen.rev,cooperation_mode:cooperation,start_story:mode==="manual",
       spec_overrides: { ...(prefill.style ? { style: prefill.style } : {}), ...(ratioOverride ? {aspectRatio:ratioOverride} : {}) },
       goal: source === "idea" ? "" : goal,
       source_import_id: source === "import" ? importId : undefined, idea_text: source === "idea" ? idea : undefined,
+      source_intent: source === "import" ? sourceIntent : "adapt",
       topic_id: source === "topic" ? topicId : undefined, relation: relation === "continue" && pre ? "continue" : "independent",
       predecessor_ids: relation === "continue" && pre ? [pre] : [],
     }, pictures);
     if (mode === "expert") { go(`#/p/${projectId}/expert?episode=${started.episodeId}`); return; }
-    go(`#/e/${started.episodeId}/story`);
+    go(`#/e/${started.episodeId}/${started.initialStage || "story"}`);
   });
   const lastPre = p.predecessorsAvailable[p.predecessorsAvailable.length - 1];
   return (
     <Modal onClose={()=>{if (!act.busy) onClose();}}>
       <div className="spread"><h2 style={{ fontSize: "1.38rem" }}>开工 · {p.episode.display_code}</h2>{lastPre && <Tag tone="cyan">按上一集预填</Tag>}</div>
       <p className="muted small">每一集开工时决定这一集怎么做。所有集走同一条流水线，这里只定本集的做法。</p>
+      {source==="import" && <label>导入稿用途<select aria-label="导入稿用途" value={sourceIntent} onChange={e=>setSourceIntent(e.target.value)}>
+        <option value="adapt">作为改编来源，从01开发</option><option value="locked_screenplay">完整剧本已定稿，直接整理05</option>
+      </select></label>}
       <div className="formrow"><span className="muted">故事来源</span><div className="col">
         <Pills value={source} onChange={setSource} options={[["idea", "新想法"], ["topic", "选题池"], ["import", "导入故事稿 / 剧本"]]} />
+        <div><button className="btn" onClick={()=>setBrowseOriginal(true)}>从知识库选原文拍</button></div>
+        {browseOriginal&&<Modal width={960} onClose={()=>setBrowseOriginal(false)}><button className="btn" onClick={()=>setBrowseOriginal(false)}>返回开工</button>
+          <ResourceBrowser kind="knowledge" storyPicker onChoose={part=>{setBrowseOriginal(false);act.run(async()=>{
+            const id=await storyImport(projectId,part);setImportId(id);setSource("import");await preview.reload();
+          });}}/></Modal>}
         {source === "idea" && <textarea value={idea} onChange={(e) => setIdea(e.target.value)} placeholder="一句话想法" />}
-        {source === "topic" && <select value={topicId} onChange={(e) => setTopicId(e.target.value)}><option value="">选择选题卡</option>
+        {source === "topic" && !topics.data?.some(isKickoffTopic) && <p className="muted">还没有可用的选题卡。可以直接从知识库选原文拍，或输入新想法。</p>}
+        {source === "topic" && topics.data?.some(isKickoffTopic) && <select value={topicId} onChange={(e) => setTopicId(e.target.value)}><option value="">选择选题卡</option>
           {(topics.data ?? []).filter(isKickoffTopic).map((t) => <option key={t.id} value={t.id}>{t.code} · {t.premise}</option>)}</select>}
         {source === "import" && (p.imports.length ? <select value={importId} onChange={(e) => setImportId(e.target.value)}>
           {p.imports.map((i: any) => <option key={i.id} value={i.id} disabled={i.parse_status !== "parsed"}>{i.original_name}{i.parse_status !== "parsed" ? "（解析失败）" : ""}（{i.purpose === "script_source" ? "剧本" : "故事稿"}，作为故事来源）</option>)}</select>
@@ -245,17 +242,11 @@ export function Kickoff({ projectId, prefill, onClose, pictures=[] }: { projectI
           {p.presets.map((item:any)=><option value={item.name} key={item.name}>{item.name==="default"?"项目默认":item.name} · {item.values.aspectRatio}</option>)}</select>
           <select aria-label="本集画幅覆盖" value={ratioOverride} onChange={e=>setRatioOverride(e.target.value)}><option value="">沿用预设画幅</option>{Object.keys(specChoices.aspectRatio).map(r=><option key={r} value={r}>{r}</option>)}</select>
           <button className="pill" onClick={()=>setManagePresets(true)}>管理预设</button></div>
-        <span className="muted small">{prefill.style ? "本集风格：" + prefill.style : "沿用项目风格"}</span></div></div>
+        <span className="muted small">{!!prefill.paletteCards?.length && <span>本集色卡 · {prefill.paletteCards.map((c:{name:string})=>c.name).join("、")}　</span>}{prefill.style ? "本集风格：" + prefill.style : "沿用项目风格"}</span></div></div>
       <div className="formrow"><CooperationSelect value={cooperation} onChange={setCooperation}/></div>
       <div className="formrow"><span className="muted">运行模式</span><Pills value={mode} onChange={setMode} options={[["manual", "手工"], ["expert", "专家"]]} /></div>
       <div className="formrow"><span className="muted">模型分工</span><div className="col">
-        <Pills value={split} onChange={v => { setSplit(v); if (v === "default") {setCreator("claude");setReviewer("codex");setCm({model:null,effort:null});setRm({model:null,effort:null});} }} options={[["default", "默认"], ["custom", "本集调整"]]} />
-        {split === "custom" ? (
-          <div className="row">
-            <ModelPick label="故事 写" provider={creator} setProvider={(p: string) => { setCreator(p); setCm({ model: null, effort: null }); }} sel={cm} setSel={setCm} catalog={catalog.data} />
-            <ModelPick label="审" provider={reviewer} setProvider={(p: string) => { setReviewer(p); setRm({ model: null, effort: null }); }} sel={rm} setSel={setRm} catalog={catalog.data} />
-          </div>
-        ) : <span className="muted small">默认：故事 Claude Code 写 · Codex 审；提示词 Codex 写 · Claude 两遍独审</span>}
+        <ExecutorPlanFields plan={executorPlan} onChange={setExecutorPlan}/>
         {reviewer === creator && <span className="muted small">单模型时必需审核仍另开会话，不取消。</span>}
       </div></div>
       <div className="card" style={{ margin: "14px 0" }}>
@@ -275,13 +266,13 @@ export function Kickoff({ projectId, prefill, onClose, pictures=[] }: { projectI
       <ErrorLine error={act.error} />{act.error&&<button className="btn" onClick={()=>preview.reload()}>刷新开工预览</button>}
       <div className="row" style={{ justifyContent: "flex-end", marginTop: 16 }}>
         <button className="btn" disabled={act.busy} onClick={onClose}>取消</button>
-        <button className="btn primary" disabled={act.busy || conflictBlocked || !validRatio || !validDuration || !hasSource} onClick={start}>开工，进入故事稿</button>
+        <button className="btn primary" disabled={act.busy || conflictBlocked || !validRatio || !validDuration || !hasSource} onClick={start}>{mode==="manual"?"开工并开始创作":"开工，进入专家模式"}</button>
       </div>
     </Modal>
   );
 }
 
-function ModelPick({ label, provider, setProvider, sel, setSel, catalog }: any) {
+export function ModelPick({ label, provider, setProvider, sel, setSel, catalog }: any) {
   const models = catalog?.text?.[provider]?.models ?? [];
   const m = models.find((x: any) => x.id === sel.model) ?? models[0];
   const [warn, setWarn] = useState("");
@@ -292,9 +283,9 @@ function ModelPick({ label, provider, setProvider, sel, setSel, catalog }: any) 
   return (
     <div className="col" style={{ gap: 4 }}>
       <div className="row small">{label}
-        <select value={provider} onChange={(e) => setProvider(e.target.value)}>{Object.keys(catalog?.text ?? { codex: 1, claude: 1, antigravity: 1 }).map((k) => <option key={k} value={k}>{PROVIDER_LABEL[k] ?? k}</option>)}</select>
-        <select value={sel.model ?? ""} onChange={(e) => setSel({ model: e.target.value || null, effort: null })}>{models.map((x: any) => <option key={x.label} value={x.id ?? ""}>{x.label}{x.status !== "verified" ? "（待检测）" : ""}</option>)}</select>
-        <select value={sel.effort ?? ""} onChange={(e) => pickEffort(e.target.value || null)}>{["", "low", "medium", "high", "xhigh", "max"].map((x) => <option key={x} value={x}>{x || "默认强度"}{x && !(m?.efforts ?? []).includes(x) ? "（不兼容）" : ""}</option>)}</select>
+        <select aria-label={label+"执行器"} value={provider} onChange={(e) => setProvider(e.target.value)}>{pickable(Object.keys(catalog?.text ?? { codex: 1, antigravity: 1 }),provider).map((k) => <option key={k} value={k}>{PROVIDER_LABEL[k] ?? k}</option>)}</select>
+        <select aria-label={label+"型号"} value={sel.model ?? ""} onChange={(e) => setSel({ model: e.target.value || null, effort: null })}>{models.map((x: any) => <option key={x.label} value={x.id ?? ""}>{x.label}</option>)}</select>
+        <select aria-label={label+"推理强度"} value={sel.effort ?? ""} onChange={(e) => pickEffort(e.target.value || null)}>{["", "low", "medium", "high", "xhigh", "max"].map((x) => <option key={x} value={x}>{x || "默认强度"}{x && !(m?.efforts ?? []).includes(x) ? "（不兼容）" : ""}</option>)}</select>
       </div>
       {warn && <span className="error tiny">{warn}</span>}
     </div>

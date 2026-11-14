@@ -75,25 +75,56 @@ window.E2E.pipeline = async function (eid, { idea = "第二夜", draft = true, f
   if (from === "review") { await T.go("#/e/" + eid + "/review"); await T.waitFor("两遍独审"); }
   else { await T.go("#/e/" + eid + "/story"); await T.waitFor("故事稿"); }
   if (from === "story") {
-  if (draft) { await T.type("输入你的想法", "写本集故事稿"); await T.click("↑", { sel: ".composer button" }); await T.waitFor("已生成草稿 R01", 15000); }
-  await T.click("发起独立审查", { sel: ".actionbar button", after: 1500 }); await T.waitFor("原结论 通过", 15000);
-  await T.click("采用并继续", { sel: ".actionbar button", after: 1200 });
-  await T.click("按采用的故事起草剧本", { after: 1200 }); await T.waitFor("场01");
-  await T.click("采用并继续", { sel: ".actionbar button", after: 1200 });
-  await T.click("按剧本设计镜头与生成段", { after: 1200 }); await T.waitFor("K01 ");
-  await T.click("采用并继续", { sel: ".actionbar button", after: 1200 });
-  await T.click("素材与选图", { sel: ".catalog .item" });
-  await T.upload("上传", await png(96, 64, "#2b3a55", "纸箱火箭外观.png")); await T.waitFor("纸箱火箭外观", 8000);
-  await T.click("提示词", { sel: ".catalog .item" });
-  await T.click("从方案起草提示词", { after: 1200 }); await T.waitFor("图片1");
-  await T.click("采用并继续", { sel: ".actionbar button", after: 1200 });
-  await T.click("两遍独审", { sel: ".catalog .item", after: 900 });
+    const exact = {sel:"button",exact:true};
+    async function adopt(label="采用并继续") {
+      await T.click(label, exact);
+      if (T.find("都不记录，直接采用", exact)) await T.click("都不记录，直接采用", exact);
+    }
+    await T.waitFor("查看稿件与版本", 15000);
+    await T.click("发起独立审查", exact);
+    await T.waitFor(() => !T.find("发起独立审查", exact), 15000, "故事独审完成");
+    await adopt();
+    for (const stage of ["characters","world","treatment","script","stress","asset_design","acting","plan"]) {
+      await T.go("#/e/" + eid + "/" + stage);
+      if (T.find("打开本阶段", exact)) await T.click("打开本阶段", exact);
+      await T.type("讨论当前稿件，或说明要怎样修改", "按已采用的上游成果完成本阶段【测试：改稿】");
+      await T.click("↑", {sel:".composer button"});
+      await adopt(stage==="stress"?"采用报告并继续":stage==="asset_design"?"采用清单并去备图":"采用并继续");
+      if(stage==="asset_design") {
+        await T.waitFor("备图工作单");
+        const sheet=await T.api("asset_worksheet",{episode_id:eid});
+        for(const row of sheet.rows) {
+          await T.click("出新图",{...exact,within:document.querySelector(`[data-need="${row.need_key}"]`)});
+          await T.waitFor("确认授权 1 张");
+          await T.click("关闭",{...exact,within:document.querySelector(".modal")});
+        }
+        await T.click(`批量批准并生成 ${sheet.rows.length} 张`,exact);
+        for(const row of sheet.rows) await T.click("采用",{...exact,within:document.querySelector(`[data-need="${row.need_key}"]`)});
+        await T.waitFor("进入 08 表演");
+      }
+    }
+    await T.go("#/e/" + eid + "/assets");
+    await T.upload("上传", await png(96, 64, "#2b3a55", "纸箱火箭外观.png"));
+    await T.waitFor("纸箱火箭外观");
+    const other=T.find("纸箱火箭外观",{sel:"button.director-open"});
+    if(other){other.click();await T.sleep(350);}
+    const picture=await T.waitFor(()=>[...document.querySelectorAll(".candidate-layout > div")].find(el=>el.innerText.includes("纸箱火箭外观") && el.querySelector(".candidate-preview")));
+    await T.click("标必用",{sel:"button",exact:true,within:picture});
+    T.setValue(document.querySelector('[aria-label="选择理由"]'),"本段用上传原图作为生成参考");
+    await T.click("G01",{sel:".modal label",exact:true});
+    await T.click("保存必用要求",{sel:"button",exact:true});
+    await T.go("#/e/" + eid + "/prompts");
+    await T.click("从方案起草提示词", exact);
+    await T.waitFor("图片1");
+    await adopt();
+    await T.go("#/e/" + eid + "/review");
   }
   await T.click("送审材料（第一遍）", { after: 1500 });
   await T.waitFor(() => !/第一遍 · 冷读\n待审/.test(document.body.innerText), 15000, "第一遍完成");
   await T.click("开始第二遍", { after: 1500 });
   await T.waitFor(() => /待判断 \/ 待审\n0 段/.test(document.body.innerText), 15000, "两遍完成");
   await T.go("#/e/" + eid + "/publish"); await T.waitFor("发布包");
+  if (T.find("开始写发布文案")) await T.click("开始写发布文案");
   const L = (t) => [...document.querySelectorAll("label")].find((l) => l.innerText.startsWith(t))?.querySelector("input,textarea");
   await T.waitFor(() => L("Exclude Styles"), 8000, "读取项目的扩展发布字段");
   T.setValue(L("发布标题"), "Second Night"); T.setValue(L("正文第一行"), "The parrot learns the till sound."); T.setValue(L("Suno Title"), "Till Beep"); T.setValue(L("Style of Music"), "lofi, 92 BPM"); T.setValue(L("Exclude Styles"), "vocals");

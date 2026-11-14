@@ -37,7 +37,7 @@ def test_story_candidates_use_identical_frozen_material_and_exact_episode_select
     assert manifests[0]["methodPack"] == manifests[1]["methodPack"]
     assert any(i["role"]=="step_requirements" for i in manifests[0]["inputs"])
     assert any(i["role"]=="citation" and i["name"]=="动作笔记" for i in manifests[0]["inputs"])
-    wb.save_step_config(eid,"story",keep="另一份新要求")
+    wb.save_step_config(eid,"story",keep="两个人最后共用一把伞",goal="另一份新要求")
     begin=len(env.codex.calls)
     env.drain(right)
     env.drain(left)
@@ -52,9 +52,10 @@ def test_story_candidates_use_identical_frozen_material_and_exact_episode_select
     assert len(set(vids))==2 and all(vids)
     assert art["adopted_version_id"]==base
     for vid in vids:
-        assert not wb.adoption_gate(vid)["adoptable"]
-    res=wb.combine(art["id"], {"synopsis":vids[0], "handoff":vids[1]}, "combine")
-    assert not wb.adoption_gate(res["versionId"])["adoptable"]
+        assert wb.adoption_gate(vid)["adoptable"]
+        assert not wb.adoption_gate(vid)["reviewRequired"]
+    res=wb.combine(art["id"], {"synopsis":vids[0], "handoff":vids[1],"decisionNotes":vids[0]}, "combine")
+    assert wb.adoption_gate(res["versionId"])["adoptable"]
     review_id=wb.submit_review(res["versionId"],"judge")["runId"]
     receipts=wb.version_sources(res["versionId"])["inputs"]
     cited=next(r for r in receipts if r["name"]=="动作笔记")

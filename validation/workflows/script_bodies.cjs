@@ -48,7 +48,8 @@ async function main() {
     };
     await page.goto(base+"/#/knowledge");
     await page.getByLabel("检索方式").selectOption("body");
-    await choose(novel,12592);
+    const catalogCount=kind=>native("select count(*) as n from documents where category not like '90-%' and path not like '%/来源清单.md' and path != '来源清单.md'"+(kind?" and kind='method'":""))[0].n;
+    await choose(novel,catalogCount());
     await page.getByRole("button",{name:"返回资料列表"}).click();
     const screen=page.getByRole("region",{name:"全库正文查找"});
     const novelStatus=await screen.getByRole("status").innerText();
@@ -62,7 +63,7 @@ async function main() {
     await page.getByLabel("参考与知识库").selectOption("method");
     await page.getByRole("button",{name:"选择参考片段"}).click();
     await page.getByLabel("检索方式").selectOption("body");
-    await choose(method,4769);
+    await choose(method,catalogCount("method"));
     await page.getByLabel("借鉴方式").fill("借鉴段内表演展开方式");
     await page.getByRole("button",{name:"引用此段"}).click();
     await page.getByRole("button",{name:"保存本步配置"}).click();
@@ -93,6 +94,7 @@ async function main() {
     await page.getByRole("button",{name:"返回当前稿"}).waitFor();
     assert.equal(await page.getByRole("button",{name:"版本来源",exact:true}).count(),0);
     await page.getByRole("button",{name:"返回当前稿"}).click();
+    await page.getByRole("link",{name:"查看稿件与版本"}).click();
     await page.getByRole("button",{name:"版本来源",exact:true}).waitFor();
     await page.goto(base+"/#/knowledge");
     await page.getByLabel("检索方式").selectOption("body");

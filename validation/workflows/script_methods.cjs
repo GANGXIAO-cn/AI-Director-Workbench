@@ -56,10 +56,10 @@ async function main() {
       await page.goto(base+"/#/e/"+eid+"/script");
       await btn("制作方法").click();
       const modal=page.locator(".modal:visible");
-      const script=modal.locator("summary").filter({hasText:"故事接收与版本依据"});
+      const script=modal.locator("summary").filter({hasText:"script · 工作台本地化规则"});
       await script.click();
-      assert.match(await script.locator("..").innerText(),/采用版本及该版本关联的独立审查记录/);
-      assert.equal(await modal.getByText(/系列人物、改招与局部压缩/).count(),project.config_id==="puggy"?1:0);
+      assert.equal(await script.locator("..").locator(".field").textContent(),(await fs.readFile(path.join(root,"resources/skills/unified-film/script.md"),"utf8")));
+      assert.equal(await modal.getByLabel(/puggy-methods\/script.md采用版本/).count(),project.config_id==="puggy"?1:0);
       assert.equal(await modal.getByText(/系列九格示意/).count(),0);
       await modal.getByRole("button",{name:"关闭",exact:true}).click();
       results.push({profile:project.config_id,eid,needs,detail,editing});

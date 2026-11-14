@@ -20,7 +20,7 @@ async function main(){
       await modal.locator(".stage-check-list li").first().waitFor();return modal;
     };
     const expected={
-      story:["本版独立审查","本集正在使用这一版"],script:["分场剧本结构","上游故事稿"],
+      story:["本版独立审查","本集正在使用这一版"],script:["分场剧本结构","本阶段上游成果"],
       plan:["G02 段长","设计 6 秒"],space:["已跳过","本集使用已有站台布局"],
       cast:["未通过","尚未确认出镜状态"],assets:["G01 素材引用","已关联 1 张图片"],
       prompts:["提示词结构与实际引用"],review:["G01 · 冷读","G02 · 对照","缺少匹配当前内容的审查回执"],

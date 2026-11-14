@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { cmd } from "./api";
 import { ErrorLine, useAction } from "./ui";
+import { NEXT_FILM_STAGE } from "./workflow";
 
 export function CooperationSelect({value, onChange, disabled}: {
   value: string; onChange: (mode: string) => void; disabled?: boolean;
@@ -28,10 +29,12 @@ export function OptionalStage({eid, stage, skippedReason, reload}: {
     await reload(); setEditing(false); setReason("");
   });
   if (skippedReason) return <section className="card"><p>本步已跳过 · {skippedReason}</p>
-    <button className="btn" disabled={act.busy} onClick={()=>save(false)}>恢复这一步</button><ErrorLine error={act.error}/></section>;
+    <button className="btn" disabled={act.busy} onClick={()=>save(false)}>恢复这一步</button>
+    {NEXT_FILM_STAGE[stage] && <a className="btn primary" href={`#/e/${eid}/${NEXT_FILM_STAGE[stage]}`}>继续下一阶段</a>}
+    <ErrorLine error={act.error}/></section>;
   return <section className="card">{editing ? <form onSubmit={e=>{e.preventDefault();save(true);}}>
-    <label>跳过原因 <input value={reason} onChange={e=>setReason(e.target.value)} autoFocus required/></label>
-    <button className="btn" disabled={act.busy || !reason.trim()}>确认跳过</button>
+    <label>跳过原因 <input value={reason} onChange={e=>setReason(e.target.value)} autoFocus placeholder="可不填"/></label>
+    <button className="btn" disabled={act.busy}>确认跳过</button>
     <button type="button" className="btn ghost" disabled={act.busy} onClick={()=>{setEditing(false);setReason("");act.clear();}}>取消</button>
   </form> : <button className="btn ghost" onClick={()=>setEditing(true)}>跳过这一步</button>}<ErrorLine error={act.error}/></section>;
 }

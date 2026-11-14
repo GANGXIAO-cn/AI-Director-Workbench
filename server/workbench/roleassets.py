@@ -7,11 +7,16 @@ from .errors import Rejected
 from .storage import sha256_bytes
 
 
-def check_assets(asset_root, settings):
+def check_assets(asset_root, settings, managed=None):
     root = Path(asset_root).resolve()
     def file(rel, error):
         if not isinstance(rel, str) or Path(rel).is_absolute():
             raise Rejected(error)
+        if managed:
+            digest = managed["_files"].get(rel)
+            if not digest:
+                raise Rejected(error)
+            return managed["_store"].blob_path(digest)
         path = (root/rel).resolve()
         if root not in path.parents or not path.is_file():
             raise Rejected(error)
@@ -45,29 +50,31 @@ class RoleAssetMixin:
         from .sourcefiles import production
         with connect(self.db_path) as db:
             prod = production(db, project_id)
-        return check_assets(prod["assetRoot"], prod["roleAssets"]) if prod.get("roleAssets") else {"roles":[]}
+        return check_assets(prod["assetRoot"], prod["roleAssets"], prod if "_files" in prod else None) if prod.get("roleAssets") else {"roles":[]}
+
+    def _use_fixed_role_db(self, db, episode_id, role):
+        from .sourcefiles import production
+        ep = self._episode_in(db, episode_id)
+        prod = production(db, ep["project_id"])
+        if not prod.get("roleAssets"):
+            raise Rejected("本项目没有登记固定身份图")
+        catalog = check_assets(prod["assetRoot"], prod["roleAssets"], prod if "_files" in prod else None)
+        item = next((r for r in catalog["roles"] if r["id"] == role), None)
+        if not item:
+            raise Rejected("角色不在本项目固定身份清单内")
+        old = db.execute("SELECT asset_version_id FROM fixed_role_asset WHERE episode_id=? AND role=? AND sha256=?",
+                         (episode_id,role,item["sha256"])).fetchone()
+        if old:
+            return dict(versionId=old[0],sha256=item["sha256"])
+        image = (prod["_store"].read_blob(item["sha256"]) if "_files" in prod else
+                 (Path(prod["assetRoot"])/item["path"]).read_bytes())
+        if sha256_bytes(image) != item["sha256"]:
+            raise Rejected("登记时原图已变化，请重新检测")
+        asset = self.register_asset(ep["project_id"], item.get("name") or role, image, "identity", episode_id=episode_id,
+                                    roles=[role], origin="fixed_role", note=dumps(dict(item,registrySha256=catalog["registrySha256"])), db=db)
+        db.execute("INSERT INTO fixed_role_asset VALUES(?,?,?,?)", (episode_id,role,item["sha256"],asset["versionId"]))
+        return dict(versionId=asset["versionId"],sha256=item["sha256"])
 
     def use_fixed_role(self, episode_id, role, command_id):
-        from .sourcefiles import production
         with transaction(self.db_path) as db:
-            def run():
-                ep = self._episode_in(db, episode_id)
-                prod = production(db, ep["project_id"])
-                if not prod.get("roleAssets"):
-                    raise Rejected("本项目没有登记固定身份图")
-                catalog = check_assets(prod["assetRoot"], prod["roleAssets"])
-                item = next((r for r in catalog["roles"] if r["id"] == role), None)
-                if not item:
-                    raise Rejected("角色不在本项目固定身份清单内")
-                old = db.execute("SELECT asset_version_id FROM fixed_role_asset WHERE episode_id=? AND role=? AND sha256=?",
-                                 (episode_id,role,item["sha256"])).fetchone()
-                if old:
-                    return dict(versionId=old[0],sha256=item["sha256"])
-                image = (Path(prod["assetRoot"])/item["path"]).read_bytes()
-                if sha256_bytes(image) != item["sha256"]:
-                    raise Rejected("登记时原图已变化，请重新检测")
-                asset = self.register_asset(ep["project_id"], item.get("name") or role, image, "identity", episode_id=episode_id,
-                                            roles=[role], origin="fixed_role", note=dumps(dict(item,registrySha256=catalog["registrySha256"])), db=db)
-                db.execute("INSERT INTO fixed_role_asset VALUES(?,?,?,?)", (episode_id,role,item["sha256"],asset["versionId"]))
-                return dict(versionId=asset["versionId"],sha256=item["sha256"])
-            return self._command(db,command_id,"use_fixed_role",dict(episode=episode_id,role=role),run)
+            return self._command(db,command_id,"use_fixed_role",dict(episode=episode_id,role=role),lambda:self._use_fixed_role_db(db,episode_id,role))

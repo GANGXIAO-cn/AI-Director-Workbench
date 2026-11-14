@@ -18,18 +18,18 @@ def test_expert_honors_target_and_exact_checkpoint(env):
     aid = wb.authorize_expert(**args)["authId"]
     assert wb.authorize_expert(**args)["authId"] == aid
     with pytest.raises(Conflict):
-        wb.authorize_expert(**dict(args, budget_cents=1))
+        wb.authorize_expert(**dict(args, image_cap=1))
     stopped = wb.expert_run(aid)
     assert stopped["state"] == "stopped" and stopped["checkpoint"] == stopped["versionId"]
     assert not env.art(eid, "story")["adopted_version_id"]
     assert wb.expert_run(aid, "stale")["state"] == "stopped"
     done = wb.expert_run(aid, stopped["token"])
     assert done["state"] == "done"
-    assert [a["stage"] for a in done["log"] if a.get("completed")] == ["story","script"]
+    assert [a["stage"] for a in done["log"] if a.get("completed")] == ["story","characters","world","treatment","script"]
     calls = len(env.claude.calls), len(env.codex.calls)
     assert wb.expert_run(aid, stopped["token"])["state"] == "done"
     assert calls == (len(env.claude.calls), len(env.codex.calls))
-    assert [a["stage"] for a in wb.episode_view(eid)["artifacts"]] == ["story","script"]
+    assert {a["stage"] for a in wb.episode_view(eid)["artifacts"]} == {"story","characters","world","treatment","script"}
     assert wb.expert_history(pid, eid)[0]["id"] == aid
 
 
@@ -58,7 +58,8 @@ def test_expert_scope_preview_pause_overlap_and_changed_input(env):
     assert wb.expert_run(aid,stopped["token"])["reason"] == "settings_change"
 
 
-def test_expert_budget_per_episode_and_unknown_not_resubmitted(env):
+def test_expert_generation_ignores_cost_and_unknown_not_resubmitted(env):
+    env.images.remote_status = True  # remote result remains queryable
     wb = env.wb
     pid, eid = env.new_episode()
     _, other = env.new_episode(code="E02",project_id=pid)
@@ -71,9 +72,7 @@ def test_expert_budget_per_episode_and_unknown_not_resubmitted(env):
     assert stop["reason"] == "paid_batch" and env.images.sent == 0
     second = batch(eid,"二")
     wb.authorize_batch(b["batchId"],b["summaryHash"],"pay1")
-    with pytest.raises(Rejected,match="剩余金额"):
-        wb.authorize_batch(second["batchId"],second["summaryHash"],"pay2")
-    # Each named episode owns its own allowance.
+    wb.authorize_batch(second["batchId"],second["summaryHash"],"pay2")
     third = batch(other,"三")
     wb.authorize_batch(third["batchId"],third["summaryHash"],"pay3")
     env.images.script = ["timeout"]

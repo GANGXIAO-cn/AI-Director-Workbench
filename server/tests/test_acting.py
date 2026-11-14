@@ -60,6 +60,10 @@ def test_acting_reaches_draft_reviews_and_frozen_delivery(tmp_path):
     assert json.loads(next(e["text"] for e in entries(run) if e["role"] == "dialogue_timing")) == preview
     pv,_ = env.save_adopt(eid,"prompts",content)
     first = content["segments"]["G01"]
+    tagged = first['txt'].replace('Wait right here', '<speaker1>Wait</speaker1> <speaker1>right here</speaker1>')
+    assert not acting.prompt_errors(plan, {'G01':dict(first, txt=tagged)})
+    tagged = first['txt'].replace('Wait right here', '<speaker_1>Wait</speaker_1>，转身后继续说：<speaker_1>right here</speaker_1>')
+    assert not acting.prompt_errors(plan, {'G01':dict(first, txt=tagged)})
     shifted = first["txt"].replace("Wait right here","等一下") + " Wait right here"
     assert "起声处缺少采用台词" in acting.prompt_errors(plan, {"G01":dict(first,txt=shifted)})[0]
     assert "全段静音" in acting.prompt_errors(plan, {"G01":dict(first,sound={"silent":True})})[0]

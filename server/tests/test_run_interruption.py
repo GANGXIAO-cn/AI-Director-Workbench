@@ -47,3 +47,17 @@ def test_result_failure_after_reply_and_wrapped_correction(tmp_path, monkeypatch
     records=wb.task_records(project_id=pid)
     run=next(r for t in records for r in t["runs"] if r["id"]==new["runId"])
     assert (run["status"],run["format_attempts"])==("succeeded",1)
+
+
+def test_retry_actions_follow_each_request_separately():
+    from workbench.service import retryable_attempts
+    runs = [
+        dict(id="original", status="waiting_quota", reason="quota → 已重试为 first → 已重试为 switched → 已重试为 extra"),
+        dict(id="first", status="stopped", reason="用户停止"),
+        dict(id="independent", status="waiting_quota", reason="quota"),
+        dict(id="switched", status="succeeded", reason=None),
+        dict(id="extra", status="stopped", reason="用户停止"),
+    ]
+    assert retryable_attempts(runs)=={"independent"}
+    runs[3].update(status="failed", reason="error")
+    assert retryable_attempts(runs)=={"independent", "extra"}

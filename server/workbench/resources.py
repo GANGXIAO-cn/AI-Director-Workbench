@@ -129,14 +129,17 @@ class ResourcesMixin:
     def _resource_path(self, kind):
         if kind not in ("knowledge", "palette"):
             raise Rejected("未知资料类型")
+        resources = REPO / "resources"
+        folder = Path("知识库~MD压缩版(1)") / "全球热门与获奖影视剧本知识库MD版"
+        bundled = resources / (folder if kind == "knowledge" else Path("导演色卡.zip"))
         configured = self.get_setting("mount:" + kind)
         if configured:
-            return Path(configured)
-        # Known companion package installed beside the workbench. No disk-wide discovery.
-        base = REPO.parent / "自媒体 2" / "对标分析"
-        pattern = "知识库*/*/knowledgeIndex.sqlite" if kind == "knowledge" else "导演风格与色卡*.zip"
-        match = next(iter(sorted(base.glob(pattern))), None)
-        return match.parent if match and kind == "knowledge" else match
+            # Rebase only the former built-in catalog. Keep user-managed mounts.
+            old_name = folder if kind == "knowledge" else Path("导演风格与色卡-200位导演-完整资料包(2).zip")
+            old_default = REPO.parent / "自媒体 2" / "对标分析" / old_name
+            if Path(configured) != old_default:
+                return Path(configured)
+        return bundled if bundled.exists() else None
 
     def mount_resource(self, kind, path):
         root = Path(path).expanduser().resolve()
@@ -184,9 +187,12 @@ class ResourcesMixin:
             with connect(self.db_path) as db:
                 kickoff=self._kickoff(db,episode_id)
                 source=self._source_text(db,kickoff) or ""
-            vocabulary={"story":"故事 因果 动机","script":"剧本 表演 对白","plan":"分镜 摄影 剪辑","assets":"构图 光影 色彩","prompts":"镜头 场景","publish":"标题 文案"}
+            vocabulary={"story":"故事 因果 动机","characters":"人物 欲望 关系 声音","world":"世界 规则 因果",
+                        "treatment":"分场 事件 结构 节奏","script":"剧本 表演 对白","stress":"剧本 诊断 因果 人物",
+                        "asset_design":"角色 场景 道具 状态 参考图","acting":"表演 策略 节拍 潜台词",
+                        "plan":"分镜 摄影 剪辑","assets":"构图 光影 色彩","prompts":"镜头 场景","publish":"标题 文案"}
             query=" ".join(filter(None,[plain_query, source[:60], vocabulary.get(stage,"")]))
-        where = ["category NOT LIKE '90-%'"]
+        where = ["category NOT LIKE '90-%'", "path NOT LIKE '%/来源清单.md' AND path != '来源清单.md'"]
         args = []
         for field, value in (("category", category), ("kind", kind)):
             if value:
@@ -418,22 +424,51 @@ class ResourcesMixin:
         cards=project_cards if saved["mode"]=="inherit" else saved.get("cards",[])
         return dict(mode=saved["mode"], cards=cards, projectCards=project_cards)
 
-    def set_episode_palettes(self, episode_id, stage, mode, card_ids=None):
-        self.episode_palettes(episode_id, stage)
+    def set_episode_palettes(self, episode_id, stage, mode, card_ids=None, together=False):
+        if stage not in ("assets", "prompts") or type(together) is not bool:
+            raise Rejected("无效的色卡作用域")
         if mode not in ("inherit","off","custom"):
             raise Rejected("无效的单集色卡使用方式")
         cards=self._palette_snapshots(card_ids or []) if mode=="custom" else []
         if mode=="custom" and not cards:
             raise Rejected("指定色卡时须至少选择一份")
-        self.put_setting(f"palette:{episode_id}:{stage}",dict(mode=mode,cards=cards))
+        scopes = ("assets", "prompts") if together else (stage,)
+        with transaction(self.db_path) as db:
+            episode = self._episode_in(db, episode_id)
+            before = self.episode_palettes(episode_id, "prompts")
+            for scope in scopes:
+                db.execute("INSERT INTO app_setting VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                           (f"palette:{episode_id}:{scope}", dumps(dict(mode=mode, cards=cards))))
+            effective = before["projectCards"] if mode == "inherit" else cards
+            if ("prompts" in scopes and before["cards"] != effective and
+                    self._adopted_content(db, episode_id, "prompts") is not None):
+                reason = "提示词的本集色卡变更，须核对采用稿"
+                self._record_impacts(db, dict(project_id=episode["project_id"], episode_id=episode_id),
+                                     [dict(target="workflow:prompts", reason=reason)], "palette_change", "prompts")
+                self._mark_deliveries_stale(db, episode_id, reason)
         return self.episode_palettes(episode_id,stage)
 
     def enhancement_catalog(self):
         from .enhancements import catalog
-        return [{k: item[k] for k in ("id","title","when","where","stages")} for item in catalog()["methods"]]
+        result = []
+        for item in catalog()["methods"]:
+            row = {k: item[k] for k in ("id","title","when","where","stages")}
+            stages = list(row["stages"])
+            # Adapt the bundled directory to the professional stage registry.
+            # This only groups the choices; no item is enabled automatically.
+            if "assets" in stages:
+                stages.append("asset_design")
+            chapter = item["id"].split("-")[0]
+            stages.extend({"02":["characters"],"03":["world"],"04":["treatment"],"08":["acting"]}.get(chapter, []))
+            if item["id"] in ("05-C", "09-M"):
+                stages.append("stress")
+            row["stages"] = list(dict.fromkeys(stages))
+            result.append(row)
+        return result
 
     def step_form(self, episode_id, stage):
-        if stage not in ("story","script","plan","prompts","publish","assets"):
+        from .stages import WRITABLE
+        if stage not in (*WRITABLE, "assets"):
             raise Rejected("本阶段没有可编辑的需求配置")
         with connect(self.db_path) as db:
             pack, _ = self._episode_method(db, episode_id)
@@ -441,7 +476,8 @@ class ResourcesMixin:
         if not path.exists():
             if pack["id"]=="short-film@v7":
                 raise Rejected("当前方法包缺少本步需求表单")
-            return dict(pack=pack["id"], fields={"goal":"本步目标","format_note":"形式与规格","keep":"必须保留的内容"})
+            keep_label = "必须保留的外观和空间关系" if stage == "assets" else "必须保留的内容"
+            return dict(pack=pack["id"], section="unified_rules", sourceHash=pack["files"]["unified_rules"]["sha256"], fields={"goal":"本步目标","format_note":"形式与规格","keep":keep_label})
         definition = json.loads(path.read_text()).get(stage)
         if not isinstance(definition,dict):
             raise Rejected("方法包缺少本阶段的表单定义")
@@ -465,7 +501,8 @@ class ResourcesMixin:
 
     def save_step_config(self, episode_id, stage, route="", goal="", keep="", format_note="", mode="off", references=None,
                          expected_revision=None, enhancements=None):
-        if stage not in ("story","script","plan","prompts","publish","assets") or mode not in ("off","match","method"):
+        from .stages import WRITABLE
+        if stage not in (*WRITABLE,"assets") or mode not in ("off","match","method"):
             raise Rejected("不支持的阶段或资料模式")
         with connect(self.db_path) as db:
             self._episode_in(db,episode_id)
@@ -531,6 +568,7 @@ class ResourcesMixin:
             raise Conflict("本步配置已由其他页面更新，请重新打开后核对")
         if old and not revision:
             db.execute("INSERT OR IGNORE INTO step_revision VALUES(?,?,0,?)",(episode_id,stage,dumps(dict(old,revision=0))))
+        self._sync_keep(db,episode_id,stage,old.get("keep",""),config.get("keep",""))
         config["revision"] = revision+1
         db.execute("INSERT INTO step_revision VALUES(?,?,?,?)",(episode_id,stage,config["revision"],dumps(config)))
         db.execute("INSERT INTO app_setting VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(key,dumps(config)))

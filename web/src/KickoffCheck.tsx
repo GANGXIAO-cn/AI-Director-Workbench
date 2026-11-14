@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { cmd } from "./api";
 import { ErrorLine, PROVIDER_LABEL } from "./ui";
 
-type Check = { key:string; verdict:"compatible"|"uncertain"|"conflict"; settingQuote:string; requestQuote:string; reason:string };
+type Check = { key:string; verdict:"compatible"|"uncertain"|"conflict"; settingQuote:string; requestQuote:string; reason:string; suggested?:{settingKey:string;requestQuote:string} };
 type View = { basis:string; state:string; settings:Record<string,string>; request:string; provider:string; model:string;
   checks:Check[]; decisions:Record<string,{conflict:boolean; requestQuote:string}>; blocked:boolean; error:string };
 type Props = { source:Record<string,unknown>; provider:string; model:string|null; effort:string|null; onBlock:(b:boolean)=>void };
@@ -17,6 +17,8 @@ export function KickoffCheck({source, provider, model, effort, onBlock}:Props) {
   const sourceJSON = JSON.stringify(source);
   function display(next:View) {
     setView(next);
+    const suggestion=next.checks.find(c=>c.suggested && !next.decisions[c.key])?.suggested;
+    if(suggestion && (!key || view?.basis!==next.basis)){setKey(suggestion.settingKey);setQuote(suggestion.requestQuote);}
     onBlock(next.blocked || next.state === "running");
   }
   useEffect(() => {
@@ -38,7 +40,7 @@ export function KickoffCheck({source, provider, model, effort, onBlock}:Props) {
     setBusy(true); onBlock(true); setError("");
     try {
       const next = await cmd<View>(name,{source,basis:view.basis,...args});
-      if(live.current) {display(next); setQuote("");}
+      if(live.current) {display(next);}
     } catch(e:any) {if(live.current) {setError(e.message); onBlock(view.blocked || view.state === "running");}}
     finally {if(live.current) setBusy(false);}
   }

@@ -31,10 +31,23 @@ def launch_env(provider, connection):
 
 
 class ConnectionsMixin:
+    def active_selection(self, slot):
+        """Resolve retired CLI selections without changing historical records."""
+        if slot.get('provider') != 'claude':
+            return dict(slot)
+        saved=self.get_setting('executor-defaults',{}).get('create',{})
+        if saved.get('provider') in self.executors and saved.get('provider')!='claude':
+            return dict(saved)
+        provider=next((p for p in ('codex','antigravity') if p in self.executors),None)
+        if provider is None:
+            raise Rejected('请配置 Codex 或 Antigravity 执行器')
+        return dict(provider=provider,model=None,effort=None)
+
     def executor_connection(self, provider):
         if provider not in self.executors:
             raise Rejected("未配置的执行器")
-        return self.get_setting("connection:"+provider, dict(revision=0,proxy="system",model=None,effort=None))
+        result = self.get_setting("connection:"+provider, dict(revision=0,proxy="system",model=None,effort=None))
+        return result
 
     def save_executor_connection(self, provider, revision, proxy="system", model=None, effort=None):
         if provider not in self.executors:
@@ -66,6 +79,8 @@ class ConnectionsMixin:
         return executor.native_identity(binary,launch_env(provider,self.executor_connection(provider)))
 
     def checked_connection(self, slot):
+        if slot.get('provider')=='claude':
+            return self.active_selection(slot)
         slot = dict(slot)
         expected = slot.pop("connectionRevision",None)
         if expected is not None and self.executor_connection(slot["provider"])["revision"] != expected:

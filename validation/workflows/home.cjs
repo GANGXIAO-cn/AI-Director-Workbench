@@ -39,7 +39,7 @@ async function main() {
     });
     await page.goto(base+"/#/");
     const btn=name=>page.getByRole("button",{name,exact:true});
-    const submit=btn("继续");
+    const submit=page.getByRole("button",{name:/^(继续|一句话开拍)$/});
     const draft=page.locator(".bigbox textarea");
     const pop=page.locator(".bigbox .pop");
     await draft.fill("雨夜末班车到站，乘客在门口寻找失物。");
@@ -56,6 +56,7 @@ async function main() {
     await pop.getByRole("button",{name:"重试项目配置"}).click();
     const configs=await get("available_configs");
     const selected=configs.find(c=>c.configId!=="_template");
+    await pop.getByText("用模板新建项目",{exact:true}).click();
     await pop.getByRole("button",{name:"＋ 新项目（"+selected.name+" 配置）",exact:true}).click();
     await btn("新项目（"+selected.name+"）").click();
     await pop.getByRole("button",{name:original.name,exact:true}).click();
@@ -72,7 +73,7 @@ async function main() {
           const el=document.querySelector(selector), rect=el.getBoundingClientRect();
           return {left:Math.round(rect.left),width:Math.round(rect.width),right:Math.round(rect.right)};
         };
-        return {scroll:document.documentElement.scrollWidth,composer:place(".bigbox"),submit:place('.bigbox button[aria-label="继续"]')};
+        return {scroll:document.documentElement.scrollWidth,composer:place(".bigbox"),submit:place('.bigbox button[data-home-submit]')};
       });
       assert.ok(layout.scroll<=width && layout.submit.right<=width && layout.composer.left>=0);
       if (width>=1024) await page.screenshot({path:path.join(out,"57_J01_创作首页_"+width+".png"),fullPage:true});

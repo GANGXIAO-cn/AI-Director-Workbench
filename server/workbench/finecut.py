@@ -2,19 +2,23 @@
 import json
 
 
+def group_records(db, eid):
+    return [dict(r) for r in db.execute(
+        "SELECT g.id,g.name,g.shared_limits,m.chapter,m.ordinal,m.ending,m.next_hook FROM group_member m "
+        "JOIN story_group g ON g.id=m.group_id WHERE m.episode_id=? ORDER BY g.id", (eid,))]
+
+
 def directions(db, eid):
     # These settings may change after adoption. Record their current revisions at delivery.
     keeps = []
-    for stage in ("story", "script", "plan", "prompts", "publish"):
+    from .workflow import ORDER
+    for stage in (*ORDER, "publish"):
         row = db.execute("SELECT value FROM app_setting WHERE key=?", (f"step:{eid}:{stage}",)).fetchone()
         setting = json.loads(row[0]) if row else {}
         if setting.get("keep"):
             keeps.append(dict(stage=stage, revision=setting.get("revision",0), text=setting["keep"]))
-    groups = [dict(r) for r in db.execute(
-        "SELECT g.id,g.name,g.shared_limits,m.chapter,m.ordinal,m.ending,m.next_hook FROM group_member m "
-        "JOIN story_group g ON g.id=m.group_id WHERE m.episode_id=? ORDER BY g.id", (eid,))]
     kickoff = db.execute("SELECT predecessor_ids,carried_facts FROM kickoff WHERE episode_id=?", (eid,)).fetchone()
-    return dict(keeps=keeps, groups=groups, predecessors=json.loads(kickoff[0]), facts=json.loads(kickoff[1]))
+    return dict(keeps=keeps, groups=group_records(db, eid), predecessors=json.loads(kickoff[0]), facts=json.loads(kickoff[1]))
 
 
 def snapshot(ctx, did, publish):
@@ -42,8 +46,14 @@ def snapshot(ctx, did, publish):
                 music=publish["music"], cues=publish["cues"])
 
 
-def render(data):
-    stage_names = {"story":"故事稿","script":"剧本","plan":"制作方案","prompts":"提示词","publish":"发布包"}
+def render(data, legacy_labels=False):
+    from .workflow import LABELS
+    stage_names = {**LABELS, "publish":"发布文案"}
+    if legacy_labels:
+        # Old immutable handoffs contain the stage labels used when they were written.
+        stage_names.update(story="01 故事梗概", characters="02 角色小传", world="03 世界观",
+                           treatment="04 分场大纲", script="05 完整剧本", stress="06 压力测试",
+                           asset_design="07 素材设计", acting="09 表演设计", plan="10 镜头设计", prompts="11 H3 提示词")
     if data["format"] != 1:
         raise ValueError("未知精剪交接格式")
     lines = [f"# {data['episode']} · {data['title']} 精剪交接", "", "制作意图交接，待接收实际视频。",

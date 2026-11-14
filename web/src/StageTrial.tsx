@@ -1,3 +1,5 @@
+import { ChatMarkdown } from "./ChatMarkdown";
+import { ModelReply } from "./ModelReply";
 import { useDirectorCommand } from "./DirectorFiles";
 import { useState } from "react";
 import { cmd } from "./api";
@@ -7,6 +9,7 @@ const previous: Record<string,string> = {script:"story",plan:"script",prompts:"p
 const stageName = (key:string)=>STAGES.find(([id])=>id===key)?.[1] ?? key;
 type TrialTurn = {
   id:string; text:string; reply:string; reason:string; status:string; attempt:string;
+  provider?:string; model?:string; effort?:string;
   basis:{label:string;stage?:string;number?:number};
 };
 type TrialArtifact = {stage:string; adopted_version_id:string|null; versions:{id:string;display_no:number}[]};
@@ -34,22 +37,24 @@ export function StageTrial({projectId,episodeId,stage,provider,artifacts,current
   });
   return <Modal width={740} onClose={close}>
     <div className="spread"><h2>{stageName(stage)} · 讨论与试写</h2><button className="btn" onClick={close}>关闭</button></div>
-    {transcript.map(t=><article className="card" key={t.id}>
-      <p><b>导演</b> · {t.text}</p>
+    {transcript.map(t=><article className="free-turn trial-turn" key={t.id}>
+      <div className="msg user">{t.text}</div>
+      <ModelReply provider={t.provider} model={t.model} effort={t.effort}>
       <p className="small muted">依据 · {t.basis.stage && stageName(t.basis.stage)+" "+rno(t.basis.number!)+" · "}{t.basis.label}</p>
-      {t.reply && <div className="field">{t.reply}</div>}
+      {t.reply && <ChatMarkdown text={t.reply}/>}
       {t.status==="succeeded" && (!previous[stage] || direct?.adopted_version_id) &&
-        <button className="btn" disabled={act.busy} onClick={()=>act.run(async()=>{
+        <button className="btn" data-chat-kind="action" disabled={act.busy} onClick={()=>act.run(async()=>{
           await submit("create_task",{episode_id:episodeId,stage,goal:"参考导演选用的试写，结合当前正式依据另起草稿",trial_turn_id:t.id},[]);
           reload();close();
         })}>引用此回复起草阶段新稿</button>}
-      {t.reason && <p>{t.reason}</p>}
+      {t.reason && <p data-chat-kind="action">{t.reason}</p>}
       {t.id===last?.id && (running ? <button className="btn" onClick={()=>act.run(async()=>{
         await cmd("stop_free_chat",{project_id:projectId,turn_id:t.id,expected_attempt:t.attempt});await chat.reload();
       })}>停止本次回复</button> : ["failed","waiting_quota","stopped"].includes(t.status) &&
         <button className="btn" disabled={act.busy} onClick={()=>act.run(async()=>{
           await cmd("retry_free_chat",{project_id:projectId,turn_id:t.id,expected_attempt:t.attempt});await chat.reload();
         })}>按原输入重试</button>)}
+      </ModelReply>
     </article>)}
     <div className="col">
       <label>本次依据 <select value={source} onChange={e=>setSource(e.target.value)}>

@@ -55,7 +55,10 @@ async function main() {
     assert.equal((await story()).adopted_version_id,original);
     const header = screen.locator(".center .stagehead").first();
     await header.getByText(/改编自参考包 ticket.mp4 v1/).waitFor();
+    await button("关闭预览").click();
     await button("修改本阶段").click();
+    await page.goto(storyUrl+"?v="+adapted.id);
+    await page.getByRole("button",{name:"结束修改",exact:true}).waitFor();
     await button("开发辅助").click();
     const card = screen.locator("section").filter({has:page.getByRole("heading",{name:"改编对照"})});
     await screen.getByText(originalEvent,{exact:false}).first().waitFor();
@@ -85,10 +88,13 @@ async function main() {
     await page.screenshot({path:path.join(evidence,"37_故事开发辅助与改编对照.png")});
     await button("发起独立审查").click();
     await button("只采用").waitFor();
+    await page.waitForFunction(async ({eid,id})=>{const v=await (await fetch("/api/q/episode_view?args="+encodeURIComponent(JSON.stringify({episode_id:eid})))).json();return v.artifacts.find(a=>a.stage==="story").versions.find(x=>x.id===id).reviews.length>0;},{eid,id:edited.id});
     const art = await story();
     const reviewed = art.versions.find(v=>v.id===edited.id);
     assert.equal(reviewed.reviews.length,1);
-    await command("adopt",{artifact_id:art.id,version_id:edited.id,expected_adopted_version_id:original});
+    const adoption=page.waitForResponse(r=>r.url().endsWith("/cmd/adopt"));
+    await button("只采用").click();
+    assert.ok((await adoption).ok());
     const script = await command("create_task",{episode_id:eid,stage:"script",goal:"按已采用的本集故事写分场剧本"});
     const frozen = async(id)=>(await query("run_manifest",{run_id:id})).manifest;
     const checked = async(manifest,role)=>{

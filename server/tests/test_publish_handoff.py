@@ -27,7 +27,13 @@ def test_published_music_and_handoff_use_frozen_sources(tmp_path):
                     [{"episodeId":eid,"chapter":"关门","ending":"抽屉回位","nextHook":"交接钥匙"}],shared_limits="柜台和道具位置承接",command_id="group")
     wb.mark_image(eid,episode["img"]["versionId"],"required",["S01"],requirement=dict(
         targetSegments=["G01"],reason="看清毛色和耳缘",fitness="limited",limitations="侧面仅作轮廓参考"))
-    env.review_segments(episode["prompts"],["G01","G02"],"requirements")
+    for stage in ("plan","prompts"):
+        art=env.art(eid,stage)
+        content=art["versions"][-1]["content"]
+        where,quote=("S01",content["shots"][0]["action"]) if stage=="plan" else ("G01","阿福推回抽屉")
+        content["decisionNotes"]=[dict(decision="D01",status="applied",where=where,quote=quote)]
+        vid,_=env.save_adopt(eid,stage,content,"acknowledge-keep-"+stage)
+    env.review_segments(vid,["G01","G02"],"requirements")
     delivery=wb.deliver(eid,"full","full-handoff")
     root=Path(delivery["path"])
     data=json.loads((root/"episode.json").read_bytes())
@@ -45,6 +51,7 @@ def test_published_music_and_handoff_use_frozen_sources(tmp_path):
 
     earlier_plan=episode["plan"]
     earlier_plan["shots"][0]["duration_ms"]=9000
+    earlier_plan["decisionNotes"]=[dict(decision="D02",status="applied",where="S01",quote=earlier_plan["shots"][0]["action"])]
     env.save_adopt(eid,"plan",earlier_plan,"changed-clock")
     assert wb.compose_publish(eid,original)==settings
     assert any(p["stage"]=="publish" and "时窗" in p["problem"] for p in wb.delivery_problems(eid)[0])

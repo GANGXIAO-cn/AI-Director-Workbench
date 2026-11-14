@@ -1,9 +1,11 @@
-import { useRef, useState } from "react";
+import { ChatMarkdown } from "./ChatMarkdown";
+import { ModelReply } from "./ModelReply";
+import { useEffect, useRef, useState } from "react";
 import { cmd, commandId, upload } from "./api";
 import { useProjectRoute } from "./projectNavigation";
 import { ErrorLine, useAction, usePoll, useQuery } from "./ui";
 
-type Turn = {id:string;text:string;reply:string|null;status:string;reason:string|null;provider:string;attempt:string;
+type Turn = {id:string;text:string;reply:string|null;status:string;reason:string|null;provider:string;model?:string;effort?:string;attempt:string;
   methods:string[];sources:{role:string;name:string;sha256:string}[]};
 type Transcript = {threads:{id:string;title:string}[];turns:Turn[]};
 type Method = {id:string;title:string;versions:{id:string;number:number}[]};
@@ -39,12 +41,15 @@ export function FreeChat({pid,thread}:{pid:string;thread?:string}) {
   const executor = provider || last?.provider || (options.data?.providers.includes("codex")?"codex":options.data?.providers[0]) || "";
   const pending = last?.status==="queued" || last?.status==="running";
   const canvases = options.data?.canvases ?? [];
+  const stream=useRef<HTMLDivElement>(null),follow=useRef(true);
+  useEffect(()=>{const el=stream.current;if(el&&follow.current)el.scrollTop=el.scrollHeight;},[last?.id,last?.status,last?.reply]);
   usePoll(pending,transcript.reload,750);
   function choose(method:Method,version:string) {
     const next = selected.filter(v=>!method.versions.some(r=>r.id===v));
     setChosen(version?[...next,version]:next);
   }
   async function send() {
+    follow.current=true;
     const chosenCanvas = canvases.find(c=>c.id===canvas);
     const payload = {project_id:pid,thread_id:thread,previous:last?.id,text,provider:executor,
       images,methods:selected,canvas:chosenCanvas?.id,canvas_revision:chosenCanvas?.revision};
@@ -67,12 +72,9 @@ export function FreeChat({pid,thread}:{pid:string;thread?:string}) {
   async function control(name:string,t:Turn) {
     try {await cmd(name,{project_id:pid,turn_id:t.id,expected_attempt:t.attempt});} finally {await transcript.reload();}
   }
-  return <section><div className="spread"><h1>自由对话</h1><div className="row">
-    <select aria-label="历史自由对话" value={thread||""} onChange={e=>route.go("#/p/"+pid+"/free"+(e.target.value?"/"+e.target.value:""))}>
-      <option value="">新对话</option>{transcript.data?.threads.map(t=><option key={t.id} value={t.id}>{t.title}</option>)}</select>
-    {thread && <a className="btn" href={"#/p/"+pid+"/free"}>新对话</a>}</div></div>
-    {turns.map(t=><article className="card" key={t.id}><b>我的提问</b><p style={{whiteSpace:"pre-wrap"}}>{t.text}</p>
-      <b>{t.provider} · {states[t.status]}</b>{t.reply && <p style={{whiteSpace:"pre-wrap"}}>{t.reply}</p>}{t.reason && <p>{t.reason}</p>}
+  return <section className="free-chat"><div className="spread"><h1>自由对话</h1><span className="muted small">项目对话</span></div>
+    <div className="free-stream" ref={stream} onScroll={e=>{const el=e.currentTarget;follow.current=el.scrollHeight-el.scrollTop-el.clientHeight<60;}} role="log" aria-label="自由对话消息">{turns.map(t=><article className="free-turn" key={t.id}><div className="msg user chat-prose">{t.text}</div><div className="free-reply" data-chat-kind={["failed","waiting_quota","stopped"].includes(t.status)?"action":["queued","running"].includes(t.status)?"progress":undefined}>
+      <ModelReply provider={t.provider} model={t.model} effort={t.effort}><span className="tiny muted">{states[t.status]}</span>{t.reply && <ChatMarkdown text={t.reply}/>}{t.reason && <p>{t.reason}</p>}
       {t.sources.length>0 && <details><summary>本次引用（{t.sources.length}）</summary>{t.sources.map(s=><p key={s.role+s.name+s.sha256}>{s.name} · <code>{s.sha256}</code></p>)}</details>}
       {t===last && (pending || ["failed","waiting_quota","stopped"].includes(t.status)) &&
         <button className="btn" disabled={action.busy} onClick={()=>action.run(()=>control(pending?"stop_free_chat":"retry_free_chat",t))}>{pending?"停止本次请求":"按原输入重试"}</button>}
@@ -82,8 +84,11 @@ export function FreeChat({pid,thread}:{pid:string;thread?:string}) {
           try {await cmd("add_reply_to_canvas",{project_id:pid,turn_id:t.id,episode_id:target,expected_revision:canvases.find(c=>c.id===target)?.revision});
             setNotice("回复已写入目标画布的文本节点");} finally {await options.reload();}
         })}>添加文本节点</button>{target && <a className="btn" href={"#/e/"+target+"/assets?tab=canvas"}>打开目标画布</a>}</details>}
-    </article>)}
-    <div className="card"><label>本次执行器 <select value={executor} onChange={e=>setProvider(e.target.value)}>{options.data?.providers.map(p=><option key={p}>{p}</option>)}</select></label>
+    </ModelReply></div></article>)}</div>
+    <div className="free-composer"><details className="free-tools"><summary>更多工具</summary><div className="row">
+    <select aria-label="历史自由对话" value={thread||""} onChange={e=>route.go("#/p/"+pid+"/free"+(e.target.value?"/"+e.target.value:""))}>
+      <option value="">新对话</option>{transcript.data?.threads.map(t=><option key={t.id} value={t.id}>{t.title}</option>)}</select>
+    {thread && <a className="btn" href={"#/p/"+pid+"/free"}>新对话</a>}</div><label>本次执行器 <select value={executor} onChange={e=>setProvider(e.target.value)}>{options.data?.providers.map(p=><option key={p}>{p}</option>)}</select></label>
       <details><summary>创作技能（{selected.length}）</summary>{methods.map(m=><label key={m.id}>{m.title} <select aria-label={m.title+"对话版本"}
         value={selected.find(v=>m.versions.some(r=>r.id===v))||""} onChange={e=>choose(m,e.target.value)}><option value="">不使用</option>
         {m.versions.map(v=><option key={v.id} value={v.id}>R{v.number}</option>)}</select></label>)}
@@ -97,7 +102,7 @@ export function FreeChat({pid,thread}:{pid:string;thread?:string}) {
         const image=available.find(a=>a.id===id);return image ? image.name+" v"+image.version_no : "";
       }).join("、")}</p>}
       {canvases.length>0 && <label>引用画布 <select value={canvas} onChange={e=>setCanvas(e.target.value)}><option value="">不附画布</option>{canvases.map(c=><option key={c.id} value={c.id}>{c.display_code} · R{c.revision}</option>)}</select></label>}
-      <textarea disabled={action.busy} aria-label="对话内容" placeholder="聊一个灵感，或贴一段需要修改的文字" value={text} onChange={e=>{setText(e.target.value);sessionStorage.setItem(draftKey,e.target.value);}}/>
+      </details><textarea disabled={action.busy} aria-label="对话内容" placeholder="聊一个灵感，或贴一段需要修改的文字" value={text} onChange={e=>{setText(e.target.value);sessionStorage.setItem(draftKey,e.target.value);}}/>
       <button className="btn primary" disabled={!text.trim()||!executor||pending||action.busy||!transcript.data||!options.data} onClick={()=>action.run(async()=>{try {await send();} catch(e){await Promise.all([transcript.reload(),options.reload()]);throw e;}})}>发送</button>
     </div>{notice && <p role="status">{notice}</p>}<ErrorLine error={action.error}/>{[transcript.error,library.error,options.error].filter(Boolean).map(e=><p className="error" key={e}>{e}</p>)}
   </section>;

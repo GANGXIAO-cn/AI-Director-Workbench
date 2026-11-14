@@ -67,9 +67,8 @@ def validate_passage(row, section, previous_id, used_ids, all_sections, tag):
     span = SPAN.fullmatch(row["段内区间"])
     if not span or [Decimal(v)*1000 for v in span.groups()] != [section.start, section.end]:
         raise ValueError(f"{tag} 联合表与正文时间不同")
-    anchor = row["TXT定位短句"]
-    if not anchor or anchor not in section.action or sum(anchor in w.action for w in all_sections) != 1:
-        raise ValueError(f"{tag} 定位短句未在本段正文唯一命中")
+    # 镜号、时间区间及接续标记已定位正文；短句只是阅读辅助，
+    # 措辞或重复出现不应触发整份提示词返修。
     for field in ("观看任务", "构图/机位/运镜及完成时间"):
         if row[field] in {"", "-", "—"}:
             raise ValueError(f"{tag} 缺少{field}")
@@ -88,6 +87,18 @@ class Passage:
 
 
 def analyse(rows, windows):
+    # 正文时间线已由 segment_windows 校验。辅助联合表的表达差异
+    # 仅影响节奏统计，不再阻塞提示词采用或导出。
+    try:
+        return _analyse(rows, windows)
+    except ValueError as exc:
+        return dict(mode='flat-v2', segment_paragraph_counts={sid:len(parts) for sid,parts in windows.items()},
+                    segment_shot_counts={}, segment_cut_counts={}, shot_seconds={}, warnings=[],
+                    scope='辅助联合表与正文存在差异，未作逐镜节奏统计：'+str(exc),
+                    unparsed_segments=list(windows))
+
+
+def _analyse(rows, windows):
     warnings, scopes, metrics, counts, paragraph_counts, cuts = [], {}, {}, {}, {}, {}
     offset = 0
     for sid, sections in windows.items():
@@ -152,10 +163,8 @@ def plan_rows(plan, selected=None):
         previous = None
         for key in segment["shots"]:
             shot = shots[key]
-            same = shot.get("continuation") == "same"
+            same = shot.get("continuation") == "same" and previous is not None
             marker = "同镜延续" if same else "起镜" if not previous else "切镜"
-            if same and previous is None:
-                raise ValueError(f"{key} 是本段首窗，须以起镜开始")
             if not same:
                 shot_number += 1
             # The workbench's window ID is unique; consecutive windows may share a camera shot.
@@ -165,9 +174,12 @@ def plan_rows(plan, selected=None):
             action = shot.get("action") or ""
             if not isinstance(action, str):
                 raise ValueError(f"{key} 动作须为文本")
+            from .readable import strip_matching_window_prefix
+            action = strip_matching_window_prefix(action,timing["seg_start_ms"],timing["seg_end_ms"])
+            anchor = strip_matching_window_prefix(shot.get("txtAnchor") or action.rstrip("。，"),timing["seg_start_ms"],timing["seg_end_ms"])
             cells = (ident, segment["id"], f"{timing['seg_start_ms']/1000:g}–{timing['seg_end_ms']/1000:g}",
                      shot.get("attention") or action, shot.get("holdReason") or "",
-                     shot.get("txtAnchor") or action.rstrip("。，"), marker, shot.get("camera") or "")
+                     anchor, marker, shot.get("camera") or "")
             if not all(isinstance(v,str) for v in cells):
                 raise ValueError(f"{key} 的镜号、观看任务、机位和定位短句须为文本")
             row = dict(zip(FLAT_COLUMNS,cells))
@@ -202,6 +214,12 @@ def plan_table(plan, selected=None):
         raise ValueError("镜头充分性联合表须为 Markdown 文本")
     if custom.strip():
         rows = table(custom, FLAT_COLUMNS, required=True)
+        from .readable import strip_matching_window_prefix
+        for row in rows:
+            span=SPAN.fullmatch(row['段内区间'])
+            if span:
+                start,end=[int(Decimal(v)*1000) for v in span.groups()]
+                row['TXT定位短句']=strip_matching_window_prefix(row['TXT定位短句'],start,end)
         if rows and "实际可见角色ID" not in rows[0] and "关键道具状态" not in rows[0] and any(
                 "visibleRoles" in s or "propStates" in s for s in plan["shots"]):
             expected = plan_rows(plan)

@@ -152,6 +152,7 @@
         "pass": {
           "enum": [
             "story",
+            "plan",
             "cold_read",
             "comparison"
           ]
@@ -184,9 +185,12 @@
                   "clarity",
                   "setting",
                   "format",
+                  "source",
+                  "decision",
                   "other"
                 ]
               },
+              "decisionId": {"type": ["string", "null"]},
               "settingId": {
                 "anyOf": [
                   {

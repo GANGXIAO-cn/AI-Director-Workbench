@@ -22,10 +22,12 @@ async function main() {
     const button = name=>page.getByRole("button",{name,exact:true});
     await page.goto(base+"/#/e/"+eid+"/story");
     await button("修改本阶段").click();
+    await page.goto(base+"/#/e/"+eid+"/story?v="+original);
     await button("✎ 编辑").click();
     await page.locator(".center textarea").first().fill("夜班收银台的伞丢了。阿福翻查记录，发现伞留在门后。故事结束。");
     await button("保存为手稿").click();
-    const option=page.getByText("按本集分工并排出稿",{exact:true});
+    await button("关闭预览").click();
+    const option=page.getByRole("button",{name:"并排出稿",exact:true});
     await option.click();
     await button("提交两份候选稿").waitFor();
     const source=new URLSearchParams(new URL(page.url()).hash.split("?")[1]).get("compare");
@@ -51,7 +53,7 @@ async function main() {
     assert.equal(manuscript.origin,"combined");
     assert.equal(manuscript.content.synopsis,"阿福循着湿脚印找回门后的雨伞。故事结束。");
     assert.equal(manuscript.content.handoff,"用门缝的光交代伞的位置。");
-    assert.ok(!manuscript.gate.adoptable && combined.adopted_version_id===original);
+    assert.ok(manuscript.gate.adoptable && !manuscript.gate.review && combined.adopted_version_id===original);
     await page.goto(base+"/#/e/"+eid+"/story?v="+source+"&compare="+source);
     await panel.getByRole("button",{name:"打开A稿"}).waitFor();
     await page.locator(".center").evaluate(el=>{el.scrollTop=0;});
@@ -63,14 +65,24 @@ async function main() {
     await panel.getByRole("combobox",{name:"比较轮次"}).selectOption("1");
     await panel.getByRole("button",{name:"打开A稿"}).click();
     await page.waitForURL(url=>url.hash.endsWith("?v="+slots[0].version_id));
-    await page.waitForFunction(()=>document.querySelector('.desktop-page:not([hidden]) select[aria-label="创作执行器"]')?.value==="claude");
-    const heading=page.locator(".assistant .head");
-    await heading.getByText(/创作 Claude Code/).first().waitFor();
+    await page.waitForFunction(()=>document.querySelector(".composer .model-trigger")?.title.includes("fixture-author"));
+    await button("关闭预览").click();
+    const settings=page.locator(".desktop-page:not([hidden]) .composer-model").filter({has:page.locator("small").getByText("创作",{exact:true})});
+    assert.equal(await settings.locator(".model-trigger").getAttribute("aria-expanded"),"false");
+    await settings.locator(".model-trigger").click();
+    const creator=settings.getByLabel("创作执行器");
+    assert.equal(await creator.inputValue(),"codex");
+    const chosen="claude";
+    const [save]=await Promise.all([page.waitForResponse(r=>r.url().endsWith("/cmd/save_stage_executor")),creator.selectOption(chosen)]);
+    assert.equal(save.status(),200,await save.text());
+    await page.reload();
+    await settings.locator(".model-trigger").click();
+    assert.equal(await creator.inputValue(),chosen);
     assert.deepEqual(errors,[]);
     fs.writeFileSync(path.join(output,"故事并排出稿验收.json"),JSON.stringify({scope:"隔离服务与模拟执行器",
       sameSource:source,creators:slots.map(s=>({side:s.side,provider:s.provider,model:s.requested_model,effort:s.requested_effort,version:s.version_id})),
       commonInputFiles:manifests[0].inputs.map(({role,name,sha256})=>({role,name,sha256})),oldAdoptionPreserved:true,
-      combinedNeedsReview:true,priorRoundsAccessible:true,runtimeErrors:errors},null,2)+"\n");
+      combinedAdoptable:manuscript.gate.adoptable,priorRoundsAccessible:true,runtimeErrors:errors},null,2)+"\n");
     console.log("PASS story comparison from assistant, equal inputs, two independent drafts, field combination, review gate and history");
   } finally {await browser.close();}
 }

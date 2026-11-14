@@ -3,6 +3,7 @@
 Paid-batch guard: a batch is authorised against a summary hash; each request is persisted before it
 is sent; a request whose outcome is unknown is never re-sent automatically.
 """
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 import json
@@ -52,6 +53,8 @@ def image_size(data: bytes):
 
 
 # ---------------------------------------------------------------- providers
+INTERRUPTED_IMAGE = '服务重启或连接中断，未取得图片，可重出'
+
 @dataclass
 class ImageOutcome:
     state: str                 # succeeded | unknown | failed
@@ -97,6 +100,7 @@ class FakeImageProvider:
 
 
 class OpenAIImageMCPProvider:
+    remote_status = True
     """Local stdio MCP server ~/Documents/自媒体 2/tools/openai-image-mcp (generate_image / edit_image /
     image_job_status). Each call is paid. Not exercised by tests; status is 'pending_verification' in-app."""
 
@@ -377,7 +381,7 @@ class ImagesMixin:
 
     def upload_library_image(self, project_id, filename, data, category, usage, previous_entry_id=None, command_id=None):
         if not isinstance(usage,str) or not usage.strip():
-            raise Rejected("请填写图片用途")
+            usage = "导演上传"
         payload = dict(project=project_id, name=filename, digest=sha256_bytes(data), category=category,
                        usage=usage, previous=previous_entry_id)
         with transaction(self.db_path) as db:
@@ -415,9 +419,9 @@ class ImagesMixin:
 
     def library(self, project_id, q="", status=None, kind=None):
         with connect(self.db_path) as db:
-            rows = db.execute("SELECT l.*, a.name, a.kind, a.category, av.sha256, av.version_no, av.width, av.height "
+            rows = db.execute("SELECT l.*, e.display_code AS sourceEpisodeCode, a.name, a.kind, a.category, av.sha256, av.version_no, av.width, av.height "
                               "FROM library_entry l JOIN asset_version av ON av.id=l.asset_version_id "
-                              "JOIN asset a ON a.id=av.asset_id WHERE l.project_id=? ORDER BY l.created_at", (project_id,))
+                              "JOIN asset a ON a.id=av.asset_id LEFT JOIN episode e ON e.id=l.source_episode_id WHERE l.project_id=? ORDER BY l.created_at", (project_id,))
             out = [dict(r) for r in rows if (not q or q in r["name"] or q in r["usage"]) and (not status or r["status"] == status)
                    and (not kind or r["category"] == kind)]
             for e in out:
@@ -429,31 +433,49 @@ class ImagesMixin:
     def copy_to_episode(self, entry_id, episode_id, command_id=None):
         with transaction(self.db_path) as db:
             def run():
-                e = row(db, "SELECT * FROM library_entry WHERE id=?", entry_id)
-                if e["status"] not in ("approved", "limited"):
-                    raise Rejected("只有已核准的复用条目可以复制到本集")
-                self._episode_in(db, episode_id, e["project_id"])
-                v = self.asset_version(e["asset_version_id"], db)
-                data = self.store.read_blob(v["sha256"])
-                res = self.register_asset(e["project_id"], v["name"], data, v["category"], v["kind"], episode_id, v["roles"],
-                                          origin="library_copy", source_version_id=v["id"], note=f"复用 {entry_id}", db=db)
-                db.execute("UPDATE asset_version SET library_entry_id=? WHERE id=?", (entry_id, res["versionId"]))
-                return dict(res, limits=e["limits"])
+                return self._copy_library_image(db, entry_id, episode_id)
             return self._command(db, command_id, "lib_copy", dict(e=entry_id, ep=episode_id), run)
+
+    def _copy_library_image(self, db, entry_id, episode_id):
+        e = row(db, "SELECT * FROM library_entry WHERE id=?", entry_id)
+        if e["status"] not in ("approved", "limited"):
+            raise Rejected("只有已核准的复用条目可以复制到本集")
+        self._episode_in(db, episode_id, e["project_id"])
+        v = self.asset_version(e["asset_version_id"], db)
+        data = self.store.read_blob(v["sha256"])
+        res = self.register_asset(e["project_id"], v["name"], data, v["category"], v["kind"], episode_id, v["roles"],
+                                  origin="library_copy", source_version_id=v["id"], note=f"复用 {entry_id}", db=db)
+        db.execute("UPDATE asset_version SET library_entry_id=? WHERE id=?", (entry_id, res["versionId"]))
+        return dict(res, limits=e["limits"])
 
     # ============================================================ image batches
     def image_providers(self):
-        return {name: dict(verified=p.verified, capabilities=p.capabilities, priceCents=p.price_cents, currency=p.currency)
+        return {name: dict(verified=p.verified, capabilities=p.capabilities, priceCents=p.price_cents, currency=p.currency,
+                           **({"settings":p.settings()} if hasattr(p, "save_settings") else {}))
                 for name, p in self.image_providers_map.items()}
+
+    def save_image_provider_settings(self, provider, max_concurrency):
+        channel = self.image_providers_map.get(provider)
+        if channel is None or not hasattr(channel, "save_settings"):
+            raise Rejected("此图像通道不支持并发设置")
+        return channel.save_settings(max_concurrency)
 
     def create_batch(self, episode_id, provider, operation, items, size, model=None, quality=None, budget_cents=None,
                      command_id=None):
         """items: [{prompt, inputs:[assetVersionId], target:{name, category, assetId?}, segments:[..], cells:[..]}]"""
+        if any("needKey" in item.get("target", {}) for item in items):
+            raise Rejected("请通过备图工作单创建素材批次")
+        with transaction(self.db_path) as db:
+            return self._create_image_batch(db, episode_id, provider, operation, items, size, model, quality, budget_cents, command_id)
+
+    def _create_image_batch(self, db, episode_id, provider, operation, items, size, model, quality, budget_cents, command_id):
         if provider not in self.image_providers_map:
             raise Rejected("未配置的图像通道")
         prov = self.image_providers_map[provider]
-        if budget_cents is not None:
-            self._check_batch_budget(budget_cents)
+        models = prov.capabilities.get("models")
+        if models and model not in models:
+            raise Rejected("请选择本图像通道支持的型号")
+        budget_cents = None  # Current production policy does not gate generation on cost.
         if operation not in prov.capabilities["operations"]:
             raise Rejected(f"{provider} 不支持 {operation}")
         if size not in prov.capabilities["sizes"]:
@@ -465,137 +487,155 @@ class ImagesMixin:
             raise Rejected("批次至少需要一张图，每张须有绘图要求")
         if any(len(it.get("inputs", [])) > 16 or (operation == "edit" and not it.get("inputs")) for it in items):
             raise Rejected("带图请求须提供 1–16 张有序输入")
-        with transaction(self.db_path) as db:
-            ep = self._episode_in(db, episode_id)
-            locks = self._space_locks(db, episode_id)
-            inputs = []
-            scene_inputs = []
-            library_sources = {}
-            prepared_items = []
+        ep = self._episode_in(db, episode_id)
+        locks = self._space_locks(db, episode_id)
+        inputs = []
+        scene_inputs = []
+        library_sources = {}
+        prepared_items = []
+        for item in items:
+            aid = item.get("target", {}).get("assetId")
+            if aid:
+                target = row(db, "SELECT project_id,episode_id,kind FROM asset WHERE id=?", aid, missing="目标素材不存在")
+                if target["project_id"] != ep["project_id"] or target["episode_id"] not in (None, episode_id) or target["kind"] != "image":
+                    raise Rejected("本批次只能为本项目、本集可用的图像生成新版本")
+            ordered = [self.asset_version(i, db) for i in item.get("inputs", [])]
+            if any(v["kind"] != "image" or v["project_id"] != ep["project_id"]
+                   or v["episode_id"] not in (None, episode_id) for v in ordered):
+                raise Rejected("出图输入必须是本项目、本集可用的图像版本")
+            entry_id = item.get("libraryEntryId")
+            if entry_id:
+                entry = row(db, "SELECT * FROM library_entry WHERE project_id=? AND id=?", ep["project_id"], entry_id)
+                base = ordered[0] if ordered else {}
+                if operation != "edit" or entry["status"] not in ("approved","limited") or not (
+                        base.get("id") == entry["asset_version_id"] or
+                        base.get("library_entry_id") == entry_id and base.get("source_version_id") == entry["asset_version_id"]):
+                    raise Rejected("请重新选择已核准的资产库底图版本")
+                original = self.asset_version(entry["asset_version_id"], db)
+                library_sources[entry_id] = dict(versionId=original["id"],name=original["name"],
+                                                 versionNo=original["version_no"],sha256=original["sha256"],limits=entry["limits"])
+                if entry["limits"]:
+                    item = dict(item,prompt=item["prompt"]+"\n底图使用条件："+entry["limits"])
+            prepared_items.append(item)
+            inputs.append([v["sha256"] for v in ordered])
+            scoped = item.get("segments", [])
+            if not isinstance(scoped, list) or any(not isinstance(seg,str) for seg in scoped):
+                raise Rejected("每张图的适用段须为段号列表")
+            relevant = [lock for lock in locks if set(lock["segments"]).intersection(scoped)]
+            blocked = [lock for lock in relevant if lock["status"] == "pending"]
+            if blocked:
+                names = [seg for seg in scoped if any(seg in lock["segments"] for lock in blocked)]
+                raise Rejected("依赖未确认空间锁定的段不能出图：" + "、".join(names),
+                               detail={seg:[lock["label"] for lock in blocked if seg in lock["segments"]] for seg in names})
+            scene_inputs.append([dict(lock,positions=[n for n,h in enumerate(inputs[-1],1) if h==lock["sha256"]])
+                                 for lock in relevant])
+        spec = dict(items=prepared_items, inputs=inputs, model=model, quality=quality)
+        if library_sources:
+            spec["librarySources"] = library_sources
+        if any(scene_inputs):
+            spec["sceneLocks"] = scene_inputs
+        palettes = self.episode_palettes(episode_id,"assets")["cards"]
+        if palettes:
+            spec["palettes"] = [stage_card(card, "assets") for card in palettes]
+            reference = "\n".join(card["visual"] + "\n" + card["image"] for card in palettes)
+            spec["items"] = [dict(item, prompt=item["prompt"] + "\n" + SCOPE + "\n" + reference) for item in spec["items"]]
+        from .enhancements import entries as method_entries
+        config = self.step_config(episode_id, "assets")
+        if config.get("references"):
+            spec["citations"] = [{k: v for k, v in ref.items() if k != "metadata"}
+                                 for ref in config["references"]]
+            excerpts = "\n\n".join(f"《{ref['title']}》 · {ref['reason']}\n{ref['text']}"
+                                   for ref in spec["citations"])
+            spec["items"] = [dict(item, prompt=item["prompt"] + "\n本批选用的知识库段落\n" + excerpts)
+                             for item in spec["items"]]
+        definition = config.get("form")
+        if definition:
+            notes = [f"{label}：{config[key]}" for key,label in definition["fields"].items() if config.get(key)]
+            if notes:
+                spec["stepRequirements"] = dict(revision=config["revision"],form=definition,notes=notes)
+                guidance = "\n".join(notes)
+                spec["items"] = [dict(item,prompt=item["prompt"]+"\n本批画面要求\n"+guidance) for item in spec["items"]]
+        methods = method_entries(config.get("enhancements", []))
+        if methods:
+            spec["enhancements"] = [entry["methodSource"] for entry in methods]
+            guidance = "\n".join(entry["name"] + "\n" + entry["text"] for entry in methods)
+            spec["items"] = [dict(item, prompt=item["prompt"] + "\n本次选用的美术参考方法，服从本项目设定和当前画面要求。\n" + guidance)
+                             for item in spec["items"]]
+        input_hash = sha256_bytes(canonical(dict(spec, operation=operation, size=size)))
+        spec["currency"] = prov.currency
+        if getattr(prov, "billing_mode", None) == "subscription_usage":
+            spec["billingMode"] = "subscription_usage"
+        estimate = prov.price_cents * len(items) if prov.price_cents is not None else None
+        summary = dict(provider=provider, currency=prov.currency, verified=prov.verified, model=model, operation=operation, count=len(items),
+                       size=size, inputs=inputs, quality=quality, inputHash=input_hash, budget_cents=budget_cents, estimate_cents=estimate)
+        def run():
+            # Keep annotations as of authorisation preparation, even if the source is edited before landing.
+            bindings = {}
             for item in items:
-                aid = item.get("target", {}).get("assetId")
-                if aid:
-                    target = row(db, "SELECT project_id,episode_id,kind FROM asset WHERE id=?", aid, missing="目标素材不存在")
-                    if target["project_id"] != ep["project_id"] or target["episode_id"] not in (None, episode_id) or target["kind"] != "image":
-                        raise Rejected("本批次只能为本项目、本集可用的图像生成新版本")
-                ordered = [self.asset_version(i, db) for i in item.get("inputs", [])]
-                if any(v["kind"] != "image" or v["project_id"] != ep["project_id"]
-                       or v["episode_id"] not in (None, episode_id) for v in ordered):
-                    raise Rejected("出图输入必须是本项目、本集可用的图像版本")
-                entry_id = item.get("libraryEntryId")
-                if entry_id:
-                    entry = row(db, "SELECT * FROM library_entry WHERE project_id=? AND id=?", ep["project_id"], entry_id)
-                    base = ordered[0] if ordered else {}
-                    if operation != "edit" or entry["status"] not in ("approved","limited") or not (
-                            base.get("id") == entry["asset_version_id"] or
-                            base.get("library_entry_id") == entry_id and base.get("source_version_id") == entry["asset_version_id"]):
-                        raise Rejected("请重新选择已核准的资产库底图版本")
-                    original = self.asset_version(entry["asset_version_id"], db)
-                    library_sources[entry_id] = dict(versionId=original["id"],name=original["name"],
-                                                     versionNo=original["version_no"],sha256=original["sha256"],limits=entry["limits"])
-                    if entry["limits"]:
-                        item = dict(item,prompt=item["prompt"]+"\n底图使用条件："+entry["limits"])
-                prepared_items.append(item)
-                inputs.append([v["sha256"] for v in ordered])
-                scoped = item.get("segments", [])
-                if not isinstance(scoped, list) or any(not isinstance(seg,str) for seg in scoped):
-                    raise Rejected("每张图的适用段须为段号列表")
-                relevant = [lock for lock in locks if set(lock["segments"]).intersection(scoped)]
-                blocked = [lock for lock in relevant if lock["status"] == "pending"]
-                if blocked:
-                    names = [seg for seg in scoped if any(seg in lock["segments"] for lock in blocked)]
-                    raise Rejected("依赖未确认空间锁定的段不能出图：" + "、".join(names),
-                                   detail={seg:[lock["label"] for lock in blocked if seg in lock["segments"]] for seg in names})
-                scene_inputs.append([dict(lock,positions=[n for n,h in enumerate(inputs[-1],1) if h==lock["sha256"]])
-                                     for lock in relevant])
-            spec = dict(items=prepared_items, inputs=inputs, model=model, quality=quality)
-            if library_sources:
-                spec["librarySources"] = library_sources
-            if any(scene_inputs):
-                spec["sceneLocks"] = scene_inputs
-            palettes = self.episode_palettes(episode_id,"assets")["cards"]
-            if palettes:
-                spec["palettes"] = [stage_card(card, "assets") for card in palettes]
-                reference = "\n".join(card["visual"] + "\n" + card["image"] for card in palettes)
-                spec["items"] = [dict(item, prompt=item["prompt"] + "\n" + SCOPE + "\n" + reference) for item in spec["items"]]
-            from .enhancements import entries as method_entries
-            config = self.step_config(episode_id, "assets")
-            if config.get("references"):
-                spec["citations"] = [{k: v for k, v in ref.items() if k != "metadata"}
-                                     for ref in config["references"]]
-                excerpts = "\n\n".join(f"《{ref['title']}》 · {ref['reason']}\n{ref['text']}"
-                                       for ref in spec["citations"])
-                spec["items"] = [dict(item, prompt=item["prompt"] + "\n本批选用的知识库段落\n" + excerpts)
-                                 for item in spec["items"]]
-            definition = config.get("form")
-            if definition:
-                notes = [f"{label}：{config[key]}" for key,label in definition["fields"].items() if config.get(key)]
-                if notes:
-                    spec["stepRequirements"] = dict(revision=config["revision"],form=definition,notes=notes)
-                    guidance = "\n".join(notes)
-                    spec["items"] = [dict(item,prompt=item["prompt"]+"\n本批画面要求\n"+guidance) for item in spec["items"]]
-            methods = method_entries(config.get("enhancements", []))
-            if methods:
-                spec["enhancements"] = [entry["methodSource"] for entry in methods]
-                guidance = "\n".join(entry["name"] + "\n" + entry["text"] for entry in methods)
-                spec["items"] = [dict(item, prompt=item["prompt"] + "\n本次选用的美术参考方法，服从本项目设定和当前画面要求。\n" + guidance)
-                                 for item in spec["items"]]
-            input_hash = sha256_bytes(canonical(dict(spec, operation=operation, size=size)))
-            spec["currency"] = prov.currency
-            estimate = prov.price_cents * len(items) if prov.price_cents is not None else None
-            summary = dict(provider=provider, currency=prov.currency, verified=prov.verified, model=model, operation=operation, count=len(items),
-                           size=size, inputs=inputs, quality=quality, inputHash=input_hash, budget_cents=budget_cents, estimate_cents=estimate)
-            def run():
-                # Keep annotations as of authorisation preparation, even if the source is edited before landing.
-                bindings = {}
-                for item in items:
-                    if operation == "edit" and item.get("target", {}).get("grid") and item.get("inputs"):
-                        source = item["inputs"][0]
-                        records = [dict(r) for r in db.execute(
-                            "SELECT cell,plan_version_id,shot_id,offset_ms FROM grid_cell_binding "
-                            "WHERE asset_version_id=? AND plan_version_id IS NOT NULL ORDER BY cell", (source,))]
-                        if records:
-                            bindings[source] = records
-                if bindings:
-                    spec["gridBindings"] = bindings
-                # A cancelled, never-sent batch keeps its receipt. Tie its replacement to that receipt.
-                candidate_hash = input_hash
-                while True:
-                    existing = db.execute("SELECT id,state,spec FROM image_batch WHERE episode_id=? AND input_hash=? AND provider=?",
-                                          (episode_id, candidate_hash, provider)).fetchone()
-                    if not existing:
-                        break
-                    # A failed historical batch may be rebuilt after every outcome is resolved.
-                    historical_failure = existing["state"] == "failed" and not json.loads(existing["spec"]).get("currency")
-                    if existing["state"] != "cancelled" and not historical_failure:
-                        raise Conflict("相同输入的批次已存在，不重复提交", current=existing["id"])
-                    candidate_hash = sha256_bytes(canonical([input_hash, existing["id"]]))
-                receipt = dict(summary, inputHash=candidate_hash)
-                summary_hash = sha256_bytes(canonical(receipt))
-                bid = new_id()
-                db.execute("INSERT INTO image_batch VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                           (bid, episode_id, candidate_hash, provider, model, operation, size, len(items), dumps(spec),
-                            budget_cents, estimate, "estimated" if estimate is not None else "unknown", summary_hash, None,
-                            "awaiting_authorization", self.clock()))
-                for n, it in enumerate(items, 1):
-                    db.execute("INSERT INTO image_request(id,batch_id,ordinal,local_request_id,state) VALUES(?,?,?,?,?)",
-                               (new_id(), bid, n, f"adw-{bid[:8]}-{n:02d}", "pending"))
-                return dict(batchId=bid, summary=receipt, summaryHash=summary_hash)
-            return self._command(db, command_id, "batch", dict(e=episode_id, h=input_hash, p=provider, budget=budget_cents, currency=prov.currency), run)
-
-    @staticmethod
-    def _check_batch_budget(amount):
-        if type(amount) is not int or not 0 <= amount <= 2**53 - 1:
-            raise Rejected("预算须为有效的非负整数分")
+                if operation == "edit" and item.get("target", {}).get("grid") and item.get("inputs"):
+                    source = item["inputs"][0]
+                    records = [dict(r) for r in db.execute(
+                        "SELECT cell,plan_version_id,shot_id,offset_ms FROM grid_cell_binding "
+                        "WHERE asset_version_id=? AND plan_version_id IS NOT NULL ORDER BY cell", (source,))]
+                    if records:
+                        bindings[source] = records
+            if bindings:
+                spec["gridBindings"] = bindings
+            # A cancelled, never-sent batch keeps its receipt. Tie its replacement to that receipt.
+            candidate_hash = input_hash
+            while True:
+                existing = db.execute("SELECT id,state,spec FROM image_batch WHERE episode_id=? AND input_hash=? AND provider=?",
+                                      (episode_id, candidate_hash, provider)).fetchone()
+                if not existing:
+                    break
+                # A failed historical batch may be rebuilt after every outcome is resolved.
+                historical_failure = existing["state"] == "failed" and not json.loads(existing["spec"]).get("currency")
+                if existing["state"] != "cancelled" and not historical_failure:
+                    raise Conflict("相同输入的批次已存在，不重复提交", current=existing["id"])
+                candidate_hash = sha256_bytes(canonical([input_hash, existing["id"]]))
+            receipt = dict(summary, inputHash=candidate_hash)
+            summary_hash = sha256_bytes(canonical(receipt))
+            bid = new_id()
+            db.execute("INSERT INTO image_batch VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (bid, episode_id, candidate_hash, provider, model, operation, size, len(items), dumps(spec),
+                        budget_cents, estimate, "subscription_usage" if spec.get("billingMode") == "subscription_usage" else "estimated" if estimate is not None else "unknown", summary_hash, None,
+                        "awaiting_authorization", self.clock()))
+            for n, it in enumerate(items, 1):
+                db.execute("INSERT INTO image_request(id,batch_id,ordinal,local_request_id,state) VALUES(?,?,?,?,?)",
+                           (new_id(), bid, n, f"adw-{bid[:8]}-{n:02d}", "pending"))
+            return dict(batchId=bid, summary=receipt, summaryHash=summary_hash)
+        return self._command(db, command_id, "batch", dict(e=episode_id, h=input_hash, p=provider, budget=budget_cents, currency=prov.currency), run)
 
     def _batch_currency(self, batch):
-        currency = json.loads(batch["spec"]).get("currency")
         provider = self.image_providers_map.get(batch["provider"])
-        if not currency or not provider or currency != provider.currency:
-            raise Rejected("原批次未记录币种或通道币种已改变，请核对历史回执，为待发项目重新建立批次")
-        return currency
+        if not provider:
+            raise Rejected("图像通道不可用")
+        return provider.currency
 
-    def authorize_batch(self, batch_id, summary_hash, command_id, accept_unknown_cost=False, budget_cents=None):
+    def authorize_batches(self, episode_id, batches, command_id):
+        with transaction(self.db_path) as db:
+            def run():
+                self._episode_in(db, episode_id)
+                if not isinstance(batches, dict) or not batches:
+                    raise Rejected("请选择待批准的批次")
+                for batch_id, summary_hash in batches.items():
+                    batch = row(db, "SELECT * FROM image_batch WHERE id=? AND episode_id=?", batch_id, episode_id)
+                    if batch["summary_hash"] != summary_hash:
+                        raise Rejected("批次内容已变化，请刷新核对")
+                    if batch["state"] == "authorized":
+                        continue
+                    if batch["state"] != "awaiting_authorization":
+                        raise Rejected("批次状态已变化，请刷新核对")
+                    currency = self._batch_currency(batch)
+                    self._reserve_expert_budget(db, batch, None)
+                    auth = dict(summaryHash=summary_hash, currency=currency, budget_cents=None,
+                                costPolicy="not_gated", at=self.clock(), command=command_id)
+                    db.execute("UPDATE image_batch SET state='authorized',authorization=?,budget_cents=NULL WHERE id=?",
+                               (dumps(auth), batch_id))
+                return dict(batchIds=list(batches))
+            return self._command(db, command_id, "authorize_batches", [episode_id,batches], run)
+
+    def authorize_batch(self, batch_id, summary_hash, command_id, accept_unknown_cost=False, budget_cents=None, accept_usage=False):
         with transaction(self.db_path) as db:
             def run():
                 b = row(db, "SELECT * FROM image_batch WHERE id=?", batch_id)
@@ -603,26 +643,17 @@ class ImagesMixin:
                     raise Rejected("授权摘要与批次不符，请重新核对")
                 if b["state"] != "awaiting_authorization":
                     raise Rejected("批次不在待授权状态")
-                budget = budget_cents if budget_cents is not None else b["budget_cents"]
-                if budget is None:
-                    raise Rejected("付费确认须填写预算")
                 currency = self._batch_currency(b)
-                self._check_batch_budget(budget)
-                if type(accept_unknown_cost) is not bool:
-                    raise Rejected("费用未知的授权须明确勾选")
-                if b["estimate_cents"] is None and not accept_unknown_cost:
-                    raise Rejected("费用未知，须明确接受后才能提交")
-                if b["estimate_cents"] is not None and b["estimate_cents"] > budget:
-                    raise Rejected("估算超出预算：缩小批次或换配置")
-                if b["estimate_cents"] is None and budget == 0:
-                    raise Rejected("费用未知时须填写正数预算")
-                self._reserve_expert_budget(db, b, budget)
-                auth = dict(summaryHash=summary_hash, currency=currency, budget_cents=budget, acceptUnknownCost=accept_unknown_cost,
-                            at=self.clock(), command=command_id)
-                db.execute("UPDATE image_batch SET state='authorized', authorization=?, budget_cents=? WHERE id=?",
-                           (dumps(auth), budget, batch_id))
+                self._reserve_expert_budget(db, b, None)
+                auth = dict(summaryHash=summary_hash, currency=currency, budget_cents=None,
+                            costPolicy="not_gated", at=self.clock(), command=command_id)
+                db.execute("UPDATE image_batch SET state='authorized', authorization=?, budget_cents=NULL WHERE id=?",
+                           (dumps(auth), batch_id))
                 return dict(batchId=batch_id, state="authorized")
-            return self._command(db, command_id, "authorize", dict(b=batch_id, h=summary_hash, budget=budget_cents, unknown=accept_unknown_cost), run)
+            payload = dict(b=batch_id, h=summary_hash, budget=budget_cents, unknown=accept_unknown_cost)
+            if accept_usage:
+                payload["usage"] = accept_usage
+            return self._command(db, command_id, "authorize", payload, run)
 
     def cancel_batch(self, batch_id, command_id=None):
         with transaction(self.db_path) as db:
@@ -642,14 +673,28 @@ class ImagesMixin:
         if b["state"] not in ("authorized", "partial"):
             raise Rejected("批次未授权或已结束")
         currency = self._batch_currency(b)
-        if json.loads(b["authorization"] or "{}").get("currency") != currency:
-            raise Rejected("历史授权未确认通道币种，请重新核对待发项目")
+        if not b["authorization"]:
+            raise Rejected("批次尚未批准")
         return b
 
     def execute_batch(self, batch_id):
         """Send only requests that were never sent. Unknown / submitted ones wait for reconciliation."""
         b = self.execute_batch_precheck(batch_id)
         prov = self.image_providers_map[b["provider"]]
+        with connect(self.db_path) as db:
+            pending = db.execute("SELECT count(*) FROM image_request WHERE batch_id=? AND state='pending'", (batch_id,)).fetchone()[0]
+        workers = min(getattr(prov, "max_concurrency", 1), pending)
+        if workers > 1:
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="image-batch") as pool:
+                futures = [pool.submit(self._execute_image_batch_loop, b, prov) for _ in range(workers)]
+                for future in futures:
+                    future.result()
+        else:
+            self._execute_image_batch_loop(b, prov)
+        return self.batch_view(batch_id)
+
+    def _execute_image_batch_loop(self, b, prov):
+        batch_id = b["id"]
         spec = json.loads(b["spec"])
         while True:
             with transaction(self.db_path) as db:
@@ -677,7 +722,8 @@ class ImagesMixin:
             except Exception as exc:   # transport error after sending: outcome unknown, never re-sent
                 out = ImageOutcome("unknown", error=repr(exc)[:300])
             self._land(batch_id, req["id"], out, b, item)
-        return self.batch_view(batch_id)
+            if out.state == "unknown":
+                self.settle_unknown_requests([batch_id])
 
     def _original_ordinal(self, request):
         if not request["replaces_id"]:
@@ -713,6 +759,8 @@ class ImagesMixin:
                         db.executemany("INSERT INTO grid_cell_binding VALUES(?,?,?,?,?,1)",
                                        [(res["versionId"], c["cell"], c["plan_version_id"], c["shot_id"], c["offset_ms"])
                                         for c in bindings])
+                    if target.get("needKey"):
+                        self._land_asset_need(db, b["episode_id"], target["needKey"], res)
                     db.execute("UPDATE image_request SET state='succeeded', provider_request_id=?, asset_version_id=?, sha256=?, "
                                "ended_at=? WHERE id=?", (out.provider_request_id, res["versionId"], res["sha256"],
                                                          self.clock(), request_id))
@@ -781,8 +829,29 @@ class ImagesMixin:
                 db.execute("INSERT INTO image_request(id,batch_id,ordinal,local_request_id,state,replaces_id) "
                            "VALUES(?,?,?,?,?,?)", (nid, b["id"], n, f"adw-{b['id'][:8]}-{n:02d}", "pending", request_id))
                 db.execute("UPDATE image_batch SET state='partial' WHERE id=?", (b["id"],))
+                db.execute("INSERT INTO asset_need_request SELECT ?,need_id FROM asset_need_request WHERE request_id=?", (nid,request_id))
                 return dict(requestId=nid)
             return self._command(db, command_id, "resubmit", dict(r=request_id), run)
+
+    def settle_unknown_requests(self, batch_ids=None):
+        with connect(self.db_path) as db:
+            requests=[dict(r) for r in db.execute("SELECT * FROM image_request WHERE state='unknown'")
+                      if batch_ids is None or r['batch_id'] in batch_ids]
+        for req in requests:
+            # A portable copy has no authority over work still running in the source workbench.
+            if req.get('error')=='请核对原工作台的请求结果':continue
+            with connect(self.db_path) as db:
+                batch=dict(row(db,'SELECT * FROM image_batch WHERE id=?',req['batch_id']))
+            prov=self.image_providers_map.get(batch['provider'])
+            if prov is None:continue
+            try:out=prov.inspect(req['local_request_id'])
+            except Exception:out=None
+            if not out or out.state not in ('succeeded','failed'):
+                if getattr(prov,'remote_status',False):continue
+                out=ImageOutcome('failed',error=INTERRUPTED_IMAGE)
+            ordinal=self._original_ordinal(req)
+            item=json.loads(batch['spec'])['items'][ordinal-1]
+            self._land(batch['id'],req['id'],out,batch,item)
 
     def mark_interrupted_requests(self):
         """On restart: anything left 'submitted' becomes 'unknown' (待核对), never re-sent."""
@@ -799,7 +868,7 @@ class ImagesMixin:
             b = loads(row(db, "SELECT * FROM image_batch WHERE id=?", batch_id), "spec", "authorization")
             b["currency"] = b["spec"].get("currency")
             provider = self.image_providers_map.get(b["provider"])
-            b["billingCurrent"] = bool(provider and b["currency"] == provider.currency)
+            b["billingCurrent"] = bool(provider)
             b["requests"] = [dict(r) for r in db.execute("SELECT r.*, EXISTS (SELECT 1 FROM image_request next WHERE next.replaces_id=r.id) AS replaced "
                                                          "FROM image_request r WHERE r.batch_id=? ORDER BY r.ordinal",(batch_id,))]
             ordinals = {}
@@ -856,11 +925,28 @@ class ImagesMixin:
                 if enabled:
                     db.execute("INSERT OR IGNORE INTO image_choice VALUES(?,?,?,?,?,?)",
                                (new_id(), episode_id, version_id, mark, dumps(list(shot_ids)), self.clock()))
+                    if shot_ids:
+                        db.execute("UPDATE image_choice SET shot_ids=? WHERE episode_id=? AND asset_version_id=? AND mark=?",
+                                   (dumps(list(shot_ids)), episode_id, version_id, mark))
+                    if shot_ids and mark == 'required' and requirement is None:
+                        previous = db.execute("SELECT d.choice_id,d.details FROM required_image_details d JOIN image_choice c ON c.id=d.choice_id WHERE c.episode_id=? AND c.asset_version_id=? AND c.mark='required'", (episode_id,version_id)).fetchone()
+                        if previous:
+                            body = json.loads(previous['details'])
+                            body.pop('autoBindings', None)
+                            body.pop('bindingBase', None)
+                            body['selectedBy'] = 'user'
+                            db.execute("UPDATE required_image_details SET details=? WHERE choice_id=?", (dumps(body),previous['choice_id']))
                     if requirement is not None:
                         details = imagechoices.validate_request(requirement, self._adopted_content(db, episode_id, "plan"))
                         details["sha256"] = asset["sha256"]
                         cid = row(db, "SELECT id FROM image_choice WHERE episode_id=? AND asset_version_id=? AND mark=?",
                                   episode_id, version_id, mark)["id"]
+                        prior = db.execute("SELECT details FROM required_image_details WHERE choice_id=?", (cid,)).fetchone()
+                        if prior:
+                            previous = json.loads(prior['details'])
+                            previous.pop('autoBindings', None)
+                            previous.pop('bindingBase', None)
+                            details = {**previous, **details}
                         db.execute("INSERT INTO required_image_details VALUES(?,?) ON CONFLICT(choice_id) "
                                    "DO UPDATE SET details=excluded.details", (cid, dumps(details)))
                 else:
@@ -871,8 +957,63 @@ class ImagesMixin:
                 payload["requirement"] = requirement
             return self._command(db, command_id, "mark", payload, run)
 
+    def bind_required_image(self, episode_id, version_id, shot_ids, plan_version_id,
+                            source, basis_hash, reason, expected, command_id=None, need_key=None):
+        """Update one AI contribution without replacing director or other uses."""
+        with transaction(self.db_path) as db:
+            art = row(db, "SELECT adopted_version_id FROM artifact WHERE episode_id=? AND stage='plan'", episode_id)
+            if art['adopted_version_id'] != plan_version_id:
+                raise Conflict('制作方案已变化，请按当前方案重新匹配素材用途')
+            if need_key is not None:
+                need = db.execute('SELECT adopted_version_id FROM asset_need WHERE episode_id=? AND need_key=? AND removed=0',(episode_id,need_key)).fetchone()
+                if not need or need[0]!=version_id:
+                    raise Conflict('素材采用图片已变化，请按当前图片重新匹配')
+            asset = self._episode_image(db, episode_id, version_id)
+            rules = imagechoices.requirements(db, episode_id)
+            current = next((r for r in rules if r['versionId'] == version_id), None)
+            if current != expected:
+                applied=(current or {}).get('autoBindings',{}).get(source,{})
+                if applied.get('basisHash')==basis_hash and applied.get('shotIds')==shot_ids and set(shot_ids)<=set(current['shotIds']):
+                    return dict(ok=True)
+                raise Conflict('素材用途已变化，请按当前绑定重新匹配')
+            plan = self._adopted_content(db, episode_id, 'plan')
+            shots = {s['id']: s['segment'] for s in plan['shots']}
+            if not shot_ids or len(set(shot_ids)) != len(shot_ids) or set(shot_ids) - shots.keys():
+                raise Rejected('素材用途须指定当前方案中不重复的镜头')
+            def apply():
+                old = current or dict(shotIds=[], targetSegments=[], selectedBy='agent',
+                                      reason=reason, fitness='not_tested', limitations='', sha256=asset['sha256'])
+                details = {k: v for k, v in old.items() if k not in ('versionId', 'name', 'shotIds')}
+                sources = dict(details.get('autoBindings', {}))
+                # Only remove the contribution this source actually introduced.
+                base = details.get('bindingBase')
+                if base is None:
+                    introduced = {s for value in sources.values() for s in value.get('addedShotIds', [])}
+                    derived_before = {s for value in sources.values() for s in value.get('addedSegments', [])}
+                    base = dict(shotIds=sorted(set(old['shotIds'])-introduced),targetSegments=sorted(set(old['targetSegments'])-derived_before))
+                details['bindingBase'] = base
+                kept = set(base['shotIds'])
+                targets = set(base['targetSegments'])
+                for key, value in sources.items():
+                    if key != source:
+                        kept.update(value.get('shotIds', []))
+                        targets.update(value.get('targetSegments', []))
+                added = set(shot_ids) - kept
+                derived = {shots[s] for s in shot_ids}
+                sources[source] = dict(basisHash=basis_hash, shotIds=list(shot_ids), targetSegments=sorted(derived),
+                                       addedShotIds=sorted(added), addedSegments=sorted(derived-targets), reason=reason, needKey=need_key)
+                details.update(autoBindings=sources, targetSegments=sorted(targets | derived))
+                choice = db.execute("SELECT id FROM image_choice WHERE episode_id=? AND asset_version_id=? AND mark='required'", (episode_id,version_id)).fetchone()
+                choice_id = choice['id'] if choice else new_id()
+                db.execute("INSERT INTO image_choice VALUES(?,?,?,?,?,?) ON CONFLICT(episode_id,asset_version_id,mark) DO UPDATE SET shot_ids=excluded.shot_ids",
+                           (choice_id,episode_id,version_id,'required',dumps(sorted(kept | set(shot_ids))),self.clock()))
+                db.execute("INSERT INTO required_image_details VALUES(?,?) ON CONFLICT(choice_id) DO UPDATE SET details=excluded.details", (choice_id,dumps(details)))
+                return dict(ok=True)
+            return self._command(db, command_id, 'bind_required_image',
+                                 [episode_id,version_id,shot_ids,plan_version_id,source,basis_hash,reason,expected,need_key], apply)
+
     def redraw_cells(self, episode_id, base_version_id, cells, reference_version_ids, prompt, provider, size,
-                     budget_cents=None, command_id=None, quality=None, segments=None):
+                     budget_cents=None, command_id=None, quality=None, segments=None, model=None):
         """修一格: edit A's cells using B as a drawing reference. The result is a new candidate of asset A."""
         base = self.asset_version(base_version_id)
         if not base["grid"]:
@@ -886,7 +1027,7 @@ class ImagesMixin:
                                 cellsMeta=base["cells"], roles=base["roles"]))
         if segments:
             item["segments"] = segments
-        return self.create_batch(episode_id, provider, "edit", [item], size, quality=quality, budget_cents=budget_cents, command_id=command_id)
+        return self.create_batch(episode_id, provider, "edit", [item], size, model=model, quality=quality, budget_cents=budget_cents, command_id=command_id)
 
     def compare_cells(self, new_version_id):
         v = self.asset_version(new_version_id)
@@ -943,21 +1084,24 @@ class ImagesMixin:
                 refs = self._image_references(db, v)
                 if expected is not None and expected != sha256_bytes(canonical([version_id, refs])):
                     raise Conflict("采用提示词的引用已变化，请重新核对镜头和 TXT")
-                db.execute("INSERT OR IGNORE INTO image_choice VALUES(?,?,?,?,?,?)",
-                           (new_id(), episode_id, version_id, "adopted", "[]", self.clock()))
-                source = f"asset:{version_id}"
-                pending = {r[0] for r in db.execute(
-                    "SELECT target_ref FROM impact WHERE episode_id=? AND source_ref=? "
-                    "AND kind='image_adopted' AND state='pending'", (episode_id, source))}
-                affected = dict.fromkeys("prompts:"+r["segment"] for r in refs if r["current"] != version_id)
-                items = [dict(target=t, reason=f"{v['name']} 采用新版 v{v['version_no']}，需改引用并复审")
-                         for t in affected if t not in pending]
-                return dict(versionId=version_id, recheck=self._record_impacts(
-                    db, v, items, "image_adopted", source))
+                return self._adopt_episode_image(db, episode_id, version_id, v, refs)
             payload = dict(e=episode_id, v=version_id)
             if expected is not None:
                 payload["expected"] = expected
             return self._command(db, command_id, "adopt_image", payload, run)
+
+    def _adopt_episode_image(self, db, episode_id, version_id, v, refs):
+        db.execute("INSERT OR IGNORE INTO image_choice VALUES(?,?,?,?,?,?)",
+                   (new_id(), episode_id, version_id, "adopted", "[]", self.clock()))
+        source = f"asset:{version_id}"
+        pending = {r[0] for r in db.execute(
+            "SELECT target_ref FROM impact WHERE episode_id=? AND source_ref=? "
+            "AND kind='image_adopted' AND state='pending'", (episode_id, source))}
+        affected = dict.fromkeys("prompts:"+r["segment"] for r in refs if r["current"] != version_id)
+        items = [dict(target=t, reason=f"{v['name']} 采用新版 v{v['version_no']}，需改引用并复审")
+                 for t in affected if t not in pending]
+        return dict(versionId=version_id, recheck=self._record_impacts(
+            db, v, items, "image_adopted", source))
 
     # ============================================================ generation canvas (J15)
     def canvas_view(self, episode_id):

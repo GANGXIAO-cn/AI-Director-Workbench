@@ -70,7 +70,7 @@ def receipt_reason(record):
             return REASONS[category]
     return {"unknown":"尚无可确认的执行结果","failed":"执行失败，回执未注明可识别的原因",
             "stopped":"执行已停止","cancelled":"批次已取消","pending":"请求尚未发送",
-            "submitted":"正在等待通道回执","awaiting_authorization":"等待导演确认预算",
+            "submitted":"正在等待通道回执","awaiting_authorization":"等待批准生成",
             "queued":"已进入执行队列","running":"执行器正在处理"}.get(state,"请查看对应任务的回执")
 
 

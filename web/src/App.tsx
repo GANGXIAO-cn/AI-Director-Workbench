@@ -1,9 +1,10 @@
+import { ImageViewer } from "./ImageViewer";
 import { ActivityLog } from "./ActivityLog";
 import { SideNav } from "./SideNav";
 import { useEffect, useLayoutEffect, useState } from "react";
-import { ResourceBrowser } from "./Resources";
+import { ResourceBrowser, type Excerpt } from "./Resources";
 import Home from "./Home";
-import { ProjectRoute, useProjectList } from "./projectNavigation";
+import { ProjectRoute, resourceOwner, useProjectList } from "./projectNavigation";
 import { cmd } from "./api";
 import { useQuery } from "./ui";
 import Project from "./Project";
@@ -54,9 +55,15 @@ function ProjectPanel({ hash }: { hash: string }) {
 }
 
 export default function App() {
+  const [excerpt,setExcerpt]=useState<Excerpt|null>(null);
   const [hash, setHash] = useState(location.hash);
   const [tabs, setTabs] = useState(restoreTabs);
   const projects = useProjectList();
+  const [lastProject, setLastProject] = useState(() => localStorage.getItem("lastProject"));
+  function rememberProject(id:string) {
+    localStorage.setItem("lastProject",id);
+    setLastProject(id);
+  }
   const locationInfo = useQuery<{externalProject?:boolean;dataDir:string}>("storage_status");
   const route = parse(hash);
   const episodeId = route.page === "episode" ? route.id : null;
@@ -70,7 +77,7 @@ export default function App() {
   }, []);
   useEffect(() => {
     if (active) {
-      localStorage.setItem("lastProject", active);
+      rememberProject(active);
       void cmd("visit_project", {project_id:active}).then(() => dispatchEvent(new Event("projects-changed"))).catch(() => projects.reload());
     }
   }, [active, projects.reload]);
@@ -104,7 +111,7 @@ export default function App() {
   }
   const projectPage = route.page === "project" || route.page === "episode";
   const navActive = route.page === "episode" ? "episode" : route.page === "sys" ? (route.sub === "tasks" ? "tasks" : "settings")
-    : route.page === "project" ? (["library","topics"].includes(route.sub || "") ? route.sub! : "project")
+    : route.page === "project" ? (["library","topics"].includes(route.sub || "") ? route.sub! : route.id)
     : route.tab || "idea";
   return <div className="project-desktop">
     {locationInfo.data?.externalProject && <div className="folder-location">独立项目 · 保存到 {locationInfo.data.dataDir}</div>}
@@ -116,15 +123,15 @@ export default function App() {
       <a className="open-project" href="#/projects">＋ 打开项目</a>
     </nav>}<ActivityLog projects={projects.data || []} current={active}/></div>
     <div className="desktop-body"><SideNav active={navActive} projects={projects.data || []} projectId={active}
-      episode={route.page === "episode"} hash={hash}/>
+      owner={resourceOwner(projects.data || [], active, lastProject)} episode={route.page === "episode"} hash={hash}/>
     {tabs.filter(t => t.mounted).map(t => <div className="desktop-page" key={t.id} hidden={active !== t.id}>
       <ProjectRoute.Provider value={{ hash: t.hash, active: active === t.id, go: next => navigateFrom(t, next) }}><ProjectPanel hash={t.hash} /></ProjectRoute.Provider>
     </div>)}
     {!projectPage && <div className="desktop-page">{route.page === "sys" ? <Shell><SystemPage sub={route.sub} /></Shell>
-      : route.tab === "knowledge" || route.tab === "palette" ? <Shell><ResourceBrowser key={route.tab} kind={route.tab}/></Shell>
-      : <Home tab={route.tab} projects={projects} />}</div>}
+      : route.tab === "knowledge" || route.tab === "palette" ? <Shell><ResourceBrowser storyPicker key={route.tab} kind={route.tab} onChoose={route.tab==="knowledge"?part=>{setExcerpt(part);location.hash="#/idea";}:undefined}/></Shell>
+      : <Home referenceDraft={{value:excerpt,change:setExcerpt}} tab={route.tab} projects={projects} rememberProject={rememberProject} />}</div>}
     {projectPage && !active && <div className="page">{owner.error || "读取项目中…"} {owner.error && <a href="#/projects">返回项目</a>}</div>}
-  </div></div>;
+  </div><ImageViewer/></div>;
 }
 
 function Shell({children}: {children:React.ReactNode}) {

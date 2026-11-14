@@ -21,11 +21,17 @@ def renumber(refs, text):
     for ref, label in zip(refs, stages.expected_labels(refs)):
         mapping[ref["label"]] = label
         ref["label"] = label
+    from .officialh3 import MEDIA, native_label
+    native = {native_label(old):native_label(new) for old,new in mapping.items()}
+    text = MEDIA.sub(lambda match: native.get(match[0], match[0]), text)
     return stages.LABEL_RE.sub(lambda m: mapping.get(m[0], m[0]), text), mapping
 
 
 def add_definition(entry, label, purpose):
     text = entry["txt"]
+    if entry.get("prompt_format") == "h3_official":
+        from .officialh3 import native_label
+        return text.replace("subject_definitions:", "subject_definitions:\n" + native_label(label) + " " + purpose, 1)
     definition = f"{label}：{purpose}"
     if re.search(r"(?m)^[ \t]*" + re.escape(label) + r"[ \t]*[:：]", text):
         raise Rejected(f"正文已有 {label} 的定义，请先核对并移去重复定义")
@@ -52,6 +58,7 @@ def without_reference(entry, ref, refs):
             text = text[:start] + definition.sub("", body, count=1) + text[start+len(body):]
     else:
         text = definition.sub("", text, count=1)
-    if label in stages.LABEL_RE.findall(text):
+    from .officialh3 import native_label
+    if label in stages.LABEL_RE.findall(text) or native_label(label) in text:
         raise Rejected(f"正文仍在使用 {label}，请先改写引用该标签的文字，再移出本段")
     return renumber(refs, text)[0]
