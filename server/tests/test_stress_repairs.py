@@ -86,3 +86,25 @@ def test_superseded_repair_draft_cannot_be_adopted_after_restarting_step(tmp_pat
     wb.advance_repair_plan(start["planId"],"restart")
     with pytest.raises(Conflict,match="重新核对"):
         wb.adopt(env.art(eid,"world")["id"],step["versionId"],replacement,"stale")
+
+
+def test_upstream_plan_preserves_issues_in_own_stages(tmp_path):
+    env,eid,report=fixture(tmp_path)
+    wb=env.wb
+    job=wb.start_repair_plan(eid,'upstream','scoped-upstream',report,{'I01':True,'I02':True})
+    scopes=[]
+    def check(req):
+        manifest=wb.run_manifest(req.run_id)['manifest']
+        meta=manifest['repairStep']
+        entry=next(i for i in manifest['inputs'] if i['role']=='repair_scope')
+        scope=json.loads(wb.store.read_blob(entry['sha256']))
+        if scope['issues']:
+            issue,=scope['issues']
+            assert issue['options'][0]['issueId']==issue['id']
+            assert issue['issue']['problem'] and meta['keys']==[issue['id']]
+            scopes.append((meta['stage'],issue['id']))
+        return discussion(req,[dict(id=key,note='已对照上游',quote={'world':'柜台有锁','treatment':'巡店检查','script':'巡店员检查门锁'}[meta['stage']]) for key in meta['keys']])
+    env.codex.script=[check]*5
+    env.drain(job['runId'])
+    assert scopes==[('world','I01'),('treatment','I02')]
+    assert wb.stress_worklist(eid)['plans'][0]['state']=='done'

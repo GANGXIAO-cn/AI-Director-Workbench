@@ -1058,6 +1058,7 @@ class ProductionMixin:
     def _role_states(self, db, eid):
         designs=(self._adopted_content(db,eid,"asset_design") or {}).get("assets",[])
         checked={(r["role"],r["state_id"]):r for r in db.execute("SELECT * FROM role_state_check WHERE episode_id=?",(eid,))}
+        text_only={r[0] for r in db.execute("SELECT need_key FROM asset_need WHERE episode_id=? AND removed=0 AND decision='text_only'",(eid,))}
         result=[]
         for design in designs:
             if not design.get("roleId") or not design.get("stateId"):
@@ -1066,7 +1067,7 @@ class ProductionMixin:
             check=checked.get((design["roleId"],design["stateId"]))
             confirmed=bool(check and check["design_hash"]==digest)
             result.append(dict(role=design["roleId"],stateId=design["stateId"],description=design["description"],
-                               designHash=digest,confirmed=confirmed,imageId=check["image_id"] if confirmed else None,
+                               designHash=digest,confirmed=confirmed,textOnly=design["id"] in text_only,imageId=check["image_id"] if confirmed else None,
                                observation=check["observation"] if confirmed else None))
         return result
 

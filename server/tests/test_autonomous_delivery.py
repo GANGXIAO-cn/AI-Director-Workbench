@@ -208,3 +208,184 @@ def test_adopted_art_reaches_flex_prompt_and_grid_drawing_only(tmp_path, monkeyp
         packed = json.loads(archive.read('project.json'))
     packed_refs = {s['id']: {r['assetId'] for r in s['refs']} for s in packed['segments']}
     assert packed_refs == {sid: set(row) for sid, row in refs.items()}
+
+
+def test_repair_inherits_state_opening_and_grid_sources(tmp_path):
+    env,case,cid,_=finishing_fixture(tmp_path,scoped=True)
+    wb,eid=env.wb,case['eid']
+    states=[env.image(case['pid'],eid,'阿福雨衣','state',rgb=(n,11,41))['versionId'] for n in (1,2)]
+    old,new=states
+    wb.set_cast(eid,'G01','阿福','ok',old,note='雨衣开场',opening_confirmed=True)
+    lock=wb.add_space_item(eid,'开场位置','门口','分镜',['G01'],status='confirmed',lock_asset_version_id=old)
+    wb._continuous_cursor(cid,reviewReplacements={old:new},gridArtwork={'G02':dict(roleInputs={'阿福':old},inputs=[old])})
+    wb._apply_review_replacements(cid,eid)
+    wb._apply_review_replacements(cid,eid)
+    cell=wb.cast_matrix(eid)['rows'][0]['cells']['阿福']
+    assert (cell['assetVersionId'],cell['note'],cell['depictsMoment']['segment'])==(new,'雨衣开场','G01')
+    assert next(l for l in wb.space_locks(eid) if l['id']==lock['itemId'])['versionId']==new
+    board=wb._continuous_record(cid)['cursor']['gridArtwork']['G02']
+    assert board['roleInputs']=={'阿福':new} and board['inputs']==[old]
+
+
+def test_fallback_selects_unique_identifier_aliases_only():
+    from workbench.worksheetrefs import fallback_shots
+    candidates=[dict(key=k,shots=['S1','S2']) for k in ('prop_felt_hat','prop_parasol','state_parasol')]
+    shots=[dict(id='S1',propStates={'prop-felt-hat':'完整','parasol':'破损'}),
+           dict(id='S2',propStates={'felt_hat':'戴上','state_parasol':'破损'})]
+    assert fallback_shots(candidates,shots)==[dict(key='prop_felt_hat',shots=['S1','S2']),
+                                               dict(key='state_parasol',shots=['S2'])]
+
+
+def test_text_state_preserves_base_for_dependents(tmp_path):
+    from workbench.stressrepairs import adopted
+    env,case,cid,_=finishing_fixture(tmp_path)
+    wb,eid=env.wb,case['eid']
+    items=[dict(id='base',kind='prop',description='雨衣',imagePrompt='雨衣'),
+           dict(id='wet',kind='state',roleId='阿福',stateId='wet',description='湿透的雨衣',imagePrompt='湿透的雨衣',dependsOn=['base']),
+           dict(id='detail',kind='prop',description='下摆',imagePrompt='下摆近景',dependsOn=['wet'])]
+    env.save_adopt(eid,'asset_design',dict(assets=items,notes=''),'wet-design')
+    with env.db() as db:
+        wb._continuous_cursor(cid,base=adopted(db,eid),userStamp=wb._continuous_user_stamp(db,eid,[]),pendingUserChange=False)
+    assert wb._material_bottleneck(cid,wb._need(eid,'wet'),dict(reason='未取得文件'))
+    assert wb._need(eid,'wet')['decision']=='text_only'
+    dep=wb._need(eid,'detail')
+    assert dep['depends_on']==['base'] and '湿透的雨衣' in dep['image_prompt']
+    state=next(s for s in wb.cast_matrix(eid)['roleStates'] if s['stateId']=='wet')
+    assert state['textOnly'] and not state['confirmed']
+
+
+def test_readable_checks_use_derived_presence(tmp_path,monkeypatch):
+    from workbench import readable
+    env,case,cid,_=finishing_fixture(tmp_path)
+    wb,eid=env.wb,case['eid']
+    for shot in case['plan']['shots']:
+        shot.update(visibleRoles=['阿福'] if shot['segment']=='G01' else [],propStates={})
+    env.save_adopt(eid,'plan',case['plan'],'visible')
+    wb.set_role_baseline(eid,'阿福',case['img']['versionId'],'阿福','baseline')
+    seen=[]
+    monkeypatch.setattr(wb,'_source_entries',lambda *a:[dict(role='characterStandard',text='{}')])
+    monkeypatch.setattr(readable,'check_project_blocks',lambda entry,strategy,blocks,standard,present,labels:seen.append(present))
+    entries=env.prompts_for(case['plan'],case['img']['versionId'])['segments']
+    for entry in entries.values():entry['prompt_format']='readable_v3'
+    with env.db() as db:
+        assert not db.execute('SELECT 1 FROM cast_cell WHERE episode_id=?',(eid,)).fetchone()
+        wb._prompt_reference_errors(db,eid,entries)
+    assert seen==[{'阿福'},set()]
+
+
+def test_repair_source_before_grid_with_generate_only_and_resume(tmp_path,monkeypatch):
+    from workbench.stressrepairs import adopted
+
+    env,case,cid,_=finishing_fixture(tmp_path,scoped=True)
+    wb,eid=env.wb,case['eid']
+    plan=case['plan']
+    plan['segments'][1]['strategy']='grid'
+    for shot in plan['shots']:
+        if shot['segment']=='G02':shot['propStates']={'prop_umbrella':'破损'}
+    env.save_adopt(eid,'asset_design',dict(assets=[dict(id='prop_umbrella',kind='prop',description='雨伞',imagePrompt='雨伞')],notes=''),'umbrella')
+    plan_id,_=env.save_adopt(eid,'plan',plan,'board')
+    with env.db() as db:
+        wb._continuous_cursor(cid,base=adopted(db,eid),userStamp=wb._continuous_user_stamp(db,eid,[]),pendingUserChange=False)
+    monkeypatch.setattr(wb,'_continuous_bounded_json',lambda *args,**kwargs:(kwargs['fallback'](),'local'))
+    assert wb._image_need_round(cid,wb._need(eid,'prop_umbrella')) is None
+    source=wb._need(eid,'prop_umbrella')['adopted_version_id']
+    grids=wb._grid_artwork(cid,eid,plan_id)
+    board=grids['G02']['versionId']
+    assert source in grids['G02']['inputs']
+    env.codex.script=[reply([dict(versionId=v,verdict='blocked',defect='缺少主体') for v in (source,board)])]
+    monkeypatch.setitem(env.images.capabilities,'operations',['generate'])
+    count=env.images.sent
+    rows=wb.asset_worksheet(eid)['rows']
+    wb._episode_image_review(cid,eid,rows,grids)
+    wb._episode_image_review(cid,eid,rows,grids)
+    cursor=wb._continuous_record(cid)['cursor']
+    fixed_source=cursor['reviewReplacements'][source]
+    fixed_board=cursor['reviewReplacements'][board]
+    with env.db() as db:
+        import json
+        spec=db.execute('SELECT b.spec FROM image_batch b JOIN image_request r ON b.id=r.batch_id WHERE r.asset_version_id=?',(fixed_board,)).fetchone()
+    inputs=json.loads(spec[0])['items'][0]['inputs']
+    assert fixed_source in inputs and source not in inputs
+    assert cursor['gridArtwork']['G02']['versionId']==fixed_board
+    assert wb.cast_matrix(eid)['rows'][1]['cells']['阿福']['assetVersionId']==fixed_board
+    assert len([c for c in env.codex.calls if c.purpose=='image_assess'])==1
+    assert env.images.sent==count+2
+
+
+def test_repair_waits_for_existing_request_and_regenerates_once(tmp_path):
+    import pytest
+    from workbench.continuous_images import MaterialWait
+    env,case,cid,_=finishing_fixture(tmp_path)
+    wb,eid=env.wb,case['eid']
+    need=wb.asset_worksheet(eid)['rows'][0]
+    key=need['need_key']
+    assert wb._image_need_round(cid,need) is None
+    old=wb._need(eid,key)['adopted_version_id']
+    review=dict(selected={key:old})
+    entry=(key,[dict(where='主体',text='缺失')])
+    env.images.script=['timeout','ok']
+    before=env.images.sent
+    with pytest.raises(MaterialWait) as waiting:
+        wb._repair_review_image(cid,eid,review,entry)
+    assert waiting.value.kind=='image_wait'
+    with pytest.raises(MaterialWait) as again:
+        wb._repair_review_image(cid,eid,review,entry)
+    assert again.value.batchIds==waiting.value.batchIds and env.images.sent==before+1
+    bid,=waiting.value.batchIds
+    req=wb.batch_view(bid)['requests'][0]
+    wb.reconcile_request(req['id'],'not_executed')
+    wb._repair_review_image(cid,eid,review,entry)
+    wb._repair_review_image(cid,eid,review,entry)
+    assert wb._need(eid,key)['adopted_version_id']!=old
+    assert env.images.sent==before+2
+
+
+def test_repair_quota_wake_is_bounded(tmp_path):
+    import pytest
+    from workbench.continuous_images import MaterialWait
+    env,case,cid,_=finishing_fixture(tmp_path)
+    wb,eid=env.wb,case['eid']
+    need=wb.asset_worksheet(eid)['rows'][0]
+    key=need['need_key']
+    assert wb._image_need_round(cid,need) is None
+    old=wb._need(eid,key)['adopted_version_id']
+    review=dict(selected={key:old})
+    entry=(key,[dict(where='主体',text='缺失')])
+    before=env.images.sent
+    env.images.script=['insufficient','insufficient']
+    with pytest.raises(MaterialWait) as waiting:
+        wb._repair_review_image(cid,eid,review,entry)
+    assert waiting.value.kind=='quota' and env.images.sent==before+1
+    block=wb._recovery_block('need:'+key,**waiting.value.waiting())
+    wb._continuous_cursor(cid,autoScope=[block['id']])
+    assert wb._repair_review_image(cid,eid,review,entry)[0]==key
+    assert wb._repair_review_image(cid,eid,review,entry)[0]==key
+    assert env.images.sent==before+2
+
+
+def test_failed_board_repair_falls_back_to_bound_flex_once(tmp_path,monkeypatch):
+    from workbench.errors import Rejected
+    from workbench.stressrepairs import adopted
+    env,case,cid,_=finishing_fixture(tmp_path,scoped=True)
+    wb,eid=env.wb,case['eid']
+    plan=case['plan']
+    plan['segments'][1]['strategy']='grid'
+    plan_id,_=env.save_adopt(eid,'plan',plan,'grid-only')
+    with env.db() as db:
+        wb._continuous_cursor(cid,base=adopted(db,eid),userStamp=wb._continuous_user_stamp(db,eid,[]),pendingUserChange=False)
+    boards=wb._grid_artwork(cid,eid,plan_id)
+    original=boards['G02']['versionId']
+    env.codex.script=[reply([dict(versionId=original,verdict='blocked',defect='缺少主体')])]
+    attempts=[]
+    def reject(*args,operation,**kwargs):
+        attempts.append(operation)
+        raise Rejected('该图无法生成')
+    monkeypatch.setattr(wb,'create_batch',reject)
+    wb._episode_image_review(cid,eid,[],boards)
+    wb._episode_image_review(cid,eid,[],{})
+    current=wb._continuous_version(env.art(eid,'plan')['adopted_version_id'])
+    assert [seg['strategy'] for seg in current['segments']]==['flex','flex']
+    assert wb.cast_matrix(eid)['rows'][1]['cells']['阿福']['assetVersionId']==case['img']['versionId']
+    assert not wb._continuous_image_rule(eid,original)
+    assert attempts==['edit','generate']
+    assert len([r for r in env.codex.calls if r.purpose=='image_assess'])==1

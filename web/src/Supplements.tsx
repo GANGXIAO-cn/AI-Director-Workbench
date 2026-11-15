@@ -31,6 +31,7 @@ export function RoleStates({eid,assets,versionId}:any) {
   const act=useAction();
   return <>{matrix.data?.roleStates.map(s=>{
     const k=s.designHash,d=draft[k]??{};
+    if(s.textOnly)return <section className="card" key={k}><h4>{s.role} · {s.stateId}</h4><p>{s.description}</p><small>本段用文字描述此状态</small></section>;
     return <section className="card" key={k}><h4>{s.role} · {s.stateId}</h4><p>{s.description}</p>
       <p>{s.confirmed?"对图已确认 · "+s.observation:"待对图核对"}</p>
       <select aria-label="角色状态图" value={d.image??s.imageId??""} onChange={e=>set({...draft,[k]:{...d,image:e.target.value}})}><option value="">选择本集图片</option>

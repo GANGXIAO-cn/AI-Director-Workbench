@@ -790,6 +790,9 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
                 elif key=='A':
                     proposal=self._continuous_discuss(cid,stage,'从以下不改核心的方案中推荐本次候选的具体改法，结合已失败的修法换一种表现方式。只写推荐方案与理由。'+dumps(dict(options=options,attempts=value['cursor']['attempts'])),base)
                     instruction='落实模型推荐的方案：'+proposal
+                instruction += (' 所有待解决问题如下，逐项考虑；在本阶段落实本阶段的修订，'
+                                '并为后续阶段保留必要条件。没有对应备选方案的问题也须处理。'
+                                +dumps(issues))
             for retry in range(2):
                 token=candidate_scope.set(cid)
                 try:
@@ -840,8 +843,10 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
         self._continuous_adopt(cid,stage,candidate['versionId'])
         if kind=='repair':
             with connect(self.db_path) as db: impacts=pending_changes(db,eid)
-            if impacts:
-                job=self.start_repair_plan(eid,'upstream',f'{cid}:expert-upstream:{candidate["versionId"]}')
+            downstream={i['id']: True for i in issues if issue_stage(i.get('stage')) != stage}
+            if impacts or downstream:
+                job=self.start_repair_plan(eid,'upstream',f'{cid}:expert-upstream:{candidate["versionId"]}',
+                                           report['id'] if downstream else None,downstream or None)
                 self._continuous_repair(cid,job['planId'])
             if keys:
                 job=self.start_repair_plan(eid,'verify',f'{cid}:verify-choice:{candidate["versionId"]}',report['id'],{key:True for key in keys})
@@ -851,8 +856,11 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
                     with connect(self.db_path) as db:
                         steps=json.loads(row(db,'SELECT steps FROM repair_plan WHERE id=?',job['planId'])['steps'])
                     findings=[f"{f['id']}：{f['note']}" for s in steps for f in s.get('findings',[]) if f['status']=='仍存在']
-                    self._continuous_cursor(cid,stage=stage)
-                    self._continuous_problem(cid,'专家修订后仍未解决：'+'；'.join(findings),repair_base=candidate['versionId'])
+                    remaining={f['id'] for step in steps for f in step.get('findings',[]) if f['status']=='仍存在'}
+                    target=min((issue_stage(i['stage']) for i in issues if i['id'] in remaining),key=STAGES.index)
+                    self._continuous_cursor(cid,stage=target)
+                    self._continuous_problem(cid,'专家修订后仍未解决：'+'；'.join(findings),
+                                             repair_base=self._continuous_art(eid,target)['adopted_version_id'])
             else:
                 self._continuous_create(cid,'stress')
                 fresh=self._continuous_art(eid,'stress')['versions'][-1]

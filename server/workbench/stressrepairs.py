@@ -152,7 +152,20 @@ class StressRepairMixin:
                     steps=[dict(stage="stress",action="verify")]
                 elif mode=="upstream":
                     impacted={r["stage"] for r in pending_changes(db,episode_id)}
-                    steps=[dict(stage=s,action="check") for s in EARLY if s in impacted and s in versions]
+                    if choices:
+                        if versions.get("stress") != report_version_id or not report_version_id:
+                            raise Conflict("当前采用的审查报告已变化")
+                        report=json.loads(row(db,"SELECT content FROM version WHERE id=?",report_version_id)["content"])
+                        for issue in report["issues"]:
+                            if issue["id"] in choices:
+                                stage=issue_stage(issue["stage"])
+                                selected.append(dict(id=issue["id"],stage=stage,issue=issue,
+                                                     options=[o for o in report["options"] if o["issueId"]==issue["id"]]))
+                                impacted.add(stage)
+                        if len(selected)!=len(choices) or any(i["stage"] not in versions for i in selected):
+                            raise Rejected("待核对问题缺少有效阶段或采用稿")
+                    steps=[dict(stage=s,action="check",**({"scopeIssues":True} if selected else {}))
+                           for s in EARLY if s in impacted and s in versions]
                     if not steps:
                         raise Rejected("没有待核对的上游变更")
                 elif mode=="early":
@@ -199,6 +212,8 @@ class StressRepairMixin:
         executor={**self._kickoff(db,eid)["executor_plan"],**self._stage_executors(db,eid,stage)}
         issues=json.loads(plan["issues"])
         impacts=[r for r in pending_changes(db,eid) if r["stage"]==stage]
+        if step.get("scopeIssues"):
+            issues=[i for i in issues if i["stage"]==stage]
         keys=[i["id"] for i in issues] or [r["id"] for r in impacts]
         if action=="revise":
             goal="按选定问题、原文依据和方案，基于当前采用稿返修，提交本阶段完整新稿。"

@@ -6,6 +6,30 @@ from .db import connect
 from .worksheet import CATEGORIES
 
 
+def fallback_shots(candidates, shots):
+    """Prefer literal IDs. Accept separators and type prefixes only for unique aliases."""
+    def alias(key):
+        parts=key.casefold().replace('-', '_').split('_')
+        return '_'.join(parts[1:] if parts[0] in ('prop','state','scene','costume') else parts)
+
+    by_key={c['key']:c for c in candidates}
+    normalized=defaultdict(list)
+    aliases=defaultdict(list)
+    for key in by_key:
+        normalized[key.casefold().replace('-', '_')].append(key)
+        aliases[alias(key)].append(key)
+    matched=defaultdict(list)
+    for shot in shots:
+        for prop in shot.get('propStates') or {}:
+            full=prop.casefold().replace('-', '_')
+            keys=[prop] if prop in by_key else normalized.get(full,[])
+            if not keys and alias(prop)==full:
+                keys=aliases.get(full,[])
+            if len(keys)==1 and shot['id'] in by_key[keys[0]]['shots'] and shot['id'] not in matched[keys[0]]:
+                matched[keys[0]].append(shot['id'])
+    return [dict(key=key,shots=matched[key]) for key in by_key if key in matched]
+
+
 def owned(rule):
     return (rule.get('selectedBy') == 'agent'
             and set(rule.get('autoBindings', {})) == {'worksheet'}
@@ -100,12 +124,7 @@ def select(wb, cid, eid, plan_id, plan, matrix):
         # Exact prop identifiers remain usable even if the semantic selection fails.
         result = {}
         for seg in segments:
-            picks = []
-            for candidate in seg['candidates']:
-                ids = [s['id'] for s in seg['shots'] if s['id'] in candidate['shots']
-                       and candidate['key'] in (s.get('propStates') or {})]
-                if ids:
-                    picks.append(dict(key=candidate['key'], shots=ids))
+            picks = fallback_shots(seg['candidates'], seg['shots'])
             result[seg['segment']] = picks[:seg['limit']]
         return dict(segments=result)
 

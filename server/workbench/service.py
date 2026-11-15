@@ -1981,8 +1981,10 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                             errors.append(f"{sid} 无法核对九宫格原图：{exc}")
             if standards and entry.get("prompt_format") == "readable_v3" and isinstance(entry.get("txt"), str):
                 from . import readable
-                present = {r[0].casefold() for r in db.execute("SELECT role FROM cast_cell WHERE episode_id=? AND segment_id=? AND status='ok'",
-                                                                (episode_id,sid))}
+                if binding_matrix is None:
+                    binding_matrix=self._cast_matrix(db,episode_id)
+                cells=next((r['cells'] for r in binding_matrix['rows'] if r['segment']==sid),{})
+                present={role.casefold() for role,cell in cells.items() if cell['status']=='ok'}
                 try:
                     readable.check_project_blocks(entry, strategies.get(sid,"flex"), standards.get("promptStandard",{}).get("blocks",{}),
                                                   standards.get("characterStandard",{}), present, labels_by_hash)
@@ -2328,7 +2330,7 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                 ):
                     view["pendingShotImages"].append(sid + " 九宫格")
             view["pendingShotImages"].extend(s["role"] + " · " + s["stateId"] + " 状态图待出或待对图确认"
-                                            for s in matrix["roleStates"] if not s["confirmed"])
+                                            for s in matrix["roleStates"] if not s["confirmed"] and not s.get("textOnly"))
         expected={s["id"] for s in adopted_plan.get("segments",[])}
         missing_images = imagechoices.check_scope(required, adopted_plan, "full", expected, used)[1] if expected else []
         complete=bool(expected) and expected==set(entries)

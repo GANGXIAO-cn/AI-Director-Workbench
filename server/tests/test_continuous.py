@@ -436,3 +436,28 @@ def test_product_code_explicit_description_compatibility():
     assert asset_product_code(dict(description='商品02，两个杯子')) is None
     assert asset_product_code(dict(description='productCode: 02; productCode: 03')) is None
     assert asset_product_code(dict(old, productCode='03')) == '03'
+
+
+def test_mixed_repair_choices_both_receive_all_issues(tmp_path):
+    env,eid,counts=repair_fixture(tmp_path,core=True)
+    wb=env.wb
+    report=wb._continuous_version(env.art(eid,'stress')['adopted_version_id'])
+    report['issues'].append(dict(id='I02',stage='05',severity='blocking',problem='锁门动作不清',evidence='巡店员检查门锁'))
+    report['options'].append(dict(issueId='I02',changesCore=False,proposal='明确锁门动作',repairScope='场01'))
+    env.save_adopt(eid,'stress',report,'mixed-options')
+    original=env.codex.script[0]
+    def respond(req):
+        manifest=wb.run_manifest(req.run_id)['manifest']
+        meta=manifest.get('repairStep',{})
+        if meta.get('action')=='verify':
+            from test_stress_repairs import discussion
+            assert set(meta['keys'])=={'I01','I02'}
+            return discussion(req,[dict(id=k,status='已解决',note='已落实') for k in meta['keys']])
+        return original(req)
+    env.codex.script=[respond]*100;env.claude.script=[respond]*100
+    value=wb.start_continuous(eid,command_id='mixed')
+    assert value['state']=='done',value
+    with env.db() as db:
+        goals=[r[0] for r in db.execute("SELECT goal FROM task WHERE episode_id=? AND goal LIKE '%所有待解决问题如下%' AND goal LIKE '%提交完整阶段稿%'",(eid,))]
+    assert len(goals)>=2
+    assert all('I01' in goal and 'I02' in goal and '锁门动作不清' in goal for goal in goals)
