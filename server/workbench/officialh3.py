@@ -7,6 +7,15 @@ MEDIA = re.compile(r"<(Picture|Video|Audio) (\d+)>")
 LABEL = re.compile(r"(图片|视频|音频)(\d+)")
 
 
+# H3 preserves original spoken lines and visible lettering in quotes.
+QUOTED_LITERAL = re.compile(r""""[^"\n]*"|“[^”\n]*”|‘[^’\n]*’|「[^」\n]*」|『[^』\n]*』|(?<!\w)'[^'\n]+'(?!\w)""")
+HAN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+
+
+def has_unquoted_chinese(text):
+    return bool(HAN.search(QUOTED_LITERAL.sub("", text)))
+
+
 def package_text(text):
     return MEDIA.sub(lambda match: KINDS[match[1]] + match[2], text)
 

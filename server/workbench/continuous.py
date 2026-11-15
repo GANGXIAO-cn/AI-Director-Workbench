@@ -81,7 +81,7 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
         """实测 117：最新一次连续制作停下或等待选择的集，供全局提示使用。"""
         with connect(self.db_path) as db:
             rows=db.execute("""SELECT c.episode_id,c.state,c.reason,c.cursor,c.updated_at,e.display_code,e.title,e.project_id,p.name project_name
-                FROM continuous_run c JOIN episode e ON e.id=c.episode_id JOIN project p ON p.id=e.project_id
+                FROM continuous_run c JOIN active_episodes e ON e.id=c.episode_id JOIN project p ON p.id=e.project_id
                 WHERE c.rowid IN (SELECT max(rowid) FROM continuous_run GROUP BY episode_id) AND c.state='waiting_external'
                 ORDER BY c.updated_at DESC""").fetchall()
         result=[]

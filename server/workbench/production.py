@@ -97,7 +97,7 @@ class ProductionMixin:
                 request = f"{original['text']}\n澄清：{q['text']}\n导演答复：{answer}"
                 selection = json.loads(original["selection"]) if original["selection"] else None
                 if info.get("kickoffChoice") and answer == "从选题池挑":
-                    card = db.execute("SELECT * FROM topic WHERE project_id=? AND status='候选' AND episode_id IS NULL ORDER BY RANDOM() LIMIT 1",(task["project_id"],)).fetchone()
+                    card = db.execute("SELECT * FROM research_topics WHERE project_id=? AND status='候选' AND episode_id IS NULL AND id NOT IN (SELECT topic_id FROM topic_publication) ORDER BY RANDOM() LIMIT 1",(task["project_id"],)).fetchone()
                     if not card: raise Rejected("选题池已无可用卡，可改选「想一个新故事」")
                     self._topic_on_kickoff(db,task["episode_id"],card["id"])
                     db.execute("UPDATE kickoff SET source_type='topic',topic_id=?,goal=? WHERE episode_id=?",(card["id"],original["text"],task["episode_id"]))

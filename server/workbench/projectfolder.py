@@ -44,6 +44,8 @@ PARENTS = {
 def copy_records(source, dest, pid):
     tables = [r[0] for r in dest.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
     def ownership(table):
+        if table in ("topic_intent","topic_publication"):
+            return "topic_id IN (SELECT id FROM topic WHERE project_id=?)"
         if table == "project":
             return "id=?"
         fields = {r[1] for r in dest.execute(f'PRAGMA table_info("{table}")')}

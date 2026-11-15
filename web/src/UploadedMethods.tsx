@@ -43,12 +43,12 @@ export function ProjectMethodSync({pid,eid,stage}:{pid:string;eid?:string;stage?
   const different=eid && stage && JSON.stringify(data.selected)!==JSON.stringify(data.projectSelected);
   if(!missing.length && !different && !notice)return null;
   return <section className="card">
-    {!!missing.length && <><b>本项目有 {missing.length} 份项目方法尚未同步</b>
-      {eid ? <a className="btn" href={`#/p/${pid}/settings`}>去项目设置同步</a> : <>
+    {!!missing.length && <><b>本项目有 {missing.length} 份创作方法可更新</b>
+      {eid ? <a className="btn" href={`#/p/${pid}/settings`}>去项目设定更新方法</a> : <>
         <ul>{missing.map(item=><li key={item.stage+item.path}>{item.path} · {stages[item.stage]}</li>)}</ul>
         <button className="btn" disabled={act.busy} onClick={()=>act.run(async()=>{
-          await cmd("sync_project_methods",{project_id:pid});await library.reload();setNotice("已备份并同步项目方法。");
-        })}>同步项目方法</button></>}
+          await cmd("sync_project_methods",{project_id:pid});await library.reload();setNotice("项目的创作方法已更新。");
+        })}>更新项目的创作方法</button></>}
     </>}
     {different && <><p>{stages[stage!]} 从下一次任务起采用项目选择的 {data.projectSelected.length} 份方法。</p>
       <button className="btn" disabled={act.busy} onClick={()=>act.run(async()=>{

@@ -1,5 +1,6 @@
 """Project topic research and director-selected candidates."""
 import json
+import re
 
 from jsonschema import Draft202012Validator
 
@@ -7,17 +8,54 @@ from .db import connect, dumps, new_id, transaction
 from .errors import Conflict, Rejected, row
 from .methodpack import load_pack, method_entries
 from .prompts import render_settings
-from .sourcefiles import production, read_named
 
 FIELDS = ("title", "premise", "mechanism", "motivation", "difference", "reference_id")
 SCHEMA = {"type": "object", "additionalProperties": False, "required": ["candidates"],
           "properties": {"candidates": {"type": "array", "items": {
               "type": "object", "additionalProperties": False, "required": list(FIELDS),
               "properties": {key: {"type": "string"} for key in FIELDS}}}}}
-INSTRUCTIONS = ("按本项目的选题研究方法和导演要求，提出一到三张可独立选择的备选卡。写明故事前提、"
+INSTRUCTIONS = ("按本项目的选题研究方法和导演要求，按本轮指定数量提出可独立选择的备选卡。写明故事前提、"
                 "角色动机、推动事件的机制及相对近期旧题的实质差异。没有旧题时如实说明。"
                 "每张卡的 reference_id 填一条实际借鉴的 research_source 段号，例如 R1。"
                 "有导演选定的共享知识库片段时，优先借鉴该片段。资料不足时标清缺少的依据。")
+
+
+_NUMBER = r"(?:[0-9]+|[一二两三四五六七八九十百千零]+)"
+_COUNT_REQUEST = re.compile(
+    rf"(?:制作|创作|生成|给我|给出|提供|提出|设计|构思|推荐|想要|需要|要求|再来|补充|再写|写|做|要|来|想)"
+    rf"\s*(?:出|共|总共|一共)?\s*({_NUMBER})\s*(?:个|条|张|组|种|款|篇)?"
+    rf"\s*(?:新的|新|不同的|独立的|备选|候选|系列|短剧|故事|短视频)*选题"
+)
+_COUNT_ONLY = re.compile(rf"^\s*({_NUMBER})\s*(?:个|条|张)?\s*(?:选题)?[。！!\s]*$")
+
+
+def requested_count(direction):
+    match = (_COUNT_REQUEST.search(direction) or _COUNT_ONLY.fullmatch(direction)
+             or re.search(rf"(?:^|[，。；：、！？,;:\n])\s*({_NUMBER})\s*(?:个|条|张)?\s*(?:新)?选题",direction)
+             or re.search(rf"(?:生成|给我|再写|再来|要求|想要|需要|数量[：:为]?|写)\s*({_NUMBER})\s*(?:个|条|张)(?=[，。；！？,;!\s]|$)",direction))
+    if not match:
+        return 3
+    value = match.group(1)
+    if value.isdecimal():
+        count = int(value)
+    else:
+        digits = dict(zip("零一二三四五六七八九两", [0,1,2,3,4,5,6,7,8,9,2]))
+        total = digit = 0
+        for char in value:
+            if char in digits:
+                digit = digits[char]
+            else:
+                total += (digit or 1) * {"十":10,"百":100,"千":1000}[char]
+                digit = 0
+        count = total + digit
+    if count < 1:
+        raise Rejected("选题数量须至少为 1")
+    return count
+
+
+def result_schema(count):
+    candidates = dict(SCHEMA["properties"]["candidates"], minItems=count, maxItems=count)
+    return dict(SCHEMA, properties={"candidates":candidates})
 
 
 def research_inputs(entries):
@@ -38,12 +76,12 @@ def research_inputs(entries):
     return inputs, citations
 
 
-def research_reply(body, citations):
+def research_reply(body, citations, count):
     if not Draft202012Validator(SCHEMA).is_valid(body):
         raise Rejected("研究结果缺少完整的候选卡字段")
     cards = body["candidates"]
-    if not 1 <= len(cards) <= 3:
-        raise Rejected("研究结果须包含一到三张备选卡")
+    if len(cards) != count:
+        raise Rejected(f"本次要求 {count} 个选题，实际返回 {len(cards)} 个，请重新研究")
     result = []
     for index, card in enumerate(cards, 1):
         if not all(card[k].strip() for k in FIELDS):
@@ -73,32 +111,13 @@ class TopicResearchMixin:
                 def source(name, text):
                     entries.append(dict(role="research_source", name=name, text=text))
 
-                prod = production(db, project_id)
-                for key, field, columns in (
-                    ("topicCatalog", "candidates", ("id","title","cn","mechanisms","payoff","status")),
-                    ("topicLedger", "episodes", ("id","title","status","publication_status","recency_basis","core_desire",
-                                               "comedy_mechanism","ending","remaining_consequence","evidence_scope")),
-                ):
-                    found = read_named(prod, key)
-                    if found:
-                        path, data = found
-                        document = json.loads(data)
-                        if document.get("ordering_note"):
-                            entries.append(dict(role="ledger_order", name=path, text=document["ordering_note"]))
-                        for item in document[field]:
-                            if key == "topicCatalog":
-                                catalog_codes.append(item["id"])
-                            source(f"{path}#{item['id']}", dumps({k:item[k] for k in columns if k in item}))
-                for t in db.execute("SELECT code,premise,mechanism,motivation,status FROM topic WHERE project_id=? "
-                                    "ORDER BY created_at DESC,rowid DESC", (project_id,)):
-                    source("已入池 · " + t["code"], dumps(dict(t)))
-                for item in db.execute("SELECT l.id,l.content,l.evidence,l.source_ref,e.display_code FROM ledger l "
-                                       "JOIN episode e ON e.id=l.episode_id WHERE l.project_id=? ORDER BY l.created_at DESC,l.rowid DESC",
-                                       (project_id,)):
-                    source(f"台账 · {item['display_code']} · {item['id']}", "\n".join([item["content"],item["evidence"],item["source_ref"]]))
-                for item in db.execute("SELECT id,title,body FROM knowledge WHERE project_id=? AND status='readable' "
-                                       "ORDER BY created_at DESC,rowid DESC", (project_id,)):
-                    source(f"知识库 · {item['title']} · {item['id']}", item["body"])
+                if db.execute("SELECT 1 FROM project_archive WHERE project_id=? AND archived",(project_id,)).fetchone():
+                    raise Rejected("该项目已归档，恢复后可以研究新题")
+                for t in db.execute("SELECT code,premise,mechanism,motivation,status,id FROM research_topics WHERE project_id=? ORDER BY code",(project_id,)):
+                    published = db.execute("SELECT platform,title,published_at FROM topic_publication WHERE topic_id=? ORDER BY published_at",(t["id"],)).fetchall()
+                    if not published and t["status"]=="已制作":continue
+                    label = "已发布作品" if published else "正式候选"
+                    source(label + " · " + t["code"], dumps(dict(premise=t["premise"],mechanism=t["mechanism"],motivation=t["motivation"],publication=[dict(r) for r in published])))
                 if reference is not None:
                     if (not isinstance(reference, dict) or not isinstance(reference.get("path"), str)
                             or not isinstance(reference.get("sha256"), str) or len(reference["sha256"]) != 64
@@ -117,7 +136,7 @@ class TopicResearchMixin:
                 source("导演的研究方向", direction.strip())
                 thread, turn, attempt = new_id(), new_id(), new_id()
                 header = dict(purpose="topic_research", projectId=project_id, threadId=thread,
-                              methodPack=pack["id"], provider=provider, sourceCodes=catalog_codes)
+                              candidateCount=requested_count(direction), methodPack=pack["id"], provider=provider, sourceCodes=catalog_codes)
                 header["executorConnection"] = self.run_connection(provider)
                 digest, rel = self.store.freeze(turn, header, entries)
                 db.execute("INSERT INTO free_thread VALUES(?,?,?)", (thread,project_id,direction.strip()[:48]))

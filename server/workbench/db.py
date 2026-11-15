@@ -415,6 +415,18 @@ CREATE TABLE IF NOT EXISTS topic(
   premise TEXT NOT NULL, mechanism TEXT NOT NULL DEFAULT '', motivation TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL, episode_id TEXT, origin TEXT NOT NULL DEFAULT 'user', created_at REAL NOT NULL,
   UNIQUE(project_id, code));
+CREATE TABLE IF NOT EXISTS project_archive(project_id TEXT PRIMARY KEY REFERENCES project(id), archived INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS episode_archive(episode_id TEXT PRIMARY KEY REFERENCES episode(id), archived INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS topic_intent(topic_id TEXT PRIMARY KEY REFERENCES topic(id), intent TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS topic_publication(topic_id TEXT REFERENCES topic(id), platform TEXT NOT NULL, platform_id TEXT NOT NULL,
+    title TEXT NOT NULL, published_at TEXT NOT NULL, evidence TEXT NOT NULL, PRIMARY KEY(topic_id,platform,platform_id));
+CREATE VIEW IF NOT EXISTS active_episodes AS SELECT e.* FROM episode e WHERE NOT EXISTS
+    (SELECT 1 FROM project_archive a WHERE a.project_id=e.project_id AND a.archived)
+    AND NOT EXISTS (SELECT 1 FROM episode_archive a WHERE a.episode_id=e.id AND a.archived);
+CREATE VIEW IF NOT EXISTS research_topics AS SELECT t.* FROM topic t LEFT JOIN topic_intent i ON i.topic_id=t.id
+    WHERE NOT EXISTS(SELECT 1 FROM project_archive a WHERE a.project_id=t.project_id AND a.archived)
+    AND (EXISTS(SELECT 1 FROM topic_publication v WHERE v.topic_id=t.id)
+         OR ((t.episode_id IS NULL OR EXISTS(SELECT 1 FROM active_episodes e WHERE e.id=t.episode_id)) AND coalesce(i.intent,case when t.origin like '选题池/%' or t.status='弃用' then '待整理' else '想拍' end)='想拍'));
 CREATE TABLE IF NOT EXISTS story_group(
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES project(id), name TEXT NOT NULL,
   shared_limits TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL);

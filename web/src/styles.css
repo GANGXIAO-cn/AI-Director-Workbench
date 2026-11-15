@@ -1017,3 +1017,14 @@ button.link:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--acc); bor
 .input-drawer > header { position: sticky; top: -20px; z-index: 2; background: #1a1b1f; padding-block: 12px; }
 .decision-message-history article { border-bottom: 1px solid var(--line); padding: 12px 0; }
 .decision-message-history p { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.topic-research { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.topic-history { display: flex; align-items: center; gap: 8px; }
+.topic-history select { flex: 0 1 auto; min-width: 0; width: 0; flex: 1 1 0; max-width: 46em; text-overflow: ellipsis; }
+
+.home-topic-list { min-width: 0; max-height: 40vh; overflow-y: auto; }
+.home-topic-list:empty { display: none; }
+.btn.home-topic-option { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: start;
+  gap: 10px; width: 100%; padding: 8px; text-align: left; white-space: normal; line-height: 1.5; overflow-wrap: anywhere; }
+.picked-topic.chip { display: inline-flex; max-width: 100%; min-width: 0; }
+.picked-topic > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }

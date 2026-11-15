@@ -240,29 +240,48 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
         with connect(self.db_path) as db:
             return _row(db, "SELECT project_id FROM episode WHERE id=?", episode_id)
 
+    def set_archived(self, kind, ids, archived, command_id=None):
+        if kind not in ("project","episode") or type(archived) is not bool or not isinstance(ids,list) or not ids:
+            raise Rejected("请选择需要归档或恢复的项目或分集")
+        column = kind + "_id"
+        with transaction(self.db_path) as db:
+            def apply():
+                for item in dict.fromkeys(ids):
+                    _row(db, f"SELECT id FROM {kind} WHERE id=?", item)
+                    db.execute(f"INSERT INTO {kind}_archive VALUES(?,?) ON CONFLICT({column}) DO UPDATE SET archived=excluded.archived", (item,archived))
+                return dict(archived=archived,count=len(set(ids)))
+            return self._command(db,command_id,"set_archived",[kind,ids,archived],apply)
+
+    def archive_items(self, project_id=None):
+        with connect(self.db_path) as db:
+            if project_id:
+                return [dict(r) for r in db.execute("SELECT e.id,e.display_code||' '||e.title AS name,coalesce(a.archived,0) archived FROM episode e LEFT JOIN episode_archive a ON a.episode_id=e.id WHERE e.project_id=? ORDER BY e.display_code",(project_id,))]
+            return [dict(r) for r in db.execute("SELECT p.id,p.name,coalesce(a.archived,0) archived FROM project p LEFT JOIN project_archive a ON a.project_id=p.id ORDER BY p.created_at DESC")]
+
     def list_projects(self):
         with connect(self.db_path) as db:
             projects = {r["id"]:dict(r, recent=[], deliveries=[]) for r in db.execute(
-                "SELECT p.id,p.name,p.summary,p.config_id,COALESCE(pr.visible,1) AS recentVisible,COALESCE(pr.last_opened,p.created_at) AS recentAt,(SELECT count(*) FROM episode e WHERE e.project_id=p.id) AS episodes,"
+                "SELECT p.id,p.name,p.summary,p.config_id,COALESCE(pr.visible,1) AS recentVisible,COALESCE(pr.last_opened,p.created_at) AS recentAt,(SELECT count(*) FROM active_episodes e WHERE e.project_id=p.id) AS episodes,"
                 "(SELECT count(*) FROM setting_entry s WHERE s.project_id=p.id AND retired_revision IS NULL) AS settingsCount,"
                 "(SELECT v.sha256 FROM asset a JOIN asset_version v ON v.asset_id=a.id WHERE a.project_id=p.id AND a.kind='image' "
-                "ORDER BY v.grid,v.created_at DESC LIMIT 1) AS cover FROM project p LEFT JOIN project_recent pr ON pr.project_id=p.id ORDER BY p.created_at DESC")}
-            for r in db.execute("SELECT e.id,e.project_id,e.title,e.display_code,e.created_at,e.state FROM episode e JOIN kickoff k "
+                "ORDER BY v.grid,v.created_at DESC LIMIT 1) AS cover FROM project p LEFT JOIN project_recent pr ON pr.project_id=p.id WHERE NOT EXISTS(SELECT 1 FROM project_archive a WHERE a.project_id=p.id AND a.archived) ORDER BY p.created_at DESC")}
+            for r in db.execute("SELECT e.id,e.project_id,e.title,e.display_code,e.created_at,e.state FROM active_episodes e JOIN kickoff k "
                                 "ON k.episode_id=e.id ORDER BY e.created_at DESC"):
                 recent = projects[r["project_id"]]["recent"]
                 if len(recent)<5:
                     recent.append(dict(r))
             for r in db.execute("SELECT d.id,d.episode_id,d.scope,d.created_at,e.title,e.display_code,e.project_id "
-                                "FROM delivery d JOIN episode e ON e.id=d.episode_id ORDER BY d.created_at DESC"):
+                                "FROM delivery d JOIN active_episodes e ON e.id=d.episode_id ORDER BY d.created_at DESC"):
                 projects[r["project_id"]]["deliveries"].append(dict(r))
             return list(projects.values())
 
     def project_view(self, project_id):
         with connect(self.db_path) as db:
             project = _loads(_row(db, "SELECT * FROM project WHERE id=?", project_id), "spec_preset", "production")
+            project["reservedEpisodeCodes"] = [r[0] for r in db.execute("SELECT display_code FROM episode WHERE project_id=?", (project_id,))]
             project["settings"] = self._settings(db, project_id)[1]
             project["episodes"] = [_loads(dict(r), "leftover_facts") for r in db.execute(
-                "SELECT e.*, k.id AS kickoff_id FROM episode e LEFT JOIN kickoff k ON k.episode_id=e.id "
+                "SELECT e.*, k.id AS kickoff_id FROM active_episodes e LEFT JOIN kickoff k ON k.episode_id=e.id "
                 "WHERE e.project_id=? ORDER BY e.display_code", (project_id,))]
             project["imports"] = [dict(r) for r in db.execute(
                 "SELECT id,episode_id,original_name,purpose,sha256,bytes,parse_status,diagnostic,copied_at "
@@ -486,7 +505,7 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                     tid, thread = self._draft_thread(db,ep["project_id"],episode_id,aid,initial_stage,first,executor_plan)
                     result["taskId"] = tid
                     if source_type == "idea" and first.strip() in ("随机选","随机","随机选一个"):
-                        count = db.execute("SELECT count(*) FROM topic WHERE project_id=? AND status='候选' AND episode_id IS NULL",(ep["project_id"],)).fetchone()[0]
+                        count = db.execute("SELECT count(*) FROM research_topics WHERE project_id=? AND status='候选' AND episode_id IS NULL AND id NOT IN (SELECT topic_id FROM topic_publication)",(ep["project_id"],)).fetchone()[0]
                         question = "从本项目的选题池挑，还是想一个新故事？" if count else "本项目还没有可用选题卡。要我想一个新故事吗？"
                         self._message(db,thread,"assistant",question,None,None,None,kind="clarify",
                                       payload=dict(kickoffChoice=True,options=(["从选题池挑"] if count else [])+["想一个新故事"],relatedIds=[]))
@@ -1225,6 +1244,13 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
         else:
             trailer = prompts.draft_trailer(run_id, digest, task["artifact_id"], run["base_version_id"], task["stage"], entries,
                                             mode="document" if document else "changes", dialogue=bool(dialogue))
+            if task["stage"] == "prompts":
+                trailer += ("\n官方 H3 的 txt 使用英文。项目方法中的 video_zh、同框和制作固定段落是内容依据，"
+                            "逐字引用中文的要求只适用于旧中文格式。在英文正文中沿用基稿的英文表达或准确翻译。"
+                            "原语言对白和画面上实际出现的文字用引号标明。")
+                if run["base_version_id"]:
+                    trailer += ("局部修改只提交受影响的 segments 条目，其余段由程序继承。"
+                                "段内只改请求涉及的镜头及必要的一致性描述，沿用已有英文角色定义。")
             if dialogue:
                 trailer += ("\n以上是明确要求改稿时的字段规范。先按导演本条请求判断：查看、询问、假设、建议或仅讨论时，"
                             "kind 填 discussion，reply 用正文答复，directorRequest 留空，changes 为空。"
@@ -1281,13 +1307,37 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
             return '\n'.join(f"第 {e['attempt']} 次（{labels[e['phase']]}）："+redact('；'.join(e['problems']),1000)
                              for e in validation_history if e['problems'])
 
+        def prepare_repair(problems, envelope_only):
+            if envelope_only and previous_reply and document and dialogue and request.images and run["provider"] == "antigravity":
+                # The image turn already produced the manuscript. Use print mode's native
+                # structured output for the single formatting retry, without re-reading media.
+                request.images = []
+                fields = {field: {"type": "string"} for field in WRITABLE[task["stage"]]}
+                request.schema = {
+                    "type": "object", "required": ["kind", "reply", "directorRequest", "fields", "removedIds"],
+                    "properties": {
+                        "kind": {"type":"string", "enum":["discussion"] if dialogue.get("readOnly") else ["discussion","draft"]},
+                        "reply": {"type":"string"}, "directorRequest": {"type":"string"},
+                        "fields": {"type":"object","properties":fields,"additionalProperties":False},
+                        "removedIds": contracts.stage_dialogue_schema(True)["properties"]["removedIds"]
+                    }, "additionalProperties": False
+                }
+                request.prompt = ("只把上一轮实际回复整理成指定 JSON，不重新创作。讨论只填 reply；"
+                                  "明确要求改稿且有实际稿件时填 draft、directorRequest 原样复制导演请求，"
+                                  "将已修改内容放进 fields。数组或对象字段序列化为 JSON 字符串。"
+                                  "分段提示词放入 fields.segments，以实际段号为键，只提交已修改的段。"
+                                  "不得补写缺失的稿件。\n" + dumps(dict(request=dialogue["request"],
+                                      previousResponse=previous_reply, errors=problems)))
+            else:
+                request.prompt = self._format_repair_prompt(prompt, previous_reply, problems)
+
         if not outcome.ok and outcome.error_class == "schema":
             # 实测 143：执行器回了文字却没有按要求的格式，先请它按格式重回一次，与预检不合格的处理相同。
             with connect(self.db_path) as db:
                 if _row(db, "SELECT status FROM run WHERE id=?", run_id)["status"] == "stopped":
                     return []
             record_validation([outcome.diagnostic or '回复不符合输出格式'], 'schema')
-            request.prompt = self._format_repair_prompt(prompt, previous_reply, validation_history[-1]['problems'])
+            prepare_repair(validation_history[-1]['problems'], envelope_only=True)
             attempts += 1
             request.attempt = attempts + 1
             if document:
@@ -1300,10 +1350,12 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                 return self._finish(run_id,"failed",reason="执行器修正回包时中断",diagnostic=failure_diagnostic(),attempts=attempts)
         while outcome.ok:
             problems = []
+            envelope_error = False
             if document:
                 try:
                     outcome.structured = document_to_internal(run, task, outcome.structured, dialogue, WRITABLE[task['stage']])
                 except ValueError as exc:
+                    envelope_error = True
                     problems = [str(exc)]
             if clarify and isinstance(outcome.structured, dict) and "result" in outcome.structured:
                 outcome.structured = outcome.structured["result"]
@@ -1337,7 +1389,7 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
             with connect(self.db_path) as db:
                 if _row(db, "SELECT status FROM run WHERE id=?", run_id)["status"] == "stopped":
                     return []
-            request.prompt = self._format_repair_prompt(prompt, previous_reply, problems)
+            prepare_repair(problems, envelope_only=envelope_error)
             attempts += 1   # one same-content re-format request; not counted as a revision round
             request.attempt = attempts + 1
             try:
@@ -1593,9 +1645,18 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                             frozen_plan = json.loads(self.store.read_blob(timing["sha256"]))
                             frozen_layout = frozen_plan["layout"]["segments"]
                             layout = {s["id"]:s for s in frozen_layout}
+                            previous_txt = {}
+                            if run["base_version_id"]:
+                                base = self._version_of(db, run["base_version_id"], task["artifact_id"])
+                                previous_txt = {key: entry.get("txt") for key, entry in
+                                                json.loads(base["content"]).get("segments", {}).items()
+                                                if isinstance(entry, dict)}
                             for sid, segment in bound.items():
                                 if value[sid].get("prompt_format") == "h3_official":
-                                    pass  # English shot headings use cut times; check_segment_prompt checks the entry.
+                                    from .officialh3 import has_unquoted_chinese
+                                    txt = value[sid].get("txt")
+                                    if isinstance(txt, str) and has_unquoted_chinese(txt) and txt != previous_txt.get(sid):
+                                        errors.append(f"{sid} 的 H3 正文含中文描述，请翻译为英文，仅原语言对白与画面文字放入引号。")
                                 elif value[sid].get("prompt_format") != "readable_v3":
                                     errors.append(f"{sid} 须声明 prompt_format=readable_v3")
                                 else:

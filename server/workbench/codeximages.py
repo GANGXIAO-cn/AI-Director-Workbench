@@ -115,7 +115,7 @@ class CodexImageProvider:
             def send(message):
                 proc.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
                 proc.stdin.flush()
-            send(dict(id=1, method="initialize", params=dict(clientInfo=dict(name="ai_director_workbench",version="0.1.0"))))
+            send(dict(id=1, method="initialize", params=dict(clientInfo=dict(name="ai_director_workbench",version="1.0.0"))))
             deadline = time.monotonic() + self.timeout
             image = None
             while time.monotonic() < deadline:

@@ -143,7 +143,7 @@ export function ResourceBrowser({kind,storyPicker=false,episodePicker,settingsOn
   const [bodySearch,setBodySearch]=useState(false),[docKind,setDocKind]=useState("");
   const [searchRevision,setSearchRevision]=useState(0);
   const selectedKind=methodOnly?"method":docKind;
-  const [reason,setReason]=useState("借鉴写法与结构");
+  const [reason,setReason]=useState("");
   const act=useAction();
   const scripts=useQuery<{rows:ScriptRow[];total:number;categories:string[]}>(books&&!settingsOnly?"browse_scripts":null,{query:bodySearch?"":query,category,page,kind:selectedKind,recommended:recommended&&!bodySearch,episode_id:episodeId,stage});
   const palettes=useQuery<{rows:Card[];total:number;categories:string[]}>(books||settingsOnly?null:"browse_palettes",{query,category,page});
@@ -211,7 +211,7 @@ export function ResourceBrowser({kind,storyPicker=false,episodePicker,settingsOn
       }}><MarkedExcerpt text={excerpt.text} offset={excerpt.offset} match={excerpt.match}/></div><div className="row">
       <button className="btn" disabled={!excerpt.offset} onClick={()=>read(excerpt.path,Math.max(0,excerpt.offset-2400),"",excerpt.match,excerpt.sha256)}>上一段</button>
       <span>{excerpt.offset+1}–{Math.min(excerpt.length,excerpt.offset+2400)} / {excerpt.length}</span><button className="btn" disabled={excerpt.offset+2400>=excerpt.length} onClick={()=>read(excerpt.path,excerpt.offset+2400,"",excerpt.match,excerpt.sha256)}>下一段</button>
-      {onChoose && <>{storyPicker?<small>{span?"已选 "+Array.from(span.text).length+" 字":"可拖选部分原文，或引用整段"}</small>:<input aria-label="借鉴方式" value={reason} onChange={e=>setReason(e.target.value)}/>}<button className="btn primary" onClick={()=>{onChoose({...excerpt,...(storyPicker?span:null),reason});setExcerpt(null);}}>{storyPicker&&span?"引用选中文字":"引用此段"}</button></>}
+      {onChoose && <>{storyPicker?<small>{span?"已选 "+Array.from(span.text).length+" 字":"可拖选部分原文，或引用整段"}</small>:<input aria-label="想借鉴哪一点？（选填）" placeholder="想借鉴哪一点？（选填）" value={reason} onChange={e=>setReason(e.target.value)}/>}<button className="btn primary" onClick={()=>{onChoose({...excerpt,...(storyPicker?span:null),reason});setExcerpt(null);}}>{storyPicker&&span?"引用选中文字":"引用此段"}</button></>}
       <button className="btn" onClick={()=>setExcerpt(null)}>返回资料列表</button></div></Modal>}
     {cardId && <Modal width={880} onClose={()=>setCardId("")}><button className="btn" onClick={()=>setCardId("")}>返回色卡库</button>{detail.error && <p className="error">{detail.error}</p>}{detail.data && <>
       <h2>{detail.data.name} · {detail.data.english}</h2><p>{detail.data.summary}</p>
@@ -299,7 +299,7 @@ export function StepRequirements({pid,eid,stage,close,toComposer}:{pid:string;ei
     {form.mode!=="off" && <><button className="btn" onClick={()=>setBrowse(!browse)}>{browse?"收起资料":"选择参考片段"}</button>
       {browse && <ResourceBrowser key={form.mode} kind="knowledge" recommended episodeId={eid} stage={stage} methodOnly={form.mode==="method"} initialQuery={form.goal} onChoose={r=>{change({references:[...form.references.filter(x=>x.path!==r.path||x.offset!==r.offset),r]});setBrowse(false);}}/>}
       {form.references.map((r,i)=><div key={r.path+r.offset}><SavedExcerpt record={r}/>
-        <div className="row"><label>借鉴方式 <input value={r.reason??""} onChange={e=>change({references:form.references.map((entry,j)=>j===i?{...entry,reason:e.target.value}:entry)})}/></label><button className="btn" onClick={()=>change({references:form.references.filter((_,j)=>i!==j)})}>移除</button></div></div>)}</>}
+        <div className="row"><label>想借鉴哪一点？（选填） <input value={r.reason??""} onChange={e=>change({references:form.references.map((entry,j)=>j===i?{...entry,reason:e.target.value}:entry)})}/></label><button className="btn" onClick={()=>change({references:form.references.filter((_,j)=>i!==j)})}>移除</button></div></div>)}</>}
     <ErrorLine error={act.error}/>{saved.error&&<span className="error">{saved.error}</span>}
     <div className="row"><button className="btn" disabled={!saved.data||!definition.data||act.busy} onClick={()=>act.run(()=>save(false))}>保存本步配置</button>
       {stage!=="assets" && toComposer && <button className="btn primary" disabled={!saved.data||!definition.data||act.busy} onClick={()=>act.run(()=>save(true))}>保存并带到创作对话</button>}<button className="btn" onClick={()=>setShowHistory(!showHistory)}>配置历史</button><button className="btn" onClick={close}>关闭</button></div>

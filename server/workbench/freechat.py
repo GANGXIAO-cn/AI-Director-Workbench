@@ -1,4 +1,5 @@
 """Project conversations with explicitly selected, versioned inputs."""
+from dataclasses import replace
 from io import BytesIO
 
 from PIL import Image
@@ -23,8 +24,8 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
         episodes = sorted(overview["episodes"], key=lambda ep: ep["created_at"], reverse=True)
         todos = overview["todos"]
         candidates = db.execute(
-            "SELECT code, premise, count(*) OVER () AS total FROM topic "
-            "WHERE project_id=? AND status='候选' AND episode_id IS NULL ORDER BY rowid DESC LIMIT 20",
+            "SELECT code, premise, count(*) OVER () AS total FROM research_topics "
+            "WHERE project_id=? AND status='候选' AND episode_id IS NULL AND id NOT IN (SELECT topic_id FROM topic_publication) ORDER BY created_at DESC LIMIT 20",
             (project_id,),
         ).fetchall()
         return dict(
@@ -178,6 +179,18 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
             return self._command(db,command_id,"send_free_chat",payload,create)
 
     def retry_free_chat(self, project_id, turn_id, expected_attempt, command_id=None):
+        with connect(self.db_path) as db:
+            turn = self._free_turn(db,project_id,turn_id)
+            if db.execute("SELECT 1 FROM topic_research WHERE thread_id=?",(turn["thread_id"],)).fetchone():
+                if turn["attempt"] != expected_attempt or turn["status"] not in ("failed","waiting_quota","stopped"):
+                    raise Conflict("请选择已失败或停止的研究")
+                manifest,digest = self.store.load_manifest(turn["manifest_relpath"])
+                if digest != turn["input_hash"]:
+                    raise Rejected("无法核对原研究资料")
+                note = next((e for e in self.store.manifest_texts(manifest) if e["role"]=="reference_note"),None)
+                import json
+                reference = json.loads(note["text"]) if note else None
+                return self.start_topic_research(project_id,turn["text"],turn["provider"],command_id,reference)
         with transaction(self.db_path) as db:
             def retry():
                 turn = self._free_turn(db,project_id,turn_id)
@@ -233,16 +246,38 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
                              "结合待办、剧集状态和候选选题，给出具体可做的下一步。空项目可以先聊想法，"
                              "也可以在选题池加入候选，或在项目页新增一集。把建议与已发生的事实分清。"
                              "对话中的建议不会自动创建选题、开工或改稿。")
+            schema = REPLY_SCHEMA
             if research:
+                count = manifest.get("candidateCount") or topicresearch.requested_count(t["text"])
+                schema = topicresearch.result_schema(count)
+                guidance += f"本次必须恰好生成 {count} 张新选题卡，参考故事不计入数量。"
                 entries, citations = topicresearch.research_inputs(entries)
             prompt = prompt_from(entries, guidance, purpose)
             choice = manifest.get("executorConnection",manifest.get("creator",{}))
-            request = ExecRequest(attempt,purpose,purpose,prompt,topicresearch.SCHEMA if research else REPLY_SCHEMA,"new",work,
+            request = ExecRequest(attempt,purpose,purpose,prompt,schema,"new",work,
                                   model=choice.get("model"), effort=choice.get("effort"),connection=choice,
                                   timeout=int(self.get_setting("executor_timeout",600)),images=images)
             out = self.executors[t["provider"]].start(request)
+            if research and out.ok and isinstance(out.structured,dict):
+                cards = out.structured.get("candidates")
+                if isinstance(cards,list) and 0 < len(cards) < count:
+                    topicresearch.research_reply(out.structured, citations, len(cards))
+                    missing = count - len(cards)
+                    with connect(self.db_path) as db:
+                        active=db.execute("SELECT 1 FROM free_turn WHERE id=? AND attempt=? AND status='running'",(turn_id,attempt)).fetchone()
+                    if not active:
+                        return
+                    extra = replace(request, attempt=2, schema=topicresearch.result_schema(missing),
+                        prompt=prompt + f"\n本次为补充，已有 {len(cards)} 个选题，只返回另外 {missing} 个。避开这些标题和故事：" + dumps(cards))
+                    out = self.executors[t["provider"]].start(extra)
+                    if out.ok:
+                        topicresearch.research_reply(out.structured, citations, missing)
+                        combined = cards + out.structured["candidates"]
+                        if len({card["title"].strip().casefold() for card in combined}) != count:
+                            raise ValueError("补充的选题标题重复")
+                        out = replace(out, structured={"candidates":combined})
             if research and out.ok:
-                reply, status = topicresearch.research_reply(out.structured, citations), "succeeded"
+                reply, status = topicresearch.research_reply(out.structured, citations, count), "succeeded"
             elif out.ok:
                 body = out.structured
                 if not isinstance(body,dict) or not isinstance(body.get("reply"),str) or not body["reply"].strip():

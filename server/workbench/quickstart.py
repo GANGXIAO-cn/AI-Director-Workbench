@@ -42,9 +42,8 @@ def validate_directions(value, sources, idea=''):
 
 class QuickStartMixin:
     def similar_topics(self, project_id, text, limit=5):
-        candidates=[dict(code=t['code'],title=t['title'],premise=t['premise'],mechanisms=t.get('mechanisms',[])) for t in self.source_topics(project_id)]
         with connect(self.db_path) as db:
-            candidates += [dict(code=t['code'],title=t['code'],premise=t['premise'],mechanisms=[t['mechanism']] if t['mechanism'] else []) for t in db.execute('SELECT * FROM topic WHERE project_id=?',(project_id,))]
+            candidates = [dict(code=t['code'],title=t['code'],premise=t['premise'],mechanisms=[t['mechanism']] if t['mechanism'] else []) for t in db.execute('SELECT * FROM research_topics WHERE project_id=?',(project_id,))]
         query=bigrams(text); result={}
         for item in candidates:
             terms=bigrams(item['premise']);score=len(query & terms)/max(1,len(query | terms))
@@ -159,14 +158,15 @@ class QuickStartMixin:
         with connect(self.db_path) as db:
             kickoff=self._kickoff(db,eid);ep=self._episode_in(db,eid);pid=ep['project_id']
             idea=self._source_text(db,kickoff)
-            recent=[dict(code=r['display_code'],date=r['created_at'],story=json.loads(r['content']).get('synopsis','')) for r in db.execute("SELECT e.display_code,e.created_at,v.content FROM episode e JOIN artifact a ON a.episode_id=e.id AND a.stage='story' JOIN version v ON v.id=a.adopted_version_id WHERE e.project_id=? AND e.id<>? ORDER BY e.created_at DESC,e.rowid DESC LIMIT 5",(pid,eid))]
-            prod=production(db,pid);ledger=read_named(prod,'topicLedger');mechanism=read_named(prod,'mechanismLibrary')
-        series=[]
-        if ledger:
-            document=json.loads(ledger[1]);series=[{k:v for k,v in r.items() if k in ('id','title','summary','synopsis','core_desire','comedy_mechanism','ending','recency_basis','evidence_scope')} for r in document.get('episodes',[])[-5:]]
-        topics=self.similar_topics(pid,idea)
-        knowledge=[r for r in self.similar(pid,idea,10) if r['kind']=='knowledge'][:5]
-        return dict(idea=idea,recent=recent or '无',series=series or '无',seriesOrdering=json.loads(ledger[1]).get('ordering_note','原资料顺序') if ledger else '无',topics=topics,knowledge=knowledge,mechanisms=mechanism[1].decode() if mechanism else '未提供机制库')
+            recent=[dict(r) for r in db.execute("""
+                SELECT t.code,t.premise story,min(v.published_at) date
+                FROM research_topics t JOIN topic_publication v ON v.topic_id=t.id
+                WHERE t.project_id=? GROUP BY t.id ORDER BY date DESC,t.code LIMIT 5
+            """,(pid,))]
+            allowed_knowledge={r[0] for r in db.execute("SELECT id FROM knowledge WHERE project_id=? AND episode_id IS NULL AND status='readable'",(pid,))}
+            mechanism=read_named(production(db,pid),'mechanismLibrary')
+        return dict(idea=idea,recent=recent or '无',series='无',seriesOrdering='按已核实的首次发布时间',
+                    topics=self.similar_topics(pid,idea),knowledge=[r for r in self.similar(pid,idea,10) if r['kind']=='knowledge' and r['id'] in allowed_knowledge][:5],mechanisms=mechanism[1].decode() if mechanism else '未提供机制库')
 
     def _direction_run(self,cid,context,instruction):
         value=self._continuous_checkpoint(cid);eid=value['episode_id'];cursor=value['cursor']

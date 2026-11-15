@@ -127,7 +127,7 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
     if (open) {
       await submit("post_message", {task_id:task.id, text, create_executor:nextExecutor, ...options},files);
     } else {
-      const result=await submit("create_task", {episode_id:view.episode.id, stage:art.stage, goal:text, executor:{...plan,create:nextExecutor}, ...options},files);
+      const result=await submit("create_task", {episode_id:view.episode.id, stage:art.stage, goal:text, executor:{create:nextExecutor}, ...options},files);
       setSentTask({id:result.taskId,focus});
     }
     follow.current=true;setText(""); setFiles([]); setSel(null); await reload();

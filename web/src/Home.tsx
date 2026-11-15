@@ -1,3 +1,4 @@
+import { ArchiveControls } from "./ArchiveControls";
 import {ExecutorPlanFields,useExecutorPlan} from "./ExecutorDefaults";
 import {useStoryImport} from "./storyExcerpt";
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -57,7 +58,6 @@ export default function Home({ tab, projects, rememberProject, referenceDraft }:
   const project = useQuery<any>(existing ? "project_overview" : null, { project_id: projectId });
   const topics = useQuery<any[]>(existing ? "topics" : null, { project_id: projectId });
   const configs=useQuery<any[]>("available_configs");
-  const sourceCards = useQuery<any[]>(existing && pop === "topic" ? "source_topics" : null, {project_id:projectId});
   const exec = useQuery<any>("probe");
   const act = useAction();
   const list = projects.data ?? [];
@@ -74,9 +74,9 @@ export default function Home({ tab, projects, rememberProject, referenceDraft }:
     ? <div role="alert" className="error">项目列表读取失败 · {projects.error} <button className="btn" onClick={projects.reload}>重试项目列表</button></div>
     : !projects.data && <p role="status">正在读取项目列表…</p>;
   const nextCode = () => {
-    const eps = project.data?.project.id === projectId ? project.data.episodes : [];
-    const nums = eps.map((e: any) => parseInt(e.display_code.replace(/\D/g, ""), 10)).filter((n: number) => !isNaN(n));
-    const prefix = eps[0]?.display_code.replace(/\d+/g, "") || "E";
+    const eps = project.data?.project.id === projectId ? project.data.project.reservedEpisodeCodes : [];
+    const nums = eps.map((code: string) => parseInt(code.replace(/\D/g, ""), 10)).filter((n: number) => !isNaN(n));
+    const prefix = eps[0]?.replace(/\d+/g, "") || "E";
     return `${prefix}${String((nums.length ? Math.max(...nums) : 0) + 1).padStart(2, "0")}`;
   };
   const episodes = project.data?.project.id === projectId ? project.data.episodes : [];
@@ -195,7 +195,7 @@ export default function Home({ tab, projects, rememberProject, referenceDraft }:
     {listNotice}{list.map(p=><a className="setting-link" key={p.id} href={`#/p/${p.id}/${tab}`}>{p.name}</a>)}
     {projects.data && !list.length && <a href="#/">创建项目</a>}</main>;
   if (tab==="projects" || tab==="deliveries") return <div className="app"><main className="main page"><h1>{tab==="projects"?"项目":"本地交付包"}</h1>
-    {listNotice}{tab==="projects" && <OpenProjectFolder/>}
+    {listNotice}{tab==="projects" && <><OpenProjectFolder/><ArchiveControls reload={projects.reload}/></>}
     {tab==="projects"?<div className="director-grid">{list.map(p=><ProjectCard p={p} key={p.id}/>)}</div>:list.map(p=><section key={p.id}><h2>{p.name}</h2>{p.deliveries?.length?p.deliveries.map((d:any)=><p key={d.id}><a href={`#/e/${d.episode_id}/delivery?delivery=${encodeURIComponent(d.id)}`}>{d.display_code} · {d.title || p.name} · {d.scope==="full"?"整集":"限定段落"} · {new Date(d.created_at*1000).toLocaleString()}</a></p>):<p>暂无交付记录</p>}</section>)}</main></div>;
   const recent = list.filter(p => p.recentVisible).flatMap(project => project.recent.map((episode:any) => ({episode, project})))
     .sort((a,b) => b.episode.created_at - a.episode.created_at).slice(0,5);
@@ -246,7 +246,7 @@ export default function Home({ tab, projects, rememberProject, referenceDraft }:
             {kickoffMode && <DirectorFiles files={pictures} remove={i=>setPictures(pictures.filter((_,n)=>n!==i))}/>}
             {["idea","episode"].includes(mode) && (original || topic || previous) && <div className="row" style={{padding:"0 14px 10px"}}>
               {original && <button className="chip" onClick={()=>setOriginal(null)}>按原文拍 · 《{original.title}》 · 第 {original.offset+1}–{original.offset+Array.from(original.text).length} 字 ×</button>}
-              {topic && <button className="chip" onClick={() => setTopic(null)}>选题 {topic.code} · {topic.premise} ×</button>}
+              {topic && <button className="chip picked-topic" title={topic.premise} onClick={() => setTopic(null)}>选题 {topic.code}<span>{topic.premise}</span> ×</button>}
               {previous && <button className="chip" onClick={() => setPrevious("")}>承接 {opened.find((e: any) => e.id === previous)?.display_code} ×</button>}</div>}
             {mode === "import" && (
               <div className="row" style={{ padding: "0 14px 10px" }}>
@@ -268,7 +268,7 @@ export default function Home({ tab, projects, rememberProject, referenceDraft }:
               </div>:<button className="btn primary" style={{ borderRadius: "50%", width: 34, height: 34, padding: 0 }} data-home-submit aria-label="继续" disabled={act.busy || !projectReady || (mode === "delivery" && !destination)} onClick={()=>send()}><ArrowUp size={17} aria-hidden="true"/></button>}
             </div>
             {pop && <Popover kind={pop} close={() => {setPop(choosingResearchOwner&&pop==="project"?"topic":"");if(pop!=="project")setChoosingResearchOwner(false);}} projects={list} projectId={projectId} setProjectId={selectProject}
-              topicQuery={topics} projectLabel={projectLabel} configs={configs} listNotice={listNotice} sourceCards={sourceCards} takeCard={async (c:any) => {const r=await cmd("take_source_topic",{project_id:projectId,code:c.code,sha256:c.sha256}); referenceDraft.change(null);setOriginal(null);setTopic({id:r.topicId,code:c.code,premise:c.premise}); await topics.reload(); setPop("");}}
+              topicQuery={topics} projectLabel={projectLabel} configs={configs} listNotice={listNotice}
               key={pop + projectId} project={project.data} topics={(topics.data ?? []).filter(t => t.project_id === projectId)} pickTopic={(t: any) => { if (t.episode_id) { go(`#/e/${t.episode_id}/story`); return; } referenceDraft.change(null);setOriginal(null);setTopic(t); setPop(""); }}
               referenceDraft={referenceDraft} onOriginal={(part:Excerpt)=>{setOriginal(part);setTopic(null);referenceDraft.change(null);setPop("");}} researchOnOpen={choosingResearchOwner} chooseOwner={()=>{setChoosingResearchOwner(true);setPop("project");}}
               addTopic={async (code: string, premise: string) => {
@@ -276,7 +276,7 @@ export default function Home({ tab, projects, rememberProject, referenceDraft }:
                 const pid = projectId;
                 if (pid !== projectId) setProjectId(pid);
                 const r = await cmd("add_topic",{project_id:pid,code,premise});
-                referenceDraft.change(null);setOriginal(null);setTopic({id:r.topicId,code,premise}); if (pid === projectId) await topics.reload(); setPop("");
+                referenceDraft.change(null);setOriginal(null);setTopic({id:r.topicId,code:r.code || code,premise}); if (pid === projectId) await topics.reload(); setPop("");
               }} styleNote={styleNote} paletteCards={paletteCards} saveStyle={(v: string,cards:PaletteChoice[]) => {setStyleNote(v); setPaletteCards(cards); setPop("");}}
               settings={{ratio,executorPlan,setExecutorPlan,runMode,setRatio,setRunMode,quick:["idea","episode"].includes(mode),
                 advanced:["idea","episode"].includes(mode)?()=>act.run(async()=>{
@@ -374,7 +374,7 @@ function ProjectCard({ p }: { p: any }) {
   );
 }
 
-function Popover({ configs, listNotice, topicQuery, projectLabel, kind, close, projects, projectId, setProjectId, topics, sourceCards, takeCard, pickTopic, addTopic, styleNote, paletteCards, saveStyle, onOriginal, chooseOwner, researchOnOpen, referenceDraft, settings }: any) {
+function Popover({ configs, listNotice, topicQuery, projectLabel, kind, close, projects, projectId, setProjectId, topics, pickTopic, addTopic, styleNote, paletteCards, saveStyle, onOriginal, chooseOwner, researchOnOpen, referenceDraft, settings }: any) {
 
   const style = { position: "static", width: "auto", margin: "0 14px 14px" } as const;
   const [draft, setDraft] = useState<string>(styleNote);
@@ -383,7 +383,6 @@ function Popover({ configs, listNotice, topicQuery, projectLabel, kind, close, p
 
   const [browseDraft,setBrowseDraft]=useState(false);
   const existing=!!projectId&&!projectId.startsWith("__new");
-  const [sourceCode,setSourceCode] = useState("");
   const [topicCode, setTopicCode] = useState("");
   const [premise, setPremise] = useState("");
   const act = useAction();
@@ -406,23 +405,23 @@ function Popover({ configs, listNotice, topicQuery, projectLabel, kind, close, p
     </div>);
   if (kind === "topic") return (
     <div className="pop col" style={style}><h3>{projectLabel} · 选题池</h3>
-      {existing&&(!topicQuery.data||!sourceCards.data)&&!topicQuery.error&&!sourceCards.error&&<p role="status">正在读取项目选题…</p>}
+      {existing&&!topicQuery.data&&!topicQuery.error&&<p role="status">正在读取项目选题…</p>}
       {topicQuery.error&&<span className="error">{topicQuery.error} <button className="btn" onClick={topicQuery.reload}>重新读取</button></span>}
-      {sourceCards.error && <span className="error">{sourceCards.error}</span>}
-      {sourceCards.data?.some((c:any)=>!topics.some((t:any)=>t.code===c.code)) && <><label className="source-topic-picker">项目原始选题池<select value={sourceCode} onChange={e=>setSourceCode(e.target.value)}><option value="">选择原卡（保留原文与来源）</option>{sourceCards.data.filter((c:any)=>!topics.some((t:any)=>t.code===c.code)).map((c:any)=><option key={c.code} value={c.code}>{c.code} · {c.status} · {c.premise}</option>)}</select></label><button className="btn" disabled={!sourceCode || act.busy} onClick={()=>act.run(()=>takeCard(sourceCards.data.find((c:any)=>c.code===sourceCode)))}>选用原卡</button></>}
-      {topics.filter(isKickoffTopic).map((t: any) =>
-        <button key={t.id} className="btn ghost" onClick={() => pickTopic(t)}>{t.code} · {t.premise} · 选用</button>)}
-      {existing&&topicQuery.data&&sourceCards.data&&!topics.some(isKickoffTopic)&&!sourceCards.data.some((c:any)=>!topics.some((t:any)=>t.code===c.code))&&
+      <div className="home-topic-list">{topics.filter(isKickoffTopic).map((t: any) =>
+        <button key={t.id} className="btn ghost home-topic-option" onClick={() => pickTopic(t)}>
+          <b>{t.code}</b><span>{t.premise}</span><span>选用</span>
+        </button>)}</div>
+      {existing&&topicQuery.data&&!topics.some(isKickoffTopic)&&
         <span className="muted small">{topics.length?"本项目目前没有可开工的候选卡。":"本项目还没有选题卡。"}可以填写故事前提新建一张，也可以展开选题研究。</span>}
       {referenceDraft.value&&<ResearchReference reference={referenceDraft.value} replace={()=>setBrowseDraft(true)} clear={()=>referenceDraft.change(null)}/>}
-      {referenceDraft.value&&<div className="row"><button className="btn primary" onClick={()=>onOriginal(referenceDraft.value)}>按这段原文拍</button>
-        <button className="btn" onClick={()=>existing?setResearch(!research):chooseOwner()}>{existing?"用这段找灵感":"选择已有项目研究备选题"}</button></div>}
-      <div className="row"><input placeholder="选题编号" value={topicCode} onChange={e => setTopicCode(e.target.value)} /><input placeholder="故事前提" value={premise} onChange={e => setPremise(e.target.value)} /></div>
-      <div className="row"><button className="btn primary" disabled={!projectId || !topicCode.trim() || !premise.trim() || act.busy} onClick={() => act.run(() => {
+      {referenceDraft.value&&<div className="row"><button className="btn primary" onClick={()=>onOriginal(referenceDraft.value)}>按原文改编</button>
+        <button className="btn" onClick={()=>existing?setResearch(!research):chooseOwner()}>{existing?"参考这段内容想新题":"选择已有项目研究备选题"}</button></div>}
+      <div className="row"><input placeholder="编号（自动生成）" value={topicCode} onChange={e => setTopicCode(e.target.value)} /><input placeholder="故事想法" value={premise} onChange={e => setPremise(e.target.value)} /></div>
+      <div className="row"><button className="btn primary" disabled={!projectId || !premise.trim() || act.busy} onClick={() => act.run(() => {
         if (topics.some((t: any) => t.code === topicCode.trim())) throw new Error("该选题编号已存在，请选择原卡或换一个编号");
         return addTopic(topicCode.trim(),premise.trim());
-      })}>新建并选用</button>{projectId && !projectId.startsWith("__new") && <a className="btn" href={`#/p/${projectId}/topics`}>管理选题池</a>}{!referenceDraft.value&&<button className="btn" onClick={()=>{setBrowseDraft(true);}}>从共享知识库找素材</button>}
-        {existing&&!referenceDraft.value&&<button className="btn" aria-expanded={research} onClick={()=>setResearch(!research)}>{research?"收起选题研究":"用 AI 研究选题"}</button>}</div>
+      })}>保存并选用</button>{projectId && !projectId.startsWith("__new") && <a className="btn" href={`#/p/${projectId}/topics`}>查看全部选题</a>}{!referenceDraft.value&&<button className="btn" onClick={()=>{setBrowseDraft(true);}}>从知识库选参考</button>}
+        {existing&&!referenceDraft.value&&<button className="btn" aria-expanded={research} onClick={()=>setResearch(!research)}>{research?"收起选题研究":"让 AI 想选题"}</button>}</div>
       {existing&&research&&<TopicResearch projectId={projectId} poolChanged={topicQuery.reload} hidePicker referenceDraft={referenceDraft} onPick={pickTopic}/>}
       {browseDraft&&<Modal width={960} onClose={()=>setBrowseDraft(false)}><button className="btn" onClick={()=>setBrowseDraft(false)}>返回选题</button>
         <ResourceBrowser kind="knowledge" storyPicker onChoose={part=>{referenceDraft.change(part);setBrowseDraft(false);}}/></Modal>}<ErrorLine error={act.error} />

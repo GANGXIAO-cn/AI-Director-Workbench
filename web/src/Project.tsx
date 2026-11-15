@@ -1,3 +1,4 @@
+import { ArchiveControls } from "./ArchiveControls";
 import {ExecutorPlanFields,useExecutorPlan} from "./ExecutorDefaults";
 
 import {ResourceBrowser} from "./Resources";
@@ -41,8 +42,8 @@ export default function Project({ id }: { id: string }) {
   const activeEpisode=[...episodes].filter(e=>e.kickoff_id && e.state!=="delivered").sort((a,b)=>b.created_at-a.created_at)[0];
   const inProduction = episodes.filter((e: any) => e.label !== "待开工" && !e.label.startsWith("图文已交付")).length;
   const nextCode = () => {
-    const nums = episodes.map((e: any) => parseInt(e.display_code.replace(/\D/g, ""), 10)).filter((n: number) => !isNaN(n));
-    const prefix = episodes[0]?.display_code.replace(/\d+/g, "") || "E";
+    const nums = project.reservedEpisodeCodes.map((code: string) => parseInt(code.replace(/\D/g, ""), 10)).filter((n: number) => !isNaN(n));
+    const prefix = project.reservedEpisodeCodes[0]?.replace(/\d+/g, "") || "E";
     return `${prefix}${String((nums.length ? Math.max(...nums) : 0) + 1).padStart(2, "0")}`;
   };
   const addEpisode = (code:string,facts:string) => setKick({displayCode:code || nextCode(),leftoverFacts:facts.split("\n").map(x=>x.trim()).filter(Boolean)});
@@ -62,7 +63,7 @@ export default function Project({ id }: { id: string }) {
             <div className="muted small" style={{ marginTop: 6 }}>{episodes.length} 集 · 各集规格可以不同 · 进行中 {inProduction} 集</div></div>
           <div className="row">
             {/* 实测 124：设定从待办行移到标题右侧按钮，待办行只放待办。 */}
-            <a className="btn" href={`#/p/${id}/settings`} title={`必须守住 ${settings.required} 条 · 可变着用 ${settings.variable} 条；各集只读引用，改动只对之后的集生效`}>设定 {settings.total} 条 ›</a>
+            <a className="btn" href={`#/p/${id}/settings`} title={`每集必须遵守 ${settings.required} 条 · 默认遵守，可按剧情调整 ${settings.variable} 条；各集只读引用，改动只对之后的集生效`}>设定 {settings.total} 条 ›</a>
             <button className="btn" onClick={() => setAdding(true)} disabled={act.busy}>＋ 新增一集</button>
             <a className="btn" href={`#/p/${id}/groups`}>≡ 连续故事</a>
           </div>
@@ -72,7 +73,7 @@ export default function Project({ id }: { id: string }) {
           if (kick) addEpisode(c, f);
           else act.run(async () => { await cmd("create_episode", { project_id: id, display_code: c, leftover_facts: f.split("\n").map((x) => x.trim()).filter(Boolean) }); o.reload(); });
         }} />}
-        <div className="project-todos">
+        <ArchiveControls projectId={id} reload={o.reload}/><div className="project-todos">
           {todos.map((t: any, i: number) => t.kind === "continuous" ? (
             <div key={i} className="card amber">
               <div className="row"><Tag tone="amber">等候外部服务</Tag><b>{t.displayCode}</b></div>
@@ -252,7 +253,7 @@ export function Kickoff({ projectId, prefill, onClose, pictures=[] }: { projectI
       <div className="card" style={{ margin: "14px 0" }}>
         <div className="small" style={{ marginBottom: 6 }}>本集会读取（只读）</div>
         <ul className="small" style={{ margin: 0, paddingLeft: 18, lineHeight: 1.8 }}>
-          <li>设定 {p.settings.length} 条：{p.settings.length ? `必须守住 ${required} 条会进入故事独审的检查项` : "设定为空，首集可独立成集"}</li>
+          <li>设定 {p.settings.length} 条：{p.settings.length ? `每集必须遵守 ${required} 条会进入故事独审的检查项` : "设定为空，首集可独立成集"}</li>
           {relation === "continue" && pre && <li>前集遗留：{p.carriedFacts.join("；") || "无"}</li>}
           <li>规格：{Object.entries(effectiveSpec).map(([k,v])=>(specLabels[k] ?? k)+" "+(specChoices[k]?.[String(v)] ?? String(v))).join(" · ")}</li>
         </ul>

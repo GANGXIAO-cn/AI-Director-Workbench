@@ -215,3 +215,32 @@ def test_bare_manuscript_limits():
         document_to_internal(run, task, {'foo': 1}, writable=writable)
     result = document_to_internal(run, task, {'shots': [], 'foo': 1}, writable=writable)
     assert {c['field'] for c in result['changes']} == {'shots', 'foo'}
+
+
+@pytest.mark.parametrize("first_shape", ["markdown", "bare"])
+def test_image_dialogue_repairs_only_the_envelope(tmp_path, first_shape):
+    from workbench.images import png_bytes
+    env, eid = setup_plan(tmp_path)
+    env.ag.reads_images = True
+    goal = "请修改镜头稿"
+    content = dict(env.plan86(), notes="现有镜头稿")
+    def first(req):
+        assert req.images
+        if first_shape == "bare":
+            return content
+        (req.workdir.parent / "raw-response-1.txt").write_text("镜头稿\n" + json.dumps(content, ensure_ascii=False))
+        return ExecOutcome(False, error_class="schema", diagnostic="Expected JSON")
+    def format_only(req):
+        assert not req.images and req.attempt == 2
+        assert "现有镜头稿" in req.prompt
+        assert "fields" in req.schema["required"]
+        return dict(kind="draft", reply="", directorRequest=goal, removedIds=[],
+                    fields={k: v if isinstance(v, str) else json.dumps(v) for k,v in content.items()})
+    env.ag.script = [first, format_only]
+    job = env.wb.create_task(eid, "plan", goal, executor={"create":{"provider":"antigravity"}},
+                             auto_dialogue=True, workspace_revision=env.art(eid,"plan")["revision"],
+                             files=[("frame.png", png_bytes(20,20))])
+    env.drain(job["runId"])
+    row = run_row(env, job["runId"])
+    assert row["status"] == "succeeded", row["diagnostic"]
+    assert row["format_attempts"] == 1

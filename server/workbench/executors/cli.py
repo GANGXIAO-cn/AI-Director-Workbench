@@ -11,6 +11,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 from urllib.parse import urlsplit
 from urllib.request import getproxies
@@ -366,7 +367,7 @@ class AntigravityExecutor(CliExecutor):
     name = "antigravity"
     union_schema = False       # verified 2026-11-07: an anyOf wrapper yields status ERROR
     isolation = "unverified"   # review isolation flags not yet verified → required reviews wait
-    reads_images = False
+    reads_images = True
     required_flags = ("--print", "--output-format", "--json-schema", "--print-timeout", "--sandbox")
 
     def binary(self):
@@ -392,8 +393,16 @@ class AntigravityExecutor(CliExecutor):
                 "--output-format", "json"]
         if req.schema is not None:
             args += ["--json-schema", json.dumps(req.schema, ensure_ascii=False)]
-        args += ["-p", req.prompt]
-        rc, out, err = invoke(args, req.workdir, "", req.timeout, req.run_id, extra_env=launch_env(self.name,req.connection))
+        stdin = ""
+        if req.images:
+            prompt = req.prompt
+            if req.schema:
+                prompt += "\nReturn one JSON object matching this schema:\n" + json.dumps(req.schema, ensure_ascii=False)
+            args = [sys.executable, str(Path(__file__).with_name("agy_media.py")), str(binary)]
+            stdin = json.dumps(dict(prompt=prompt, model=req.model, images=[str(Path(p).resolve()) for p in req.images]))
+        else:
+            args += ["-p", req.prompt]
+        rc, out, err = invoke(args, req.workdir, stdin, req.timeout, req.run_id, extra_env=launch_env(self.name,req.connection))
         base = dict(executable=str(binary), isolation=dict(session=req.session_mode, sandbox="on"))
         try:
             receipt = json.loads(out)
@@ -403,7 +412,7 @@ class AntigravityExecutor(CliExecutor):
                                quota_resets_at=resets_at(text), **base)
         if isinstance(receipt.get("response"), str):
             (req.workdir.parent / f"raw-response-{req.attempt}.txt").write_text(receipt["response"], encoding="utf-8")
-        if req.schema is None and receipt.get("status") == "SUCCESS":
+        if (req.schema is None or req.images) and receipt.get("status") == "SUCCESS":
             response = receipt.get("response")
             if not isinstance(response, str):
                 return ExecOutcome(ok=False, error_class="schema", diagnostic="回复须为 JSON 对象", **base)

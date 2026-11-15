@@ -67,7 +67,7 @@ def default_executors():
     if os.environ.get("ADW_FAKE") == "1":   # UI walkthrough without spending executor quota
         from .executors import FakeExecutor
         return {"codex": FakeExecutor("codex"), "claude": FakeExecutor("claude"),
-                "antigravity": FakeExecutor("antigravity", isolation="unverified", reads_images=False)}
+                "antigravity": FakeExecutor("antigravity", isolation="unverified", reads_images=True)}
     return {"codex": CodexExecutor(os.environ.get("ADW_CODEX_PATH")),
             "claude": ClaudeExecutor(os.environ.get("ADW_CLAUDE_PATH")),
             "antigravity": AntigravityExecutor(os.environ.get("ADW_AGY_PATH"))}
@@ -99,7 +99,7 @@ COMMANDS = {
     "start_story_comparison", "preview_acting",
     "add_script_document", "refresh_script_index", "restore_step_revision",
     "use_fixed_role", "import_historical_episode", "episode_contact_sheet", "save_contact_options", "export_episode_contact_sheet", "historical_contact_sheet", "export_historical_contact_sheet", "save_product_placement", "set_project_sections", "use_project_product", "mount_resource", "restore_version", "set_stage_methods", "sync_project_methods", "adopt_project_stage_methods", "set_custom_methods", "save_palettes", "add_palette", "set_episode_palettes", "save_step_config",
-    "set_cooperation_mode", "set_stage_edit", "set_optional_stage", "export_project_folder", "create_project", "rename_project", "set_recent_visibility", "visit_project", "create_episode", "record_leftovers", "start_episode", "create_task", "post_message", "retry_run",
+    "set_cooperation_mode", "set_stage_edit", "set_optional_stage", "export_project_folder", "create_project", "rename_project", "set_topic_intent", "set_archived", "set_recent_visibility", "visit_project", "create_episode", "record_leftovers", "start_episode", "create_task", "post_message", "retry_run",
     "save_manual", "submit_review", "waive_stress_issue", "waive", "adopt", "answer_clarification", "abandon_task", "stop_run", "open_stage", "save_canvas", "combine", "split_segment",
     "resolve_impact", "create_pack", "edit_cuts", "add_beat", "bookmark", "save_pack", "adapt_from_pack",
     "add_space_item", "confirm_space_item", "set_cast", "set_role_baseline", "save_shot_observation", "reorder_refs", "edit_prompt_reference", "set_sound", "submit_reuse", "review_library",
@@ -119,7 +119,7 @@ QUERIES = {
     "step_history", "prompt_scene_sources", "segment_palette_trace", "rhythm_review", "shot_reference_view",
     "project_role_assets", "historical_episodes", "historical_receipt", "historical_review_inputs", "product_placements", "project_resources", "project_section", "episode_project_sections", "available_configs", "groups", "project_knowledge",
     "resource_mounts", "browse_scripts", "search_script_bodies", "script_excerpt", "browse_palettes", "palette_detail", "project_palettes", "episode_palettes", "step_config", "step_form",
-    "project_presets", "episode_owner", "list_projects", "project_view", "episode_view", "episode_messages", "kickoff_preview", "read_import", "compare", "continue_check",
+    "project_presets", "episode_owner", "archive_items", "list_projects", "project_view", "episode_view", "episode_messages", "kickoff_preview", "read_import", "compare", "continue_check",
     "grid_bindings", "draft_prompts", "plan_preview", "adoption_preview", "impacts", "ref_frames", "episode_bookmarks", "pack_view", "trace_shot", "blocked_segments", "cast_matrix", "episode_assets",
     "asset_version", "library", "image_providers", "system_image_channel", "episode_image_channel", "batch_view", "episode_batches", "compare_cells", "image_references",
     "prompt_signals", "prompt_review_status", "publish_settings", "compose_publish", "delivery_problems", "delivery_view", "verify_delivery",

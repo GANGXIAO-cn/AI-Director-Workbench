@@ -186,9 +186,9 @@ class ProjectOpsMixin(HistoryMixin):
                 items = [dict(r) for r in db.execute("SELECT * FROM proposal_item WHERE closure_id=? ORDER BY ordinal",
                                                      (closure_id,))]
                 missing = [it["ordinal"] for it in items if it["decision"] == "write_setting"
-                           and (not (it["reason"] or "").strip() or it["strength"] not in ("required", "variable"))]
+                           and it["strength"] not in ("required", "variable")]
                 if missing:
-                    raise Rejected("写进设定须逐项填写理由和守住程度", detail=dict(rows=missing))
+                    raise Rejected("请选择每集是否必须遵守这条设定", detail=dict(rows=missing))
                 ep = row(db, "SELECT * FROM episode WHERE id=?", c["episode_id"])
                 project = row(db, "SELECT * FROM project WHERE id=?", ep["project_id"])
                 writes = [it for it in items if it["decision"] == "write_setting"]
@@ -199,7 +199,7 @@ class ProjectOpsMixin(HistoryMixin):
                     db.execute("INSERT INTO setting_entry(id,project_id,setting_revision,key,category,strength,content,"
                                "source_ref,user_reason) VALUES(?,?,?,?,?,?,?,?,?)",
                                (new_id(), project["id"], rev, key, it["category"], it["strength"], it["content"],
-                                f"{ep['display_code']} 交付 {c['delivery_id'][:8]} · " + (lambda r: f"{r.get('anchor', '')}：{r.get('evidence', '')}")(json.loads(it["source_ref"])), it["reason"]))
+                                f"{ep['display_code']} 交付 {c['delivery_id'][:8]} · " + (lambda r: f"{r.get('anchor', '')}：{r.get('evidence', '')}")(json.loads(it["source_ref"])), it["reason"] or ""))
                     out["settings"].append(key)
                 if writes:
                     db.execute("UPDATE project SET settings_revision=?, revision=revision+1 WHERE id=?", (rev, project["id"]))
@@ -225,11 +225,9 @@ class ProjectOpsMixin(HistoryMixin):
             return self._command(db, command_id, "confirm_closure", dict(c=closure_id), run)
 
     # ============================================================ settings change and spec
-    def propose_setting_change(self, project_id, key, content, strength, reason, command_id, category="rule", reason_default=None):
+    def propose_setting_change(self, project_id, key, content, strength, reason="", command_id=None, category="rule", reason_default=None):
         """New revision of one setting; lists in-production episodes that actually use it."""
         reason = reason.strip() or (reason_default or "").strip()
-        if not reason:
-            raise Rejected("修改设定须写理由")
         with transaction(self.db_path) as db:
             def run():
                 p = row(db, "SELECT * FROM project WHERE id=?", project_id)
@@ -438,32 +436,56 @@ class ProjectOpsMixin(HistoryMixin):
     def add_topic(self, project_id, code, premise, mechanism="", motivation="", command_id=None, origin="user"):
         with transaction(self.db_path) as db:
             def run():
-                if not code.strip() or not premise.strip():
-                    raise Rejected("请填写选题编号和故事前提")
-                if db.execute("SELECT 1 FROM topic WHERE project_id=? AND code=?", (project_id, code)).fetchone():
+                if not premise.strip():
+                    raise Rejected("请填写故事想法")
+                if origin.startswith("restore:"):
+                    source=row(db,"SELECT * FROM topic WHERE id=? AND project_id=?",origin[8:],project_id)
+                    published=db.execute("SELECT 1 FROM topic_publication WHERE topic_id=?",(source["id"],)).fetchone()
+                    if source["status"]!="已制作" and not published:
+                        raise Rejected("仅已交付或已发布的题目可还原")
+                    prior=db.execute("SELECT id,code,status FROM research_topics WHERE project_id=? AND origin=? AND status='候选' AND episode_id IS NULL AND NOT EXISTS(SELECT 1 FROM topic_publication WHERE topic_id=research_topics.id)",(project_id,origin)).fetchone()
+                    if prior:return dict(topicId=prior["id"],code=prior["code"],status=prior["status"])
+                chosen = code.strip()
+                if not chosen:
+                    n = 1
+                    while db.execute("SELECT 1 FROM topic WHERE project_id=? AND code=?", (project_id,f"题{n:03d}")).fetchone():
+                        n += 1
+                    chosen = f"题{n:03d}"
+                if db.execute("SELECT 1 FROM topic WHERE project_id=? AND code=?", (project_id, chosen)).fetchone():
                     raise Conflict("该选题编号已存在")
                 tid = new_id()
                 db.execute("INSERT INTO topic VALUES(?,?,?,?,?,?,?,?,?,?)",
-                           (tid, project_id, code, premise, mechanism, motivation, "候选", None, origin, self.clock()))
-                return dict(topicId=tid, status="候选")
-            return self._command(db, command_id, "topic", dict(p=project_id, c=code, pr=premise), run)
+                           (tid, project_id, chosen, premise, mechanism, motivation, "候选", None, origin, self.clock()))
+                return dict(topicId=tid, code=chosen, status="候选")
+            return self._command(db, command_id, "topic", dict(p=project_id, c=code, pr=premise, **({"origin":origin} if origin.startswith("restore:") else {})), run)
 
     def topics(self, project_id, status=None):
         with connect(self.db_path) as db:
-            out = [dict(r) for r in db.execute("SELECT t.*, e.display_code, e.state AS episode_state FROM topic t LEFT JOIN "
+            out = [dict(r) for r in db.execute("SELECT t.*,case when exists(select 1 from topic_publication v where v.topic_id=t.id) then '已拍' when t.status='已制作' then '已交付' else coalesce(i.intent,case when t.status='弃用' then '弃用' when t.origin like '选题池/%' then '待整理' else '想拍' end) end intent, (SELECT group_concat(title,' / ') FROM topic_publication v WHERE v.topic_id=t.id) publication, e.display_code, e.state AS episode_state FROM topic t LEFT JOIN topic_intent i ON i.topic_id=t.id LEFT JOIN "
                                                "episode e ON e.id=t.episode_id WHERE t.project_id=? ORDER BY t.code",
                                                (project_id,)) if not status or r["status"] == status]
+            for t in out:
+                t["publications"] = [dict(v) for v in db.execute("SELECT platform,platform_id,title,published_at,evidence FROM topic_publication WHERE topic_id=? ORDER BY published_at",(t["id"],))]
         for t in out:
-            t["similar"] = self.similar(project_id, t["premise"] + t["mechanism"], 3)
+            t["similar"] = [dict(title=h["code"],body=h["premise"],score=h["score"]) for h in self.similar_topics(project_id,t["premise"],4) if h["code"]!=t["code"]][:3]
         return out
 
     def _topic_on_kickoff(self, db, episode_id, topic_id):
         t = row(db, "SELECT * FROM topic WHERE id=?", topic_id, missing="选题卡不存在")
         ep = self._episode_in(db, episode_id)
-        if ep["project_id"] != t["project_id"] or t["status"] != "候选" or t["episode_id"]:
+        eligible = db.execute("SELECT 1 FROM research_topics WHERE id=? AND NOT EXISTS(SELECT 1 FROM topic_publication WHERE topic_id=?)",(topic_id,topic_id)).fetchone()
+        if ep["project_id"] != t["project_id"] or t["status"]!="候选" or not eligible or t["episode_id"]:
             raise Conflict("请选择本项目尚未开工的候选卡，已开工的卡请进入对应集")
         db.execute("UPDATE topic SET status='开发中', episode_id=? WHERE id=?", (episode_id, topic_id))
         return t
+
+    def set_topic_intent(self, topic_id, intent, command_id=None):
+        if intent not in ("想拍","搁置","弃用"):
+            raise Rejected("请选择选题意向")
+        with transaction(self.db_path) as db:
+            row(db,"SELECT id FROM topic WHERE id=?",topic_id)
+            db.execute("INSERT INTO topic_intent VALUES(?,?) ON CONFLICT(topic_id) DO UPDATE SET intent=excluded.intent",(topic_id,intent))
+            return dict(topicId=topic_id,intent=intent)
 
     def drop_topic(self, topic_id, command_id=None):
         with transaction(self.db_path) as db:
@@ -786,18 +808,18 @@ class ProjectOpsMixin(HistoryMixin):
     def project_todos(self, project_id):
         todos = []
         with connect(self.db_path) as db:
-            for c in db.execute("SELECT c.*, e.display_code FROM closure c JOIN episode e ON e.id=c.episode_id WHERE "
+            for c in db.execute("SELECT c.*, e.display_code FROM closure c JOIN active_episodes e ON e.id=c.episode_id WHERE "
                                 "e.project_id=? AND c.state IN ('open','staged')", (project_id,)):
                 n = db.execute("SELECT count(*) FROM proposal_item WHERE closure_id=?", (c["id"],)).fetchone()[0]
                 todos.append(dict(kind="closure", episodeId=c["episode_id"], objectId=c["id"],
                                   title=f"{c['display_code']} 收尾：{n} 条设定提议待处理", action="去处理"))
-            for s in db.execute("SELECT s.*, e.display_code FROM space_item s JOIN episode e ON e.id=s.episode_id WHERE "
+            for s in db.execute("SELECT s.*, e.display_code FROM space_item s JOIN active_episodes e ON e.id=s.episode_id WHERE "
                                 "e.project_id=? AND s.status='pending'", (project_id,)):
                 depends = json.loads(s["depends"])
                 segs = "、".join(depends if isinstance(depends,list) else depends["scenes"])
                 todos.append(dict(kind="space", episodeId=s["episode_id"], objectId=s["id"],
                                   title=f"{s['display_code']} · {segs} {s['label']}待确认", action="去确认空间"))
-            for b in db.execute("SELECT b.*, e.display_code FROM image_batch b JOIN episode e ON e.id=b.episode_id WHERE "
+            for b in db.execute("SELECT b.*, e.display_code FROM image_batch b JOIN active_episodes e ON e.id=b.episode_id WHERE "
                                 "e.project_id=? AND b.state='pending_reconcile'", (project_id,)):
                 todos.append(dict(kind="reconcile", episodeId=b["episode_id"], objectId=b["id"],
                                   title=f"{b['display_code']} 图像请求结果待核对", action="查原批次"))
