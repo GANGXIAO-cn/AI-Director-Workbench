@@ -35,14 +35,14 @@ class Env:
 
     # ---------------------------------------------------------------- building blocks
     def new_episode(self, config="_template", name="夜班柴犬", code="E01", project_id=None, idea="一只过分认真的柴犬第一次值夜班",
-                    relation="independent", predecessors=(), plan=None):
+                    relation="independent", predecessors=(), plan=None,spec_overrides=None):
         wb = self.wb
         pid = project_id or wb.create_project(config, name)["projectId"]
         if config == "_template" and not project_id:
             wb.set_publish_settings(pid, PUBLISH)
         eid = wb.create_episode(pid, code)["episodeId"]
         wb.start_episode(eid, "idea", plan or {"create": {"provider": "codex"}, "review": {"provider": "claude"}},
-                         idea_text=idea, relation=relation, predecessor_ids=list(predecessors))
+                         idea_text=idea, relation=relation, predecessor_ids=list(predecessors),spec_overrides=spec_overrides)
         return pid, eid
 
     def adopt_story(self, eid, cid="s"):

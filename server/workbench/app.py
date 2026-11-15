@@ -88,7 +88,7 @@ def default_image_providers():
 
 COMMANDS = {
     "save_executor_defaults", "save_episode_expert", "save_episode_image_channel", "accept_material_issue",
-    "quick_start", "choose_continuous", "start_continuous", "pause_continuous", "resume_continuous", "cancel_continuous",
+    "quick_start", "start_continuous", "pause_continuous", "resume_continuous", "cancel_continuous",
     "carry_stress_issue", "start_repair_plan", "advance_repair_plan", "initialize_asset_worksheet", "set_asset_need", "prepare_asset_batch", "adopt_asset_needs",
     "decide_supplement", "confirm_role_state", "add_decision", "revoke_decision", "replace_decision", "record_decisions", "record_message_decision",
     "kickoff_check_view", "kickoff_check_run", "kickoff_check_decide",
@@ -107,7 +107,7 @@ COMMANDS = {
     "set_grid_cell", "mark_image", "redraw_cells", "adopt_image", "start_prompt_review", "start_prompt_review_batch", "waive_segment_issue", "set_publish_settings",
     "fix_after_delivery", "deliver", "package", "package_preview", "start_closure", "decide_items", "confirm_closure", "propose_setting_change",
     "choose_episode_settings", "update_preset", "episode_spec_change", "cite", "take_source_topic", "add_topic", "drop_topic",
-    "create_group", "continue_in_group", "authorize_expert", "pause_expert", "manual_expert", "set_task_executor", "save_stage_executor", "adopt_pack", "backup", "restore",
+    "create_group", "continue_in_group", "set_task_executor", "save_stage_executor", "adopt_pack", "backup", "restore",
 }
 QUERIES = {
     "executor_defaults", "episode_expert", "material_issues",
@@ -124,9 +124,9 @@ QUERIES = {
     "asset_version", "library", "image_providers", "system_image_channel", "episode_image_channel", "batch_view", "episode_batches", "compare_cells", "image_references",
     "prompt_signals", "prompt_review_status", "publish_settings", "compose_publish", "delivery_problems", "delivery_view", "verify_delivery",
     "enhancement_catalog", "closure_view", "similar", "project_baselines", "source_styles", "source_topics", "topics", "group_view", "model_catalog", "validate_selection", "regress_pack", "pack_versions", "compare_packs", "stage_methods", "custom_methods", "custom_method_text", "project_stage_methods", "script_plan_budget", "acting_review",
-    "storage_status", "packager_status", "project_todos", "project_overview", "adoption_preview", "expert_view", "expert_history", "expert_preview", "canvas_view", "ref_questions", "activity_log", "stage_checklist", "task_records", "executor_identity", "run_manifest", "run_methods", "version_sources", "version_inputs", "input_text", "probe",
+    "storage_status", "packager_status", "project_todos", "project_overview", "adoption_preview", "canvas_view", "ref_questions", "activity_log", "stage_checklist", "task_records", "executor_identity", "run_manifest", "run_methods", "version_sources", "version_inputs", "input_text", "probe",
 }
-ASYNC = {"fix_after_delivery", "quick_start", "choose_continuous", "start_continuous", "resume_continuous","execute_batch", "expert_run", "ask_cut"}
+ASYNC = {"fix_after_delivery", "quick_start", "start_continuous", "resume_continuous","execute_batch", "ask_cut"}
 
 
 def create_app(wb: Workbench | None = None, inline_worker=False, token: str | None = None, *, external=False) -> FastAPI:
@@ -371,9 +371,6 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
             args = {k: v for k, v in args.items() if k != "command_id"}   # the UI always sends one
         guard = args.pop("editor_guard", None)
         check_call_args(signature, args)
-        if name=="choose_continuous" and not worker.inline:
-            worker.run_continuous(fn,**args)
-            return {"accepted":True}
         token = EDITOR_GUARD.set(guard)
         try:
             result = fn(**args)
@@ -399,7 +396,7 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
     async def with_files(name: str, args: str = Form(...), files: list[UploadFile] = File(...)):
         from .attachments import LIMIT
         from starlette.concurrency import run_in_threadpool
-        if name not in ("choose_continuous", "quick_start", "start_episode", "create_task", "post_message"):
+        if name not in ("quick_start", "start_episode", "create_task", "post_message"):
             raise NotFound("该操作不支持附件")
         try:
             body = json.loads(args)
@@ -425,21 +422,13 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
             raise Rejected("含附件的请求须使用文件上传入口")
         if name == "quick_start":
             return call(name,body)
-        if name == "expert_run":
-            check_call_args(inspect.signature(wb.claim_expert), body)
-            claimed = wb.claim_expert(**body)
-            if claimed:
-                if worker.inline:
-                    return wb.advance_expert(body["auth_id"])
-                worker.pool.submit(wb.advance_expert, body["auth_id"])
-            return wb.expert_view(body["auth_id"])
         if name in ASYNC:
             check_call_args(inspect.signature(getattr(wb, name)), body)
             if hasattr(wb, name + "_precheck"):
                 getattr(wb, name + "_precheck")(**body)       # refusals reach the UI before the run is queued
             if worker.inline:
                 return getattr(wb, name)(**body)
-            if name in ("start_continuous","resume_continuous","choose_continuous","fix_after_delivery"):
+            if name in ("start_continuous","resume_continuous","fix_after_delivery"):
                 worker.run_continuous(getattr(wb,name),**body)
             else:
                 worker.pool.submit(getattr(wb, name), **body)

@@ -33,7 +33,7 @@ def image_reply(req,verdict='usable',required=False):
     return reply([assessment(vid,verdict=verdict,recommendRequired=required,critical=[dict(type='usage',where='支撑',text='关键支撑悬空')] if verdict=='blocked' else [],minor=[dict(where='远景',text='轻微颜色差异')] if verdict=='limited' else []) for vid in ids])(req)
 
 
-def test_H_T4_generated_usable_adopted_and_agent_required(tmp_path):
+def test_H_T4_new_asset_selected_without_visual_requirement(tmp_path):
     env,eid,_=fixture(tmp_path);env.codex.script=[lambda req:image_reply(req,required=True)]*8
     result=env.wb.start_continuous(eid,target_stage='delivery',command_id='start')
     need=env.wb.asset_worksheet(eid)['rows'][0]
@@ -41,7 +41,7 @@ def test_H_T4_generated_usable_adopted_and_agent_required(tmp_path):
     assert len(env.wb.episode_batches(eid))==1
     from workbench.imagechoices import requirements
     with env.db() as db:rules=requirements(db,eid)
-    assert len(rules)==1 and rules[0]['selectedBy']=='agent'
+    assert not rules and not env.wb.image_assessments(eid)
     assert any(d['kind']=='choose_image' for d in env.wb.continuous_view(eid)['decisions'])
 
 
@@ -50,18 +50,15 @@ def test_H_T7_minor_limited_adopted_without_card(tmp_path):
     result=env.wb.start_continuous(eid,target_stage='delivery',command_id='start')
     assert env.wb.asset_worksheet(eid)['rows'][0]['adopted_version_id'],result['reason']
     assert not result['choice'] and len(env.wb.episode_batches(eid))==1
-    assert env.wb.image_assessments(eid)[0]['body']['minor']
+    assert not env.wb.image_assessments(eid) and not env.wb.material_issues(eid)
 
 
-def test_H_T6_two_failed_rounds_change_method_and_show_failures(tmp_path):
+def test_H_T6_asset_generation_does_not_perform_quality_rounds(tmp_path):
     env,eid,_=fixture(tmp_path);env.codex.script=[lambda req:expert_provisional(req) if req.purpose=='progress_expert' else image_reply(req,'blocked')]*24
     result=env.wb.start_continuous(eid,target_stage='delivery',command_id='start')
     assert result['choice'] is None
-    assert env.wb.material_issues(eid)[0]['state']=='provisional'
-    attempts=result['cursor']['images']['bell']['attempts']
-    assert [r['method'] for r in attempts]==['首次生成','常规重出']
-    assert len(env.wb.episode_batches(eid))==2
-    assert env.wb.material_issues(eid)[0]['issue_refs']==['usage:支撑']
+    assert not env.wb.material_issues(eid)
+    assert env.images.sent==1 and len(result['cursor']['images']['bell']['attempts'])==1
 
 
 def key_fixture(tmp_path):
@@ -70,7 +67,7 @@ def key_fixture(tmp_path):
     return env,eid
 
 
-def test_H_T5_key_visual_waits_for_two_then_user_adopts(tmp_path):
+def test_H_T5_key_visual_selected_without_user_or_extra_candidate(tmp_path):
     env,eid=key_fixture(tmp_path);env.codex.script=[image_reply]*12
     result=env.wb.start_continuous(eid,target_stage='delivery',command_id='start')
     assert result['choice'] is None
@@ -80,18 +77,13 @@ def test_H_T5_key_visual_waits_for_two_then_user_adopts(tmp_path):
     assert not any(call.purpose=='progress_expert' for call in env.codex.calls)
 
 
-def test_H_T6b_user_acceptance_keeps_blocked_assessment_and_issues(tmp_path):
+def test_H_T6b_no_invented_user_acceptance(tmp_path):
     env,eid,_=fixture(tmp_path);env.codex.script=[lambda req:expert_provisional(req) if req.purpose=='progress_expert' else image_reply(req,'blocked')]*24
     result=env.wb.start_continuous(eid,target_stage='delivery',command_id='start')
-    issue=env.wb.material_issues(eid)[0];chosen=issue['version_id']
-    env.wb.accept_material_issue(issue['id'],command_id='accept')
-    assert env.wb.asset_worksheet(eid)['rows'][0]['adopted_version_id']==chosen
-    assert next(a for a in env.wb.image_assessments(eid) if a['version_id']==chosen)['verdict']=='blocked'
+    assert not env.wb.material_issues(eid)
     with env.db() as db:
-        issue=db.execute('SELECT * FROM accepted_image_issue WHERE asset_version_id=?',(chosen,)).fetchone()
-        assert issue['issue_key']=='usage:支撑'
-        decision=db.execute('SELECT detail FROM ai_decision WHERE id=?',(issue['decision_id'],)).fetchone()
-    assert json.loads(decision[0])['userDirection']['instruction']=='用这张，保留这个问题'
+        assert not db.execute('SELECT 1 FROM accepted_image_issue').fetchone()
+    assert not result['choice']
 
 
 def test_H_channel_inherits_existing_07_selection_and_defaults(tmp_path):
@@ -124,7 +116,7 @@ def test_H_T10_pause_after_receipt_resume_does_not_duplicate_batch(tmp_path,monk
     assert [b['id'] for b in env.wb.episode_batches(eid)]==[b['id'] for b in batches]
 
 
-def test_H_T11_need_changed_during_submission_retains_candidate_and_reassesses(tmp_path,monkeypatch):
+def test_H_T11_prompt_changed_during_submission_preserves_candidate_and_user_edit(tmp_path,monkeypatch):
     env,eid,_=fixture(tmp_path);env.codex.script=[image_reply]*12
     execute=env.wb.execute_batch
     def edit_during_submission(batch_id):
@@ -137,7 +129,8 @@ def test_H_T11_need_changed_during_submission_retains_candidate_and_reassesses(t
     monkeypatch.setattr(env.wb,'execute_batch',edit_during_submission)
     result=env.wb.start_continuous(eid,target_stage='delivery',command_id='start')
     assert env.wb.asset_worksheet(eid)['rows'][0]['adopted_version_id'],result['reason']
-    assert any('门铃必须在右边' in req.prompt for req in env.codex.calls if req.purpose=='image_assess')
+    assert '门铃必须在右边' in env.wb.asset_worksheet(eid)['rows'][0]['image_prompt']
+    assert not env.wb.image_assessments(eid)
     assert any(d['kind']=='apply_user_change' and '候选' in d['reason'] for d in env.wb.continuous_view(eid)['decisions'])
 
 
@@ -157,9 +150,9 @@ def test_H_T9b_space_uses_adopted_limited_or_accepted_without_regeneration(tmp_p
     locked=next(i for i in env.wb.space_locks(eid) if i['id']==lock)
     assert locked['status']=='confirmed',result['reason']
     assert locked['versionId']==env.wb.asset_worksheet(eid)['rows'][0]['adopted_version_id']
-    assert len(env.wb.episode_batches(eid))==(1 if verdict=='limited' else 2)
+    assert len(env.wb.episode_batches(eid))==1
     assert any(d['kind']=='confirm_lock' for d in env.wb.continuous_view(eid)['decisions'])
-    assert next(a for a in env.wb.image_assessments(eid) if a['version_id']==locked['versionId'])['verdict']==verdict
+    assert not env.wb.image_assessments(eid)
 
 
 def test_H_T3_library_usable_is_reused_and_logged(tmp_path):
@@ -184,7 +177,7 @@ def test_H_T7b_key_visual_single_has_extra_only_once(tmp_path):
     env.codex.script=[one_good]*30
     result=env.wb.start_continuous(eid,target_stage='delivery',command_id='start')
     assert result['choice'] is None
-    assert env.wb.asset_worksheet(eid)['rows'][0]['adopted_version_id']==first[0]
+    assert not first and env.wb.asset_worksheet(eid)['rows'][0]['adopted_version_id']
     assert len(env.wb.episode_batches(eid))==1
 
 
@@ -205,7 +198,7 @@ def test_H_T8_H_T9_identity_before_dependent_scene_and_state_confirmation(tmp_pa
     assert sequence==['identity','room','wet'],result['reason']
     matrix=env.wb.cast_matrix(eid)
     assert matrix['roleStates'][0]['confirmed']
-    assert matrix['roleStates'][0]['observation']=='铜制门铃位于木门上'
+    assert '未登记' in matrix['roleStates'][0]['observation']
     assert any(d['kind']=='fill_observation' for d in env.wb.continuous_view(eid)['decisions'])
 
 
@@ -222,7 +215,7 @@ def test_H_T2_fixed_role_identity_never_generates(tmp_path):
     assert env.wb.episode_batches(eid)==[]
 
 
-def test_H_T7c_library_key_visual_enters_choice_instead_of_auto_reuse(tmp_path):
+def test_H_T7c_library_key_visual_reused_without_choice(tmp_path):
     from workbench.db import transaction,new_id
     env,eid=key_fixture(tmp_path);pid=env.wb.episode_view(eid)['episode']['project_id']
     vid=env.image(pid,eid,'门厅旧图','scene')['versionId']
@@ -234,22 +227,12 @@ def test_H_T7c_library_key_visual_enters_choice_instead_of_auto_reuse(tmp_path):
     assert len(env.wb.episode_batches(eid))==0
 
 
-def test_H_image_card_discussion_preserves_candidates_and_no_director_decision(tmp_path):
+def test_H_no_visual_choice_api_or_fabricated_director_decision(tmp_path):
     env,eid=key_fixture(tmp_path);env.codex.script=[image_reply]*20
     result=env.wb.start_continuous(eid,target_stage='delivery',command_id='start')
-    # Historical cards remain discussable; new runs no longer create one.
-    need=env.wb.asset_worksheet(eid)['rows'][0]
-    value=env.wb.image_assessments(eid,'room')[0]['body']
-    choice=dict(kind='visual',stage='assets',needKey='room',needRevision=need['revision'],candidates=[dict(key='A',**value)])
-    env.wb._continuous_update(result['id'],state='waiting_choice',choice=choice)
-    result=env.wb._continuous_record(result['id'])
-    before=env.wb.episode_view(eid)['artifacts'];batches=len(env.wb.episode_batches(eid))
-    env.codex.script=[lambda req:dict(reply({})(req),reply='这两张都是同一场景，光线略有区别。',removedIds=[])]
-    after=env.wb.choose_continuous(result['id'],'free',text='这两张有什么区别？',command_id='ask')
-    assert after['state']=='waiting_choice' and after['choice']['candidates']==result['choice']['candidates'],after
-    assert after['choice']['reply']=='这两张都是同一场景，光线略有区别。'
-    assert len(env.wb.episode_batches(eid))==batches
-    assert [(a['stage'],a['adopted_version_id']) for a in env.wb.episode_view(eid)['artifacts']]==[(a['stage'],a['adopted_version_id']) for a in before]
+    assert not result['choice']
+    assert not hasattr(env.wb,'choose_continuous')
+    assert len(env.wb.episode_batches(eid))==1
     with env.db() as db:assert not db.execute('SELECT 1 FROM director_decision WHERE episode_id=?',(eid,)).fetchone()
 
 
@@ -273,7 +256,7 @@ def test_H_product_catalog_input_and_actual_main_image_in_generation(tmp_path):
     assert env.wb.asset_version(main)['category']=='product_reference'
 
 
-def test_H_T4_best_candidate_follows_model_order_not_insertion_order(tmp_path):
+def test_H_T4_existing_candidates_bound_without_ranking_call(tmp_path):
     from workbench.db import transaction
     env,eid,first=fixture(tmp_path);pid=env.wb.episode_view(eid)['episode']['project_id']
     preferred=env.image(pid,eid,'更适配用途的门铃','prop',rgb=(180,80,40))['versionId']
@@ -286,8 +269,7 @@ def test_H_T4_best_candidate_follows_model_order_not_insertion_order(tmp_path):
     result=env.wb.start_continuous(eid,target_stage='delivery',command_id='start')
     assert env.wb.asset_worksheet(eid)['rows'][0]['adopted_version_id']==preferred,result['reason']
     assert env.wb.episode_batches(eid)==[]
-    rule=next(a['requirement'] for a in env.wb.episode_assets(eid) if a['id']==preferred)
-    assert rule['selectedBy']=='agent' and rule['reason']=='更清楚呈现关键支撑'
+    assert not env.wb.image_assessments(eid)
 
 
 def test_unrelated_library_skipped_and_blocked_candidates_not_reassessed(tmp_path):
@@ -305,11 +287,10 @@ def test_unrelated_library_skipped_and_blocked_candidates_not_reassessed(tmp_pat
     env.codex.script=[with_pick(judge,take=False)]*10
     env.wb.start_continuous(eid,target_stage='delivery',command_id='start')
     assert env.wb.asset_worksheet(eid)['rows'][0]['adopted_version_id']
-    assert all(len(ids)==1 for ids in seen) and len(seen)==2  # 第一张被判不可用，出第二张后只评第二张
-    assert len({i for ids in seen for i in ids})==2
+    assert seen==[] and env.images.sent==1
 
 
-def test_independent_needs_generate_and_assess_in_parallel(tmp_path):
+def test_independent_needs_land_without_visual_review_in_07(tmp_path):
     """实测 139：图片通道允许并发时，互不依赖的条目同时出图、同时评估，各自完成采用；游标记录不互相覆盖。"""
     import threading,time
     from test_image_assess import Env
@@ -328,7 +309,7 @@ def test_independent_needs_generate_and_assess_in_parallel(tmp_path):
     result=env.wb.start_continuous(eid,target_stage='delivery',command_id='start')
     rows={r['need_key']:r for r in env.wb.asset_worksheet(eid)['rows']}
     assert rows['bell']['adopted_version_id'] and rows['lamp']['adopted_version_id'],result['reason']
-    assert peak[0]==2
+    assert peak[0]==0 and not env.wb.image_assessments(eid)
     images=env.wb._continuous_record(result['id'])['cursor']['images']
     assert {'bell','lamp'}<=set(images) and all(images[k]['attempts'] for k in ('bell','lamp'))
 
@@ -399,8 +380,7 @@ def _always_blocked_with(expert):
     return handle
 
 
-def test_quality_stuck_never_waits_and_falls_back_to_provisional(tmp_path):
-    """实测 143：返修用尽只剩质量问题时，没有“等待”可选；专家硬选 wait 时回退为暂用最好的一张，连续制作不停。"""
+def test_basic_reference_never_marked_provisional_at_07(tmp_path):
     env,eid,_=fixture(tmp_path)
     def expert_wait(req):
         data=json.loads(req.prompt.split("以下是资料：\n")[1].split("\n上次回包")[0])
@@ -410,11 +390,10 @@ def test_quality_stuck_never_waits_and_falls_back_to_provisional(tmp_path):
     result=env.wb.start_continuous(eid,target_stage='delivery',command_id='start')
     need=env.wb.asset_worksheet(eid)['rows'][0]
     assert need['adopted_version_id'],result['reason']
-    assert any(i['state']=='provisional' and i['version_id']==need['adopted_version_id'] for i in env.wb.material_issues(eid))
+    assert not env.wb.material_issues(eid) and result['choice'] is None
 
 
-def test_local_edit_limited_and_ends_in_provisional(tmp_path):
-    """实测 143：局部修图以最好的候选为底图，每项最多 2 次，不占两次常规出图上限，之后必定暂用。"""
+def test_no_quality_edits_before_combined_visual_review(tmp_path):
     env,eid,_=fixture(tmp_path)
     def expert_edit(req):
         data=json.loads(req.prompt.split("以下是资料：\n")[1].split("\n上次回包")[0])
@@ -426,10 +405,7 @@ def test_local_edit_limited_and_ends_in_provisional(tmp_path):
     result=env.wb.start_continuous(eid,target_stage='delivery',command_id='start')
     attempts=env.wb._continuous_record(result['id'])['cursor']['images']['bell']['attempts']
     edits=[a for a in attempts if a.get('edit')]
-    assert len(edits)==2 and len([a for a in attempts if not a.get('edit')])==2
-    batches=[env.wb.batch_view(b['id']) for b in env.wb.episode_batches(eid)]
-    edited=[b for b in batches if b['spec']['items'][0]['inputs'] and b['spec']['items'][0]['inputs'][0] in {a['base'] for a in edits}]
-    assert len(edited)==2
+    assert not edits and len(attempts)==1 and env.images.sent==1
     assert env.wb.asset_worksheet(eid)['rows'][0]['adopted_version_id'],result['reason']
 
 
@@ -439,7 +415,7 @@ def test_stop_reason_names_the_stuck_need(tmp_path):
     env.wb.image_providers_map['fake-image'].script=['insufficient']*10
     env.codex.script=[image_reply]*10
     result=env.wb.start_continuous(eid,target_stage='delivery',command_id='start')
-    assert result['state']=='blocked' and result['reason'].startswith('门铃：'),result['reason']
+    assert result['state']=='waiting_external' and result['reason'].startswith('门铃：'),result['reason']
     stopped=env.wb._continuous_record(result['id'])['cursor']['stoppedNeeds']
     assert stopped[0]['key']=='bell' and stopped[0]['title']=='门铃'
 
@@ -454,3 +430,23 @@ def test_image_parallelism_follows_channel_setting():
         image_providers_map={'api': SimpleNamespace(max_concurrency=5)},
     )
     assert ContinuousImages._image_parallelism(runner, 'run') == 5
+
+def test_whole_review_fixes_serious_issue_without_reviewing_again(tmp_path):
+    env,eid,_=fixture(tmp_path)
+    result=env.wb.start_continuous(eid,target_stage='delivery',command_id='start')
+    rows=env.wb.asset_worksheet(eid)['rows']
+    vid=rows[0]['adopted_version_id']
+    env.codex.script=[reply([dict(versionId=vid,verdict='blocked',defect='门铃主体缺失')])]
+    plan=env.plan86({'G01':[8000]})
+    adopted,_=env.save_adopt(eid,'plan',plan,'ready-for-merged-review')
+    env.wb._continuous_internal_version(result['id'],adopted)
+    from workbench.stressrepairs import adopted as adopted_versions
+    with env.db() as db:base=adopted_versions(db,eid)
+    env.wb._continuous_cursor(result['id'],base=base)
+    env.wb._episode_image_review(result['id'],eid,rows)
+    result=env.wb._continuous_record(result['id'])
+    assert result['cursor']['episodeImageReview']['done'],result['reason']
+    assert len([r for r in env.codex.calls if r.purpose=='image_assess'])==1
+    assert len(env.wb.episode_batches(eid))==2
+    need=env.wb.asset_worksheet(eid)['rows'][0]
+    assert need['adopted_version_id']!=result['cursor']['episodeImageReview']['selected']['bell']

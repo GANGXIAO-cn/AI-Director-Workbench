@@ -65,8 +65,8 @@ def test_K_T1_K_T3_prompt_change_preserves_other_segments_scoped_decision_and_ol
         return draft(req,segments=json.dumps(content['segments']),decisionNotes=json.dumps([dict(decision=code,status='applied',where='G07',quote='阿福冷淡地看了一眼。')]))
     env.codex.script=[reply(dict(kind='change',earliestStage='prompts',instruction=text,segments=['G07'],reason='结尾反应')),reply([task]),rewrite,reply(dict(needsRevision=False,reason='本次只改反应，发布与配乐仍适用',quote='First Night Shift'))]
     result=wb.fix_after_delivery(eid,text,'change')
-    assert result['state']=='waiting_choice',result['reason']
-    assert result['mode']=='fix' and result['choice']['kind']=='preview'
+    assert result['state']=='done',result['reason']
+    assert result['mode']=='fix' and result['choice'] is None
     final=env.art(eid,'prompts')['adopted_version_id'];content=wb._continuous_version(final)
     assert content['segments']['G07']!=original['segments']['G07']
     assert all(content['segments'][s]==original['segments'][s] for s in original['segments'] if s!='G07')
@@ -78,7 +78,7 @@ def test_K_T1_K_T3_prompt_change_preserves_other_segments_scoped_decision_and_ol
         assert decision['text']==text and decision['scope_kind']=='scenes' and json.loads(decision['scope_value'])==['场02']
         assert db.execute('SELECT count(*) FROM delivery WHERE episode_id=?',(eid,)).fetchone()[0]==2
     assert Path(case['delivery']['html']).read_bytes()==oldbytes
-    new=wb.delivery_view(result['choice']['deliveryId']);assert new['revision']==2
+    new=wb.delivery_view(result['cursor']['deliveryId']);assert new['revision']==2
     assert '本次修改' in Path(new['html']).read_text() and text in Path(new['html']).read_text()
 
 
@@ -113,7 +113,7 @@ def test_K_T7_other_adjusts_named_plan_segment_and_its_prompts(tmp_path):
         return scripted_fields(req,content)
     env.codex.script=[reply(dict(kind='change',earliestStage='plan',instruction=task['instruction'],segments=['G05'],reason=task['reason'])),reply([task]),*([execute]*25)]
     result=wb.fix_after_delivery(eid,task['instruction'],'other')
-    assert result['state']=='waiting_choice',result['reason']
+    assert result['state']=='done',result['reason']
     plan=wb._continuous_version(env.art(eid,'plan')['adopted_version_id'])
     assert all(s in plan['shots'] for s in oldplan['shots'] if s['segment']!='G05')
     content=wb._continuous_version(env.art(eid,'prompts')['adopted_version_id'])
@@ -150,7 +150,7 @@ def test_K_T6_story_fixes_one_scene_and_only_mapped_segments(tmp_path):
         return scripted_fields(req,content)
     env.codex.script=[reply(dict(kind='change',earliestStage='script',instruction=task['instruction'],segments=['G07'],reason=task['reason'])),reply([task]),*([execute]*30)]
     result=wb.fix_after_delivery(eid,task['instruction'],'story-fix')
-    assert result['state']=='waiting_choice',result['reason']
+    assert result['state']=='done',result['reason']
     script=wb._continuous_version(env.art(eid,'script')['adopted_version_id'])
     assert script['scenes'][1]==original_script['scenes'][1]
     content=wb._continuous_version(env.art(eid,'prompts')['adopted_version_id'])
@@ -168,8 +168,8 @@ def test_K_T5_continuity_uses_common_scene_preserves_script_and_other_segments(t
         if req.purpose=='image_assess':
             ids=[re.search(r'候选-([a-f0-9-]+)',p.name)[1] for p in req.images if '候选-' in p.name]
             return reply([assessment(i,props={},observation='实际原图可见便利店，角色图为柴犬阿福') for i in ids])(req)
-        if '具体指出空间' in req.prompt:
-            assert req.images  # original bound images, not text summaries
+        if '按本次连续性反馈和两段既有绑定' in req.prompt:
+            assert not req.images  # continuity edits inherit the existing references
             return reply(dict(explanation='前段桌子在窗边，后段写在门口；统一为窗边。',sceneVersionId=None if new_scene else case['scene'],newSceneInstruction='无角色、无剧情状态，桌子在窗边的便利店空景' if new_scene else '',stateNeedKeys=[]))(req)
         if '核对当前上游变化' in req.prompt:
             from workbench.decisions import _text_fields
@@ -203,13 +203,13 @@ def test_K_T5_continuity_uses_common_scene_preserves_script_and_other_segments(t
         monkeypatch.setattr(wb,'mark_image',mark)
         result=wb.resume_continuous(result['id'],'resume-continuity')
         assert [b['id'] for b in wb.episode_batches(eid)]==before
-    assert result['state']=='waiting_choice',result['reason']
+    assert result['state']=='done',result['reason']
     assert env.art(eid,'script')['adopted_version_id']==script
     content=wb._continuous_version(env.art(eid,'prompts')['adopted_version_id'])
     scene=wb._need(eid,'common-room')['adopted_version_id'] if new_scene else case['scene']
     assert all(any(r['assetVersionId']==scene for r in content['segments'][sid]['refs']) for sid in task['segments'])
     assert all(content['segments'][sid]==entry for sid,entry in old['segments'].items() if sid not in task['segments'])
-    html=Path(wb.delivery_view(result['choice']['deliveryId'])['html']).read_text()
+    html=Path(wb.delivery_view(result['cursor']['deliveryId'])['html']).read_text()
     assert 'G06' in html and 'G07' in html and '本次修改' in html and task['reason'] in html
 
 
@@ -244,7 +244,7 @@ def test_K_T4_packaged_prompt_and_image_edits_preserve_old_outputs(tmp_path):
         return scripted_fields(req,content)
     env.codex.script=[reply(dict(kind='change',earliestStage='asset_design',instruction=text,segments=['G03','G06','G07'],reason='两项定点修改')),reply(tasks),*([execute]*45)]
     result=wb.fix_after_delivery(eid,text,'packaged-fix')
-    assert result['state']=='waiting_choice',result['reason']
+    assert result['state']=='done',result['reason']
     final=env.art(eid,'prompts')['adopted_version_id'];content=wb._continuous_version(final);new=wb._need(eid,case['needKey'])['adopted_version_id']
     assert new!=case['scene']
     assert all(any(r['assetVersionId']==new for r in content['segments'][s]['refs']) for s in ('G06','G07'))
@@ -254,4 +254,4 @@ def test_K_T4_packaged_prompt_and_image_edits_preserve_old_outputs(tmp_path):
     assert current['G01']['coldRead']['reviewId']==old_reviews['G01']['coldRead']['reviewId']
     assert current['G01']['comparison']['reviewId']==old_reviews['G01']['comparison']['reviewId']
     assert Path(packaged['path']).read_bytes()==old_zip and Path(case['delivery']['html']).read_bytes()==old_html
-    assert wb.delivery_view(result['choice']['deliveryId'])['revision']==2
+    assert wb.delivery_view(result['cursor']['deliveryId'])['revision']==2

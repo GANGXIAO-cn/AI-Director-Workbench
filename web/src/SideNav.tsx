@@ -53,7 +53,7 @@ export function SideNav({active, projects, projectId, owner, episode, hash}:{
           onClick={()=>setOpened(!opened)}>{opened?<PanelLeftClose size={19}/>:<Menu size={19}/>}</button></div>
       {items.map(link)}
       <div className="nav-history">
-        {!!attention.length && <><h2>需要你处理</h2>{attention.map(a=><div key={"attn-"+a.episodeId} className="nav-episode">{link(["attn-"+a.episodeId,a.displayCode+" "+(a.title||"未命名"),"#/e/"+a.episodeId+"/story",FileClock])}<AttentionTag item={a}/></div>)}</>}
+        {!!attention.length && <><h2>正在等候外部服务</h2>{attention.map(a=><div key={"attn-"+a.episodeId} className="nav-episode">{link(["attn-"+a.episodeId,a.displayCode+" "+(a.title||"未命名"),"#/e/"+a.episodeId+"/story",FileClock])}<AttentionTag item={a}/></div>)}</>}
         {!!recent.length && <><h2>最近剧集</h2>{recent.map(e=><div key={e.id} className="nav-episode">{link([e.id,e.display_code+" "+(e.title||"未命名"),"#/e/"+e.id+"/story",FileClock])}<AttentionTag item={attention.find(a=>a.episodeId===e.id)}/></div>)}</>}
         {!!projects.length && <><h2>项目列表</h2>{projects.map(p=><div key={p.id}>{link([p.id,p.name,"#/p/"+p.id,FolderOpen])}
           {p.id===projectId&&<div className="project-subnav">{link(["topics","选题池","#/p/"+p.id+"/topics",NotebookPen])}</div>}</div>)}</>}

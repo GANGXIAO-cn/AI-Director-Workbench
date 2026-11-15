@@ -14,23 +14,23 @@ def test_model_windows_merge_with_existing_board_and_reject_incomplete_scope(tmp
     original[-1]["镜头S"] = original[0]["镜头S"]
     plan["rhythmTable"] = rhythm.markdown(original)
     assert not shotrefs.plan_enabled(plan)
-    plan["shots"][0].update(visibleRoles=["阿福"], propStates={"crate": "空"})
+    plan["shots"][0].update(visibleRoles=["阿福"], propStates={"prop_crate": "空"})
     assert shotrefs.plan_enabled(plan)
     with pytest.raises(ValueError, match="S02"):
         shotrefs.board_rows(plan)
     for shot in plan["shots"][1:]:
         shot.update(visibleRoles=[], propStates={})
     rows = shotrefs.board_rows(plan)
-    assert [(r[shotrefs.ROLES], r[shotrefs.PROPS]) for r in rows] == [("阿福", "crate=空"), ("无", "无"), ("无", "无")]
+    assert [(r[shotrefs.ROLES], r[shotrefs.PROPS]) for r in rows] == [("阿福", "prop_crate=空"), ("无", "无"), ("无", "无")]
     assert rows[-1]["镜头S"] == rows[0]["镜头S"]
     rows[0][shotrefs.ROLES] = "无"
-    rows[0][shotrefs.PROPS] = "crate=满"
+    rows[0][shotrefs.PROPS] = "prop_crate=满"
     plan["rhythmTable"] = rhythm.markdown(rows)
     with pytest.raises(ValueError, match="结构化镜头"):
         shotrefs.board_rows(plan)
     synced = shotrefs.apply_table_edit(plan)
     assert synced["shots"][0]["visibleRoles"] == []
-    assert synced["shots"][0]["propStates"] == {"crate": "满"}
+    assert synced["shots"][0]["propStates"] == {"prop_crate": "满"}
     assert shotrefs.board_rows(synced) == rows
     plan["shots"][0]["visibleRoles"] = ["阿福", "阿福"]
     with pytest.raises(ValueError, match="不重复"):

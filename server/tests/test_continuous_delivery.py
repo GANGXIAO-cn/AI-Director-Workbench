@@ -6,22 +6,18 @@ from workbench.continuous import Halt
 
 def fixture(tmp_path):
     env=Env(tmp_path);case=env.full_episode(deliver=False);wb=env.wb
-    run=wb.start_continuous(case['eid'],command_id='run')
-    wb._continuous_update(run['id'],state='running')
-    return env,case,run['id']
+    from test_continuous_wake import run_record
+    return env,case,run_record(env,case['eid'])
 
 
-def test_preview_confirmation_completes_without_packaging(tmp_path):
+def test_delivery_completes_without_preview_confirmation(tmp_path):
     env,case,cid=fixture(tmp_path);wb=env.wb
     assert wb._continuous_delivery(cid)
     current=wb._continuous_record(cid)
-    assert current['state']=='waiting_choice' and current['choice']['kind']=='preview'
-    assert current['choice']['title']=='图文交付 R01 已完成，看一眼'
-    did=current['choice']['deliveryId']
+    assert current['state']=='done' and current['choice'] is None
+    did=current['cursor']['deliveryId']
     assert wb.verify_delivery(did)['ok']
     with env.db() as db:assert db.execute('SELECT count(*) FROM package').fetchone()[0]==0
-    result=wb.choose_continuous(cid,'satisfied','satisfied')
-    assert result['state']=='done'
     assert not wb.delivery_view(did)['packages']
 
 
@@ -47,7 +43,7 @@ def test_expert_delivery_only_packages_on_download(tmp_path):
 
 def test_completed_finishing_resume_does_not_repeat_plan_review(tmp_path,monkeypatch):
     env,case,cid=fixture(tmp_path);wb=env.wb;eid=case['eid']
-    wb._continuous_cursor(cid,finishingReceipt={stage:env.art(eid,stage)['adopted_version_id'] for stage in ('plan','prompts')})
+    wb._continuous_cursor(cid,finishingReceipt=dict(worksheetRefs=1, **{stage:env.art(eid,stage)['adopted_version_id'] for stage in ('plan','prompts')}))
     def unexpected(*args,**kwargs):raise AssertionError('unchanged finishing must not submit another review')
     monkeypatch.setattr(wb,'submit_review',unexpected)
     assert wb._continuous_finish_stages(cid)
@@ -64,8 +60,8 @@ def test_J_T1_delivery_problem_routes_and_spec_stops(tmp_path,monkeypatch,stage)
     problem=dict(stage=stage,segment='G01' if stage=='recheck' else None,file=None,problem='本次核验问题')
     if stage=='spec':
         with pytest.raises(Halt):wb._continuous_delivery_problem(cid,problem)
-        assert wb._continuous_record(cid)['state']=='blocked'
-        assert wb._continuous_record(cid)['reason']==problem['problem']
+        assert wb._continuous_record(cid)['state']=='failed' and wb._continuous_record(cid)['choice'] is None
+        assert problem['problem'] in wb._continuous_record(cid)['reason']
     else:
         wb._continuous_delivery_problem(cid,problem)
         expected={'space':'_image_fill_records','cast':'_continuous_cast','review':'_continuous_prompt_checks','recheck':'_continuous_prompt_revision','prompts':'_continuous_prompt_revision','plan':'_continuous_create','assets':'_continuous_repair_delivery_assets'}
@@ -77,7 +73,7 @@ def test_J_T1_same_problem_stops_after_two_repairs(tmp_path,monkeypatch):
     monkeypatch.setattr(wb,'delivery_problems',lambda *a:([dict(stage='space',segment=None,file=None,problem='空间尚未确认')],None))
     monkeypatch.setattr(wb,'_continuous_delivery_problem',lambda *a:calls.append(a) or True)
     with pytest.raises(Halt):wb._continuous_delivery(cid)
-    assert len(calls)==2 and wb._continuous_record(cid)['reason']=='空间尚未确认'
+    assert len(calls)==2 and '空间尚未确认' in wb._continuous_record(cid)['reason']
 
 
 def test_report_text_only_does_not_restart_production(tmp_path):

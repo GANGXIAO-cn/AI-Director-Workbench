@@ -8,7 +8,7 @@ import { addDirectorFiles, clipboardFiles, DirectorFiles, useDirectorCommand, is
 import { isKickoffTopic } from "./topics";
 import { FileInput, PencilLine, Plus, PackageOpen, Film, Palette, NotebookPen, Ratio, ChevronDown, ArrowUp, type LucideIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { AttentionTag, explainStop, stageLabel, useAttention } from "./Attention";
+import { AttentionTag, useAttention } from "./Attention";
 import { blob, q, cmd, upload, importManuscript, ApiError, commandId } from "./api";
 import {OpenProjectFolder, SaveProjectFolder} from "./ProjectFolders";
 import { resourceOwner, type useProjectList } from "./projectNavigation";
@@ -304,10 +304,10 @@ export default function Home({ tab, projects, rememberProject, referenceDraft }:
             {CHIPS.map((c,i) => <button key={c} className="btn ghost" style={{ borderRadius: 20 }} onClick={() => shortcut(i)}>{c}</button>)}
           </div>
         </div>
-        {attention.length > 0 && <section aria-label="需要你处理" className="attention-list"><h2>需要你处理</h2><div className="home-project-grid">{attention.map(a =>
+        {attention.length > 0 && <section aria-label="正在等候外部服务" className="attention-list"><h2>正在等候外部服务</h2><div className="home-project-grid">{attention.map(a =>
           <a key={a.episodeId} className="epcard col attention-card" href={`#/e/${a.episodeId}/story`}>
             <strong>{a.displayCode}{a.title && " · " + a.title} <AttentionTag item={a}/></strong>
-            <span className="muted small">{a.projectName} · {a.state === "blocked" ? explainStop(a.reason, stageLabel(a.stage, a.phase)).summary : "AI 已备好选项，等你选择"}</span>
+            <span className="muted small">{a.projectName} · {a.reason}</span>
           </a>)}</div></section>}
         <div className="spread" style={{ marginTop: 30 }}><h2>最近项目</h2><a className="muted small" href="#/projects">全部 ›</a></div>
         {listNotice}

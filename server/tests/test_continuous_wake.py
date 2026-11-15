@@ -6,7 +6,7 @@ from helpers import Env
 from workbench.db import transaction, dumps, new_id
 from workbench.continuous import Halt
 from workbench.continuous_images import MaterialWait, generated_count
-from workbench.images import INTERRUPTED_IMAGE
+from workbench.images import INTERRUPTED_IMAGE, ImageOutcome
 from workbench.executors.base import ExecOutcome
 from workbench.service import Workbench
 from workbench.app import create_app
@@ -27,8 +27,7 @@ def run_record(env,eid,state='running',**fields):
 
 
 def stop(wb,cid,blocks):
-    with pytest.raises(Halt):wb._continuous_stop(cid,'blocked','等待恢复',blocks=blocks)
-    wb._commit_blocks(cid)
+    with pytest.raises(Halt):wb._continuous_problem(cid,'等待恢复',blocks=blocks)
 
 
 def auth_failure(req):
@@ -61,7 +60,7 @@ def test_interrupted_image_new_batch_and_edit_refund(tmp_path,edit):
         with transaction(wb.db_path) as db:db.execute('INSERT INTO asset_need_candidate VALUES(?,?)',(need['id'],vid))
     with pytest.raises(MaterialWait):wb._image_generate(cid,need,edit=dict(prompt='修正门铃',versionId=vid,n=1) if edit else None)
     old=wb._image_state(cid,'bell')['pendingBatch']
-    env.images.remote_status=False
+    env.images.inspect=lambda _:ImageOutcome('failed',error=INTERRUPTED_IMAGE)
     wb.settle_unknown_requests([old])
     assert wb.batch_view(old)['requests'][0]['error']==INTERRUPTED_IMAGE
     wb._image_generate(cid,wb._need(eid,'bell'))
@@ -86,8 +85,7 @@ def test_auth_recovery_limit_and_manual_reset(tmp_path,monkeypatch):
         wb._advance_continuous(cid)
     assert wb.changed_continuous_runs(now+500)==[]
     assert list(wb._continuous_record(cid)['cursor']['wakeCounts'].values())==[3]
-    wb.resume_continuous(cid,command_id='manual')
-    assert list(wb._continuous_record(cid)['cursor']['wakeCounts'].values())==[0]
+    assert wb._continuous_record(cid)['state']=='failed'  # no further probes or manual retry loop
 
 
 def test_paused_choice_and_missing_do_not_wake(tmp_path,monkeypatch):
@@ -96,11 +94,10 @@ def test_paused_choice_and_missing_do_not_wake(tmp_path,monkeypatch):
     cid=run_record(env,eid,'paused',blocks=[b])
     monkeypatch.setattr(wb,'executor_identity',lambda provider:dict(authenticated=True))
     assert wb.changed_continuous_runs()==[]
-    wb._continuous_update(cid,state='waiting_choice')
-    assert wb.changed_continuous_runs()==[]
-    wb._continuous_cursor(cid,blocks=[],stoppedNeeds=[dict(key='bell',reason='缺项')])
-    wb._continuous_update(cid,state='blocked')
-    assert wb.changed_continuous_runs()==[]
+    import sqlite3
+    for forbidden in ('waiting_choice','blocked'):
+        with pytest.raises(sqlite3.IntegrityError):wb._continuous_update(cid,state=forbidden)
+    assert wb._continuous_record(cid)['state']=='paused'
 
 
 def test_only_ready_item_executes(tmp_path,monkeypatch):
@@ -111,7 +108,7 @@ def test_only_ready_item_executes(tmp_path,monkeypatch):
     auth=wb._recovery_block('need:bell','auth',provider='codex',role='image_assess')
     image=wb._recovery_block('need:other','image_wait',role='image',batchIds=['finished'])
     wb._continuous_cursor(cid,blocks=[auth,image],stoppedNeeds=[dict(key='bell',title='bell',reason='登录失效',**{k:auth[k] for k in ('kind','provider','role','batchIds','resetsAt')})])
-    wb._continuous_update(cid,state='blocked')
+    wb._continuous_update(cid,state='waiting_external')
     monkeypatch.setattr(wb,'_recovery_probes',lambda snapshots,now:dict(identity={'codex':False},batches={'finished':True}))
     calls=[]
     def run_round(cid,need,parallel=False):
@@ -121,7 +118,6 @@ def test_only_ready_item_executes(tmp_path,monkeypatch):
     monkeypatch.setattr(wb,'_image_fill_records',lambda cid:True)
     assert wb.changed_continuous_runs()==[cid]
     with pytest.raises(Halt):wb._continuous_images(cid)
-    wb._commit_blocks(cid)
     assert calls==['other']
     assert wb._continuous_record(cid)['cursor']['wakeCounts'][auth['id']]==0
     monkeypatch.setattr(wb,'_recovery_probes',lambda snapshots,now:dict(identity={'codex':True},batches={}))
@@ -173,15 +169,15 @@ def test_real_image_failure_counts_two_attempts(tmp_path):
     env.codex.script=[lambda req:dict(ids=[],reason='无适用图') if req.purpose=='progress_expert' else image_reply(req,'blocked')]*20
     wait=wb._image_need_round(cid,wb._need(eid,'bell'))
     attempts=wb._image_state(cid,'bell')['attempts']
-    assert env.images.sent==2 and generated_count(attempts)==2
+    assert env.images.sent==1 and generated_count(attempts)==1
     assert all(not a.get('interrupted') and 'insufficient_quota' in a['result'] for a in attempts)
-    assert '连续两次' in wait['reason']
+    assert wait['kind']=='quota'
 
 
 def test_running_failed_batch_wakes(tmp_path):
     env,eid,cid,bid=parked_batch(tmp_path);wb=env.wb
     wb._continuous_cursor(cid,waits={'bell':dict(running=True)})
-    env.images.remote_status=False
+    env.images.inspect=lambda _:ImageOutcome('failed',error=INTERRUPTED_IMAGE)
     assert wb.changed_continuous_runs()==[cid]
     assert wb.batch_view(bid)['state']=='failed'
     wb._image_generate(cid,wb._need(eid,'bell'))
@@ -229,20 +225,13 @@ def test_serial_temporary_stop_keeps_other_counts(tmp_path):
     assert wb._continuous_record(cid)['cursor']['wakeCounts'][x['id']]==2
 
 
-def test_parallel_assessment_auth_really_retries_latest_run(tmp_path,monkeypatch):
+def test_parallel_need_adopts_without_review(tmp_path):
     env,eid,_=fixture(tmp_path);wb=env.wb;cid=run_record(env,eid)
     wb.initialize_asset_worksheet(eid,env.art(eid,'asset_design')['adopted_version_id'],'worksheet')
     wb._image_generate(cid,wb._need(eid,'bell'))
-    env.codex.script=[auth_failure,auth_failure]
-    wait=wb._image_need_round(cid,wb._need(eid,'bell'),parallel=True)
-    assert wait['kind']=='auth'
-    stop(wb,cid,[wb._recovery_block('need:bell',**wait)])
-    monkeypatch.setattr(wb,'executor_identity',lambda provider:dict(authenticated=True))
-    assert wb.changed_continuous_runs()==[cid]
     before=len(env.codex.calls)
-    env.codex.script=[lambda req:image_reply(req)]*8
     assert wb._image_need_round(cid,wb._need(eid,'bell'),parallel=True) is None
-    assert len(env.codex.calls)>before and wb._need(eid,'bell')['adopted_version_id']
+    assert len(env.codex.calls)==before and wb._need(eid,'bell')['adopted_version_id']
 
 
 def test_repeated_image_transport_losses_stop(tmp_path):
@@ -251,8 +240,7 @@ def test_repeated_image_transport_losses_stop(tmp_path):
     env.images.script=['timeout']*10
     env.codex.script=[lambda req:dict(ids=[],reason='无适用图')]*10
     wait=wb._image_need_round(cid,wb._need(eid,'bell'))
-    assert env.images.sent==4 and '连续 3 次' in wait['reason']
-    assert not wait.get('kind')
+    assert env.images.sent==1 and wait['kind'] in ('image_wait','transient')
 
 
 def test_auth_switch_uses_new_executor(tmp_path,monkeypatch):
@@ -260,11 +248,13 @@ def test_auth_switch_uses_new_executor(tmp_path,monkeypatch):
     env.codex.script=[auth_failure]*10
     result=wb.start_continuous(eid,command_id='start');cid=result['id']
     monkeypatch.setattr(wb,'executor_identity',lambda provider:dict(authenticated=False))
-    monkeypatch.setattr(wb,'_stage_executors',lambda db,eid,stage:{'create':{'provider':'claude'}})
-    before=len(env.codex.calls)
+    monkeypatch.setattr(wb,'_stage_executors',lambda db,eid,stage:{'create':{'provider':'antigravity'}})
     assert wb.changed_continuous_runs()==[cid]
-    wb._continuous_execute(cid)
-    assert len(env.codex.calls)==before and env.claude.calls
+    # Only the creation slot changed. The following review still uses the unavailable account.
+    with pytest.raises(Halt):wb._continuous_execute(cid)
+    with env.db() as db:
+        assert db.execute("SELECT 1 FROM run WHERE provider='antigravity' AND purpose='create' AND status='succeeded'").fetchone()
+    assert wb._continuous_record(cid)['cursor']['blocks'][0]['role']=='review'
 
 
 def test_restart_does_not_hold_items_from_an_older_stop(tmp_path):
@@ -279,6 +269,27 @@ def test_restart_does_not_hold_items_from_an_older_stop(tmp_path):
     cursor['blocks']=[dict(id='need:bell|auth|codex',scope='need:bell',kind='auth',provider='codex',role='image_assess',batchIds=[],resetsAt=None,at=1,lastTry=None)]
     cursor['resumeAfterRestart']=True
     with transaction(env.wb.db_path) as db:
-        db.execute("UPDATE continuous_run SET state='paused',pause_requested=0,cursor=? WHERE id=?",(dumps(cursor),run['id']))
+        db.execute("UPDATE continuous_run SET state='running',pause_requested=0,cursor=? WHERE id=?",(dumps(cursor),run['id']))
         assert env.wb._claim_resume(db,run['id'],auto=[])==run['id']
     assert env.wb._continuous_record(run['id'])['cursor'].get('autoScope') is None
+
+
+def test_future_quota_hint_cannot_postpone_deadline(tmp_path):
+    env=Env(tmp_path);_,eid=env.new_episode();wb=env.wb
+    b=wb._recovery_block('run:story:create','quota',resetsAt=wb.clock()+86400*365)
+    cid=run_record(env,eid,'waiting_external',blocks=[b])
+    assert not wb.changed_continuous_runs(b['at']+86401)
+    assert wb._continuous_record(cid)['state']=='failed'
+
+
+def test_unqueryable_submission_never_reissued_even_when_wait_expires(tmp_path):
+    env,eid,cid,bid=parked_batch(tmp_path);wb=env.wb
+    env.images.remote_status=False
+    b=wb._recovery_block('need:bell','image_wait',batchIds=[bid])
+    stop(wb,cid,[b])
+    original=wb.batch_view(bid)['requests'][0]['id']
+    for elapsed in (5,90,7201):
+        assert wb.changed_continuous_runs(b['at']+elapsed)==[]
+    req,=wb.batch_view(bid)['requests']
+    assert req['id']==original and req['state']=='unknown' and env.images.sent==1
+    assert wb._continuous_record(cid)['state']=='failed'

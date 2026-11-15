@@ -30,10 +30,9 @@ def test_E_T1_F_T1_quick_start_number_and_three_directions(tmp_path):
     assert env.wb.quick_start(pid,IDEA,'start')==result
     view=env.wb.episode_view(result['episodeId']);run=env.wb.continuous_view(result['episodeId'])['run']
     assert view['episode']['display_code']=='E10' and view['kickoff']
-    assert run['target_stage']=='delivery' and run['state']=='waiting_choice'
-    assert run['choice']['kind']=='direction' and len(run['choice']['candidates'])==3
-    assert sum(c['recommended'] for c in run['choice']['candidates'])==1
-    assert not view['artifacts'][0]['versions']
+    assert run['target_stage']=='delivery' and run['cursor']['directionDone']
+    assert directions()['directions'][0]['story'] in run['cursor']['storyGoal']
+    assert not any(p['state']=='waiting_choice' for p in run['cursor'].get('pauseHistory',[]))
     # 专家 AI 第 1 步：开工参数包含专家，并补齐 model/effort 字段（默认分工未设置时三项都是 Codex）。
     slot={'provider':'codex','model':None,'effort':None}
     assert view['kickoff']['executor_plan']=={'create':slot,'review':slot,'expert':slot}
@@ -71,36 +70,31 @@ def test_E_T4_E_T5_conflict_card_before_kickoff_and_adjustment_rechecked(tmp_pat
         return dict(checks=[dict(key='dialogue',verdict='conflict' if conflict else 'compatible',settingQuote=rule,requestQuote=idea if conflict else new,reason='已核对原文')])
     env.codex.script=[check,lambda req:dict(idea=new),check,reply]
     result=env.wb.quick_start(pid,idea,'start');eid=result['episodeId'];run=env.wb.continuous_view(eid)['run']
-    assert env.wb.episode_view(eid)['kickoff'] is None
-    assert run['state']=='waiting_choice' and run['choice']['kind']=='kickoff_conflict'
-    source=env.wb._kickoff_source(run['cursor']['startArgs'])
-    assert env.wb.kickoff_check_view(source)['decisions']['dialogue']['conflict'] is True
-    selected=env.wb.choose_continuous(run['id'],'adjust','pick')
-    assert selected['choice']['kind']=='direction' and len(checks)==2
+    assert len(checks)==2
     assert env.wb.episode_view(eid)['kickoff']['idea_text']==new
-    assert selected['cursor']['kickoffAdjustment']==dict(before=idea,after=new)
+    assert run['cursor']['kickoffAdjustment']==dict(before=idea,after=new)
+    assert not any(p['state']=='waiting_choice' for p in run['cursor'].get('pauseHistory',[]))
 
 
 @pytest.mark.parametrize('bad',['count','sources'])
-def test_F_T2_invalid_directions_retry_once_then_block(tmp_path,bad):
+def test_invalid_direction_output_falls_back_to_topic_then_delivers(tmp_path,bad):
     env,pid=quick_env(tmp_path);value=directions()
     if bad=='count':value['directions']=value['directions'][:2]
     else:value['directions'][0]['sources']=['不存在的编号']
     env.codex.script=[lambda req:reply(req,value)]*2
-    result=env.wb.quick_start(pid,IDEA,'start');run=env.wb.continuous_view(result['episodeId'])['run']
-    assert run['state']=='blocked' and '格式重试' in run['reason']
-    assert len(env.codex.calls)==2
+    result=env.wb.quick_start(pid,IDEA,'start');run=env.wb._continuous_record(result['continuousId'])
+    assert run['state']=='done' and env.wb.verify_delivery(run['cursor']['deliveryId'])['ok']
+    assert IDEA in run['cursor']['storyGoal'] and not run['choice'] and not run['cursor'].get('pauseHistory')
+    assert len([r for r in env.codex.calls if r.purpose=='image_assess'])==1
 
 
-def test_F_T3_choose_B_reaches_stress_and_records_direction(tmp_path):
+def test_recommended_direction_selected_once_without_user(tmp_path):
     env,pid=quick_env(tmp_path);result=env.wb.quick_start(pid,IDEA,'start');eid=result['episodeId']
-    selected=env.wb.choose_continuous(result['continuousId'],'B','pick')
-    assert env.art(eid,'stress')['adopted_version_id'],selected['reason']
-    assert all(env.art(eid,stage)['adopted_version_id'] for stage in ('story','characters','world','treatment','script','stress'))
-    assert any(directions()['directions'][1]['story'] in r.prompt for r in env.codex.calls[1:])
-    decisions=env.wb.director_decisions(eid)
-    assert len(decisions)==1 and decisions[0]['text']=='故事方向：夜班B——寻找蛋糕的主人B'
-    assert any(d['kind']=='choose_direction' and json.loads(d['detail'])['key']=='B' for d in env.wb.continuous_view(eid)['decisions'])
+    view=env.wb.continuous_view(eid)
+    assert view['run']['state']=='done'
+    picks=[json.loads(d['detail']) for d in view['decisions'] if d['kind']=='choose_direction']
+    assert [d['key'] for d in picks]==['A']
+    assert directions()['directions'][0]['story'] in view['run']['cursor']['storyGoal']
 
 
 def test_F_T4b_complete_story_bypasses_card_preserves_original_input(tmp_path):
@@ -109,19 +103,6 @@ def test_F_T4b_complete_story_bypasses_card_preserves_original_input(tmp_path):
     assert run['choice'] is None and env.art(eid,'story')['adopted_version_id'],run['reason']
     assert '用户原话：\n'+IDEA in env.codex.calls[1].prompt
     assert any(d['kind']=='decide_skip' for d in env.wb.continuous_view(eid)['decisions'])
-
-
-def test_F_T5_feedback_rediverges_twice_then_uses_user_words(tmp_path):
-    env,pid=quick_env(tmp_path);env.codex.script=[reply]*3
-    result=env.wb.quick_start(pid,IDEA,'start');cid=result['continuousId']
-    for n in (1,2):
-        value=env.wb.choose_continuous(cid,'free',f'free-{n}',text=f'第{n}次：换一个结尾')
-        assert value['choice']['kind']=='direction'
-        assert f'第{n}次：换一个结尾' in env.codex.calls[n].prompt
-    value=env.wb.choose_continuous(cid,'free','free-3',text='直接照我的想法拍，学徒自己过生日。')
-    assert value['cursor']['attempts']['direction']==3 and value['cursor']['directionDone']
-    assert env.art(result['episodeId'],'story')['adopted_version_id']
-    assert '直接照我的想法拍，学徒自己过生日。' in env.codex.calls[3].prompt
 
 
 def test_F_T6_F_T7_topic_similarity_and_knowledge_citations(tmp_path):
@@ -137,39 +118,12 @@ def test_F_T6_F_T7_topic_similarity_and_knowledge_citations(tmp_path):
     assert any(i['name']=='topic.md' for i in manifest['inputs'])
 
 
-def test_F_T3_concurrent_choice_is_not_applied_twice(tmp_path):
-    from workbench.errors import Conflict
-    import threading
-    env,pid=quick_env(tmp_path);result=env.wb.quick_start(pid,IDEA,'start');cid=result['continuousId']
-    lock=threading.Lock();env.wb._continuous_choice_locks[cid]=lock
-    with lock:
-        with pytest.raises(Conflict,match='正在处理'):env.wb.choose_continuous(cid,'B','pick')
-    assert not env.wb.director_decisions(result['episodeId'])
-    assert env.wb._continuous_record(cid)['state']=='waiting_choice'
-
-
 @pytest.mark.parametrize('existing',['','导演已有标题'])
-def test_E_T1_title_backfill_preserves_director_title(tmp_path,existing):
-    env,pid=quick_env(tmp_path);result=env.wb.quick_start(pid,IDEA,'start');eid=result['episodeId']
+def test_title_backfill_preserves_director_title(tmp_path,existing):
+    env,pid=quick_env(tmp_path);result=env.wb.quick_start_prepare(pid,IDEA,'start');eid=result['episodeId']
     with env.db() as db:db.execute('UPDATE episode SET title=? WHERE id=?',(existing,eid));db.commit()
-    env.wb.choose_continuous(result['continuousId'],'B','pick')
+    env.wb._advance_continuous(result['continuousId'])
     assert env.wb.episode_view(eid)['episode']['title']==(existing or '第一次值夜班')
-
-
-def test_E_T5_settings_change_wakes_prekickoff_and_rechecks(tmp_path):
-    env,pid=quick_env(tmp_path)
-    env.wb.propose_setting_change(pid,'dialogue','全片无对白','required','默片','rule')
-    def conflict(req):
-        return dict(checks=[dict(key='dialogue',verdict='conflict',settingQuote='全片无对白',requestQuote=IDEA,reason='测试冲突')])
-    env.codex.script=[conflict,reply]
-    result=env.wb.quick_start(pid,IDEA,'start');cid=result['continuousId']
-    env.wb.choose_continuous(cid,'settings','settings')
-    assert env.wb.changed_continuous_runs()==[]
-    env.wb.propose_setting_change(pid,'dialogue','可按故事需要使用对白','variable','导演调整','rule2')
-    assert env.wb.changed_continuous_runs()==[cid]
-    run=env.wb._advance_continuous(cid)
-    assert env.wb.episode_view(result['episodeId'])['kickoff']
-    assert run['choice']['kind']=='direction'
 
 
 def test_E_T1_F_T3_decision_migration_preserves_existing_receipts(tmp_path):
@@ -195,7 +149,7 @@ def test_E_T1_F_T3_decision_migration_preserves_existing_receipts(tmp_path):
     assert len(list((tmp_path/'backups').glob('*.sqlite')))==1
 
 
-def test_field_111_failed_kickoff_check_reruns_after_resume(tmp_path):
+def test_field_111_failed_kickoff_check_reruns_after_resume(tmp_path,monkeypatch):
     """实测 111：执行器登录失效导致开工核对失败，重新登录后点继续应重跑核对，并显示可读原因。"""
     from workbench.executors.base import ExecOutcome
     env,pid=quick_env(tmp_path)
@@ -207,12 +161,14 @@ def test_field_111_failed_kickoff_check_reruns_after_resume(tmp_path):
     env.codex.script=[auth,compatible,reply]
     result=env.wb.quick_start(pid,IDEA,'start');cid=result['continuousId']
     run=env.wb.continuous_view(result['episodeId'])['run']
-    assert run['state']=='blocked' and '登录已失效' in run['reason'] and 'OAuth' not in run['reason']
+    assert run['state']=='waiting_external' and '登录已失效' in run['reason'] and 'OAuth' not in run['reason']
     assert not env.wb.episode_view(result['episodeId'])['kickoff']
-    env.wb.resume_continuous(cid)
+    monkeypatch.setattr(env.wb,'executor_identity',lambda provider:dict(authenticated=True))
+    assert cid in env.wb.changed_continuous_runs()
+    env.wb._advance_continuous(cid)
     run=env.wb.continuous_view(result['episodeId'])['run']
     assert env.wb.episode_view(result['episodeId'])['kickoff']
-    assert run['choice']['kind']=='direction'
+    assert run['choice'] is None and run['cursor']['directionDone']
 
 
 def test_field_112_direction_may_cite_code_written_in_idea(tmp_path):

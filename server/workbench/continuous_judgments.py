@@ -14,8 +14,14 @@ def compact_shots(plan):
             for s in plan['shots']]
 
 
+def optional_agent_reference(rule):
+    base=rule.get('bindingBase',rule)
+    return (rule.get('selectedBy')=='agent' and not base.get('shotIds') and not base.get('targetSegments')
+            and not (set(rule.get('autoBindings',{}))-{'material'}))
+
+
 class ContinuousJudgments:
-    def _continuous_bounded_json(self, cid, kind, object_id, instruction, materials, validate, stage='plan'):
+    def _continuous_bounded_json(self, cid, kind, object_id, instruction, materials, validate, stage='plan', fallback=None):
         value = self._continuous_checkpoint(cid)
         eid = value['episode_id']
         basis = fingerprint(dict(protocol=1, kind=kind, instruction=instruction, materials=materials, stage=stage))
@@ -69,7 +75,15 @@ class ContinuousJudgments:
             if not problems:
                 return answer, basis
             instruction_now = instruction + '\n前次业务回复：\n' + raw + '\n具体校验问题：' + dumps(problems) + '\n只修正上述问题，提交完整业务对象。'
-        self._continuous_stop(cid, 'blocked', kind + '：' + '；'.join(problems))
+        if fallback:
+            answer=fallback()
+            if not validate(answer):
+                receipt.update(result=answer,decisionSource='local_fallback')
+                receipts=self._continuous_record(cid)['cursor'].get('judgmentReceipts',{})
+                receipts[key]=receipt
+                self._continuous_cursor(cid,judgmentReceipts=receipts)
+                return answer,basis
+        self._continuous_problem(cid,kind + '：' + '；'.join(problems))
 
     def _continuous_image_rule(self, eid, vid):
         with connect(self.db_path) as db:
@@ -109,7 +123,7 @@ class ContinuousJudgments:
             picks=answer.get('selections') if isinstance(answer,dict) else None
             ok=isinstance(picks,list) and len(picks)==len(pending) and {p.get('segment') for p in picks if isinstance(p,dict)}=={p['segment'] for p in pending} and all(isinstance(p,dict) and p.get('versionId') in {c['versionId'] for row in pending if row['segment']==p.get('segment') for c in row['candidates']} and isinstance(p.get('reason'),str) and p['reason'].strip() for p in picks)
             return [] if ok else ['每个待选图段须选择一张候选场景图并说明用途']
-        answer,basis=self._continuous_bounded_json(cid,'空镜场景选图',','.join(p['segment'] for p in pending),'为没有角色身份图或镜头绑定图的生成段，从已采用场景图候选中选一张最适合作为环境参考的图。只选图，不审核或重做图片。reply {"selections":[{"segment":"段号","versionId":"候选版本","reason":"用途"}]}。',dict(segments=pending),valid)
+        answer,basis=self._continuous_bounded_json(cid,'空镜场景选图',','.join(p['segment'] for p in pending),'为没有角色身份图或镜头绑定图的生成段，从已采用场景图候选中选一张最适合作为环境参考的图。只选图，不审核或重做图片。reply {"selections":[{"segment":"段号","versionId":"候选版本","reason":"用途"}]}。',dict(segments=pending),valid,fallback=lambda:dict(selections=[dict(segment=p['segment'],versionId=p['candidates'][0]['versionId'],reason='采用本场已选用的环境参考图') for p in pending]))
         for pick in answer['selections']:
             with connect(self.db_path) as db:expected=next((r for r in imagechoices.requirements(db,eid) if r['versionId']==pick['versionId']),None)
             ids=[s['id'] for s in shots.values() if s['segment']==pick['segment']]
@@ -129,6 +143,7 @@ class ContinuousJudgments:
         pending = []; expected = {}; cached = []
         saved = self._continuous_record(cid)['cursor'].get('materialJudgments', {})
         for rule in rules:
+            if 'worksheet' in rule.get('autoBindings', {}):continue
             vid = rule['versionId']; asset = self.asset_version(vid)
             # Cast creates exact identity scope; combined boards retain their existing
             # extra scope for the observation/validate_scope path, never widen it here.
@@ -162,7 +177,9 @@ class ContinuousJudgments:
         for item,item_basis in cached:
             if item['shotIds']:
                 self._continuous_bind(cid,item['versionId'],item['shotIds'],plan_id,'material',item_basis,item['reason'],expected[item['versionId']],need_key=needs.get(item['versionId'],{}).get('need_key'))
-            else:self._continuous_stop(cid,'blocked',item['needKey']+'：'+item['unresolvedReason'])
+            elif optional_agent_reference(expected[item['versionId']]):
+                self.mark_image(eid,item['versionId'],'required',enabled=False,command_id=f'{cid}:unused:{plan_id}:'+item['versionId'])
+            else:self._continuous_problem(cid,item['needKey']+'：'+item['unresolvedReason'])
         if not pending:return
         self._continuous_cursor(cid, phase='judgment', judgmentKind='素材用途匹配')
         material = dict(images=pending, shots=[s for s in shots if any(s['id'] in p['candidateShotIds'] for p in pending)])
@@ -193,9 +210,13 @@ class ContinuousJudgments:
         unresolved=[]
         for item in answer['bindings']:
             if not item['shotIds']:
-                unresolved.append(item['needKey']+'：'+item['unresolvedReason']);continue
+                rule=expected[item['versionId']]
+                if optional_agent_reference(rule):
+                    self.mark_image(eid,item['versionId'],'required',enabled=False,command_id=f'{cid}:unused:{plan_id}:'+item['versionId'])
+                else:unresolved.append(item['needKey']+'：'+item['unresolvedReason'])
+                continue
             self._continuous_bind(cid,item['versionId'],item['shotIds'],plan_id,'material',next(p['basisHash'] for p in pending if p['versionId']==item['versionId']),item['reason'],expected[item['versionId']],need_key=needs.get(item['versionId'],{}).get('need_key'))
-        if unresolved:self._continuous_stop(cid,'blocked','素材用途未匹配：'+'；'.join(unresolved))
+        if unresolved:self._continuous_problem(cid,'素材用途未匹配：'+'；'.join(unresolved))
 
     def _continuous_reference_props(self, cid, sid, ref, shots, assessed, identity_roles=(), prompt_text="", usage_conclusion=None):
         """Align observation identifiers, keeping raw evidence and real state conflicts."""
@@ -248,7 +269,7 @@ class ContinuousJudgments:
         answer,basis=self._continuous_bounded_json(cid,'引用用途核对',sid+':'+assessed['versionId'],instruction,materials,validate,stage='prompts')
         unresolved=[m for m in answer['mappings'] if m['mode']=='unresolved']
         if unresolved:
-            self._continuous_stop(cid,'blocked',sid+' 的引用道具缺少对应关系：'+'；'.join(m['source']+' / '+m['shotId']+'：'+m['reason']+'；原句：'+m['quote'] for m in unresolved))
+            self._continuous_problem(cid,sid+' 的引用道具缺少对应关系：'+'；'.join(m['source']+' / '+m['shotId']+'：'+m['reason']+'；原句：'+m['quote'] for m in unresolved))
         aligned={m['target']:('仅外观' if m['mode']=='appearance' else props[m['source']]) for m in answer['mappings'] if m['mode']!='background'}
         self._continuous_log(cid,'prompts','fill_observation',assessed['versionId'],'保留原始观察，核对道具编号与参考用途',dict(segment=sid,basisHash=basis,mappings=answer['mappings']))
         return aligned,answer['combined'],answer['otherUses'] or None

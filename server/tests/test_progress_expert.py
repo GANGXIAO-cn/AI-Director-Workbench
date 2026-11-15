@@ -37,22 +37,25 @@ def test_key_visual_auto_selects_without_expert(tmp_path,monkeypatch):
 
 def test_three_repairs_then_scoped_provisional_and_user_acceptance(tmp_path,monkeypatch):
     env,eid,_=fixture(tmp_path);cid=material_run(env,eid,monkeypatch)
-    env.wb.save_episode_expert(eid,'claude',command_id='expert')
+    env.wb.save_episode_expert(eid,'antigravity',command_id='expert')
     env.codex.script=[lambda req:image_reply(req,'blocked')]*24
-    env.claude.script=[expert_reply]
+    env.ag.script=[expert_reply]
     assert env.wb._continuous_images(cid)
-    assert len(env.wb.episode_batches(eid))==4
-    state=env.wb._image_state(cid,'bell');assert len(state['attempts'])==4
+    assert len(env.wb.episode_batches(eid))==1 and not env.wb.material_issues(eid)
     need=env.wb._need(eid,'bell');vid=need['adopted_version_id']
-    issues=env.wb.material_issues(eid);assert issues[0]['state']=='provisional'
-    body=next(r['body'] for r in env.wb.image_assessments(eid,'bell') if r['version_id']==vid)
+    # Existing assessments and explicit acceptance remain readable for historical episodes.
+    body=assessment(vid,verdict='blocked',critical=[dict(type='usage',where='支撑',text='关键支撑悬空')])
+    env.codex.script=[lambda req:image_reply(req,'blocked')]
+    env.wb.assess_images(eid,[vid],'historical-assessment',need_key='bell')
+    env.wb._material_issue(cid,need,body,'历史暂用记录')
+    issues=env.wb.material_issues(eid)
     assert env.wb._material_usable(eid,body,'bell')
     changed=dict(body,critical=[*body['critical'],dict(type='anatomy',where='脚',text='多了一条腿')])
     assert not env.wb._material_usable(eid,changed,'bell')
     with env.db() as db: assert not db.execute('SELECT * FROM accepted_image_issue').fetchall()
-    calls=len(env.claude.calls)
+    calls=len(env.ag.calls)
     assert env.wb._continuous_images(cid)
-    assert len(env.claude.calls)==calls and len(env.wb.episode_batches(eid))==4
+    assert len(env.ag.calls)==calls and len(env.wb.episode_batches(eid))==1
     env.wb.accept_material_issue(issues[0]['id'],'accept')
     env.wb.accept_material_issue(issues[0]['id'],'accept')
     with env.db() as db: assert len(db.execute('SELECT * FROM accepted_image_issue').fetchall())==1
@@ -66,12 +69,12 @@ def test_three_repairs_then_scoped_provisional_and_user_acceptance(tmp_path,monk
 
 def test_expert_invalid_twice_is_cached_and_does_not_accept(tmp_path,monkeypatch):
     env,eid,_=fixture(tmp_path);cid=material_run(env,eid,monkeypatch)
-    env.wb.save_episode_expert(eid,'claude',command_id='expert')
-    env.claude.script=[lambda req:dict(action='not-allowed')]*2
+    env.wb.save_episode_expert(eid,'antigravity',command_id='expert')
+    env.ag.script=[lambda req:dict(action='not-allowed')]*2
     need=env.wb._need(eid,'bell')
     assert env.wb._material_judgment(cid,need,[],'无可用候选',['wait']) is None
     assert env.wb._material_judgment(cid,need,[],'无可用候选',['wait']) is None
-    assert len([r for r in env.claude.calls if r.purpose=='progress_expert'])==2
+    assert len([r for r in env.ag.calls if r.purpose=='progress_expert'])==2
     decisions=env.wb.continuous_view(eid)['decisions']
     assert len([d for d in decisions if d['kind']=='expert_judgment'])==2
     assert env.wb._continuous_record(cid)['cursor']['expertUnavailable']
@@ -79,31 +82,31 @@ def test_expert_invalid_twice_is_cached_and_does_not_accept(tmp_path,monkeypatch
 
 def test_expert_user_change_and_pause_are_respected(tmp_path,monkeypatch):
     env,eid,_=fixture(tmp_path);cid=material_run(env,eid,monkeypatch)
-    env.wb.save_episode_expert(eid,'claude')
+    env.wb.save_episode_expert(eid,'antigravity')
     need=env.wb._need(eid,'bell')
     def change(req):
         env.wb.set_asset_need(eid,'bell',need['revision'],'edit_prompt','edit',prompt='导演新稿')
         return expert_reply(req)
-    env.claude.script=[change]
+    env.ag.script=[change]
     with pytest.raises(UserChange):env.wb._material_judgment(cid,need,[],'需处理',['wait'])
     assert env.wb._need(eid,'bell')['image_prompt']=='导演新稿'
     def pause(req):
         env.wb.pause_continuous(cid);return expert_reply(req)
-    env.claude.script=[pause]
+    env.ag.script=[pause]
     with pytest.raises(Halt):env.wb._material_judgment(cid,env.wb._need(eid,'bell'),[],'需处理',['wait'])
     assert env.wb._continuous_record(cid)['state']=='paused'
 
 
 def test_defaults_and_episode_override(tmp_path):
     env,eid,_=fixture(tmp_path)
-    plan=env.wb.executor_defaults();plan['expert']=dict(provider='claude',model=None,effort=None)
+    plan=env.wb.executor_defaults();plan['expert']=dict(provider='antigravity',model=None,effort=None)
     env.wb.save_executor_defaults(plan)
     pid=env.wb.episode_view(eid)['episode']['project_id']
     prepared=env.wb.quick_start_prepare(pid,'新一集','prepare')
     args=env.wb._continuous_record(prepared['continuousId'])['cursor']['startArgs']
-    assert args['executor_plan']['expert']['provider']=='claude'
-    env.wb.save_episode_expert(eid,'claude',command_id='switch')
-    assert env.wb.episode_expert(eid)['provider']=='claude'
+    assert args['executor_plan']['expert']['provider']=='antigravity'
+    env.wb.save_episode_expert(eid,'antigravity',command_id='switch')
+    assert env.wb.episode_expert(eid)['provider']=='antigravity'
     assert env.wb.executor_defaults()==plan
 
 
@@ -113,17 +116,17 @@ def test_running_batch_does_not_block_or_call_expert(tmp_path,monkeypatch):
     def running(cid,need):raise MaterialWait('正在生成',running=True)
     monkeypatch.setattr(env.wb,'_image_generate',running)
     monkeypatch.setattr(env.wb,'_material_judgment',lambda *a:pytest.fail('正常生成不应调用专家'))
-    for _ in range(2):assert env.wb._continuous_images(cid) is False
-    assert env.wb._continuous_record(cid)['state']=='running'
+    with pytest.raises(Halt):env.wb._continuous_images(cid)
+    run=env.wb._continuous_record(cid)
+    assert run['state']=='waiting_external' and run['cursor']['blocks'][0]['kind']=='transient'
 
 
 def test_legacy_visual_continue_rechecks_candidates(tmp_path,monkeypatch):
     env,eid=key_fixture(tmp_path);cid=material_run(env,eid,monkeypatch)
-    env.wb._continuous_update(cid,state='waiting_choice',choice=dict(kind='visual',candidates=[dict(versionId='obsolete')]))
-    with monkeypatch.context() as patch:
-        patch.setattr(env.wb,'_advance_continuous',env.wb._continuous_record)
-        result=env.wb.resume_continuous(cid,'resume-old')
-    assert result['state']=='running' and not result['choice']
+    import sqlite3
+    with pytest.raises(sqlite3.IntegrityError):
+        env.wb._continuous_update(cid,state='waiting_choice',choice=dict(kind='visual',candidates=[dict(versionId='obsolete')]))
+    assert env.wb._continuous_record(cid)['choice'] is None
     env.codex.script=[image_reply]*12
     assert env.wb._continuous_images(cid)
     assert env.wb.asset_worksheet(eid)['rows'][0]['adopted_version_id']!='obsolete'
@@ -135,11 +138,11 @@ def test_independent_asset_finishes_before_expert_handles_missing(tmp_path,monke
     n=env.wb._need(eid,'missing');env.wb.set_asset_need(eid,'missing',n['revision'],'edit_prompt','clear',prompt='')
     cid=material_run(env,eid,monkeypatch)
     env.codex.script=[image_reply]*10
-    env.wb.save_episode_expert(eid,'claude')
+    env.wb.save_episode_expert(eid,'antigravity')
     def answer(req):
         assert env.wb._need(eid,'good')['adopted_version_id']
         return expert_reply(req)
-    env.claude.script=[answer]
+    env.ag.script=[answer]
     assert env.wb._continuous_images(cid)
     assert env.wb._need(eid,'missing')['decision']=='text_only'
 

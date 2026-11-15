@@ -9,7 +9,6 @@ import sqlite3
 
 from . import activity, contracts, prompts
 from .db import connect, dumps, new_id, transaction
-from .expert import ExpertMixin
 from .history import HistoryMixin
 from .errors import Conflict, NotFound, Rejected, loads, row
 from .specs import validate_spec
@@ -74,7 +73,7 @@ def bigrams(text):
     return {t[i:i + 2] for i in range(len(t) - 1)}
 
 
-class ProjectOpsMixin(ExpertMixin, HistoryMixin):
+class ProjectOpsMixin(HistoryMixin):
     # ============================================================ closure (整理本集设定)
     def start_closure(self, delivery_id, command_id, provider=None):
         with transaction(self.db_path) as db:
@@ -807,8 +806,8 @@ class ProjectOpsMixin(ExpertMixin, HistoryMixin):
             if item["projectId"] != project_id:
                 continue
             todos.append(dict(kind="continuous", episodeId=item["episodeId"], objectId=item["episodeId"], stage=item.get("stage"),
-                              title=f"{item['displayCode']} " + ("已停下：" + (item["reason"] or "需要你处理").split("。")[0][:40] if item["state"] == "blocked" else "AI 已备好选项，等你选择"),
-                              action="去处理", state=item["state"], reason=item["reason"], displayCode=item["displayCode"], phase=item.get("phase")))
+                              title=f"{item['displayCode']} " + ("等候外部服务：" + item["reason"]),
+                              action="查看进度", state=item["state"], reason=item["reason"], displayCode=item["displayCode"], phase=item.get("phase")))
         return todos
 
     def activity_log(self, project_id=None, offset=0, limit=40):

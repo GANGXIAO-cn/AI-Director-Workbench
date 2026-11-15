@@ -156,3 +156,15 @@ def test_missing_edit_input_is_not_sent(tmp_path):
     req=request()
     req["operation"]="edit"
     assert p.submit(req).state=="failed" and calls==[]
+
+
+def test_queue_deadline_never_submits_or_claims_unknown(tmp_path,monkeypatch):
+    calls=[]
+    p=provider(tmp_path,lambda req:calls.append(req))
+    def deadline(predicate,timeout):
+        assert timeout==600
+        return False
+    monkeypatch.setattr(p.condition,'wait_for',deadline)
+    result=p.submit(request())
+    assert result.state=='failed' and '未发送' in result.error
+    assert calls==[] and p.active==0

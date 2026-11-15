@@ -62,7 +62,7 @@ STAGE_CONTRACT = {
             "按需填 attention（注意对象）、gaze（视线）、reaction（可见反应）、sound（声源）、cut（剪点）和 device（设备视点）。需要借镜时只引用提供的 bookmarkId，refs 逐项写 mode A/B/C/D 和 conditions。"
             "每个时间窗给出 attention（观看任务）、camera（构图、机位或运镜）、txtAnchor（动作中适合在 TXT 原样保留且在本段唯一的定位短句）。"
             "同一机位继续拍下一动作时 continuation 填 same。长镜有持续观看理由时写 holdReason。常规起草直接填写镜头字段；rhythmTable 供导入已有镜头充分性联合表，未导入时省略该字段。"
-            "逐镜填写 visibleRoles（本窗口实际可见的本集角色 ID 数组，空镜用 []）、propStates（道具ID到可见状态的对象，无则用 {}；每个状态值写单行文本，使用逗号连接细节，禁止分号、竖线与换行。道具 ID 用小写英文字母开头，可含数字和连字符）。同镜延续按窗口分别登记。身份图用途按可见镜头确定，看图观察留给实际查看原图的人填写。"
+            "逐镜填写 visibleRoles（本窗口实际可见的本集角色 ID 数组，空镜用 []）、propStates（道具ID到可见状态的对象，无则用 {}；每个状态值写单行文本，使用逗号连接细节，禁止分号、竖线与换行。道具 ID 沿用素材编号，以小写英文字母开头，可含数字、下划线和连字符）。同镜延续按窗口分别登记。身份图用途按可见镜头确定，看图观察留给实际查看原图的人填写。"
             "用 performance 写可见表演。剧本有对白时，将原句放进起声镜的 dialogueCues 数组，各行含 speaker、text、direction、镜内 offset_ms、句后 pause_ms。"
             "可以用 throughShot 写同段结束镜号。mode 填 words 或 characters 并写整数 rate（每分钟词或字），有必要时用 count 指定实际发音字词数。"
             "只在材料确有试读或指定秒数时使用 mode=reading 和 read_ms。无对白段保留动作、视线、反应和音效。"

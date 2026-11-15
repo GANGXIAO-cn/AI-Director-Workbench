@@ -144,7 +144,7 @@ def test_existing_product_record_repairs_lost_binding_without_model(tmp_path):
 def test_product_judgment_persists_before_write_and_resumes_without_call(tmp_path,monkeypatch):
     env,case,cid,image=product_fixture(tmp_path);wb=env.wb;eid=case['eid']
     monkeypatch.setattr(wb,'_continuous_existing_assessment',lambda e,v:assessment(v,props={},observation='场景椅背有靠垫'))
-    env.codex.script=[reply(dict(placements=[dict(shotId='S01',intent='靠垫朝外',observation='椅背可见靠垫')],unresolvedReason=''))]
+    env.codex.script=[reply(dict(placements=[dict(code='15',shotId='S01',intent='靠垫朝外')],unresolvedReason=''))]
     original=wb.save_product_placement
     def crash(*args,**kwargs):raise RuntimeError('simulated write interruption')
     monkeypatch.setattr(wb,'save_product_placement',crash)
@@ -153,7 +153,7 @@ def test_product_judgment_persists_before_write_and_resumes_without_call(tmp_pat
     monkeypatch.setattr(wb,'save_product_placement',original)
     wb._continuous_products(cid);wb._continuous_products(cid)
     assert len(env.codex.calls)==calls
-    assert wb._continuous_image_rule(eid,image)['shotIds']==['S01']
+    assert wb._continuous_image_rule(eid,wb.use_project_product(eid,'15','product')['versionId'])['shotIds']==['S01']
     with env.db() as db:assert db.execute('SELECT count(*) FROM product_placement WHERE episode_id=?',(eid,)).fetchone()[0]==1
 
 
@@ -187,7 +187,7 @@ def test_combined_identity_extra_scope_requires_per_shot_prop(tmp_path):
 def test_partial_product_write_does_not_mistake_subset_for_complete_history(tmp_path,monkeypatch):
     env,case,cid,image=product_fixture(tmp_path);wb=env.wb;eid=case['eid']
     monkeypatch.setattr(wb,'_continuous_existing_assessment',lambda e,v:assessment(v,props={}))
-    records=[dict(shotId=s,intent='靠垫朝外',observation='椅背有靠垫') for s in ['S01','S02']]
+    records=[dict(code='15',shotId=s,intent='靠垫朝外') for s in ['S01','S02']]
     env.codex.script=[reply(dict(placements=records,unresolvedReason=''))]
     original=wb.save_product_placement;calls=[]
     def crash(*args,**kwargs):
@@ -200,7 +200,7 @@ def test_partial_product_write_does_not_mistake_subset_for_complete_history(tmp_
     monkeypatch.setattr(wb,'save_product_placement',original)
     wb._continuous_products(cid)
     assert len(env.codex.calls)==count
-    assert wb._continuous_image_rule(eid,image)['shotIds']==['S01','S02']
+    assert wb._continuous_image_rule(eid,wb.use_project_product(eid,'15','product')['versionId'])['shotIds']==['S01','S02']
 
 
 def test_new_required_binding_invalidates_old_prompt_receipt(tmp_path):
@@ -217,8 +217,9 @@ def test_manual_resume_retries_failed_business_reply_but_not_success(tmp_path):
     from workbench.continuous import Halt
     env,case,cid,_=finishing_fixture(tmp_path);wb=env.wb;wb.save_episode_expert(case['eid'],'codex')
     env.codex.script=[reply(dict(value=0)),reply(dict(value=2)),reply(dict(value=1))]
-    with pytest.raises(Halt):wb._continuous_bounded_json(cid,'test','one','value=1',{},valid_answer)
-    with env.db() as db:wb._claim_resume(db,cid)
+    from workbench.continuous import UserChange
+    with pytest.raises(UserChange):wb._continuous_bounded_json(cid,'test','one','value=1',{},valid_answer)
+    assert wb._continuous_record(cid)['state']=='running'
     answer,_=wb._continuous_bounded_json(cid,'test','one','value=1',{},valid_answer)
     assert answer==dict(value=1)
     assert len(wb._continuous_record(cid)['cursor']['judgmentReceipts']['test:one']['attempts'])==1
@@ -272,6 +273,21 @@ def test_missing_action_prop_is_business_issue_not_format_retry(tmp_path):
     shots=[dict(id='S01',visibleRoles=['woman'],action='拿起包',propStates={})]
     env.codex.script=[reply(dict(mappings=[dict(source='bag',target='',mode='unresolved',reason='正文用到包但未登记',shotId='S01',quote='拿起包')],combined=False,otherUses={}))]
     before=len(env.codex.calls)
-    with pytest.raises(Halt):wb._continuous_reference_props(cid,'G01',dict(shots=['S01']),shots,raw,['woman'])
+    from workbench.continuous import UserChange
+    with pytest.raises(UserChange):wb._continuous_reference_props(cid,'G01',dict(shots=['S01']),shots,raw,['woman'])
     assert len(env.codex.calls)==before+1
     assert '拿起包' in wb._continuous_record(cid)['reason']
+
+
+def test_releasing_optional_art_preserves_other_shot_bindings(tmp_path):
+    env, case, cid, _ = finishing_fixture(tmp_path)
+    wb, eid, vid = env.wb, case['eid'], case['img']['versionId']
+    plan_id = env.art(eid, 'plan')['adopted_version_id']
+    wb._continuous_bind(cid, vid, ['S01'], plan_id, 'scene', 'scene', '空镜', None)
+    wb._continuous_bind(cid, vid, ['S03'], plan_id, 'worksheet', 'art', '场景延续',
+                        wb._continuous_image_rule(eid, vid))
+    wb.bind_required_image(eid, vid, [], plan_id, 'worksheet', 'revision', '分镜已修订',
+                           wb._continuous_image_rule(eid, vid))
+    rule = wb._continuous_image_rule(eid, vid)
+    assert rule['shotIds'] == ['S01'] and rule['targetSegments'] == ['G01']
+    assert set(rule['autoBindings']) == {'scene'}

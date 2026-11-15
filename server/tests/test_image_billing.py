@@ -40,11 +40,10 @@ def test_legacy_receipts_and_currency_change_do_not_gate_generation(tmp_path):
     env = Env(tmp_path)
     wb = env.wb
     pid, eid = env.new_episode()
-    aid = wb.authorize_expert(pid, [eid], "story", {}, budget_cents=100)["authId"]
     args = (eid, "fake-image", "generate", [dict(prompt="雨景")], "64x64")
     batch = wb.create_batch(*args, budget_cents=10)
     bid = batch["batchId"]
-    assert wb.expert_run(aid)["currency"] == "USD"
+    assert wb.batch_view(bid)["currency"] == "USD"
     env.images.currency = "CNY"
     wb.authorize_batch(bid, batch["summaryHash"], "original")
     view = wb.batch_view(bid)

@@ -9,6 +9,7 @@ from . import kickoffchecks, contracts, prompts, acting, shotrefs, imagechoices,
 from .db import dumps, initialize, new_id, transaction, connect
 from .executors.base import ExecRequest
 from .executors.cli import redact
+from .storycheck import check_story
 from .manuscripts import extract_manuscript
 from .freechat import FreeChatMixin
 from .episodecontact import EpisodeContactMixin
@@ -92,7 +93,6 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
         self.session_api_keys = {}
         self.clock = clock
         self._continuous_locks = {}
-        self._continuous_choice_locks = {}
         self._recovery_probe_lock = __import__("threading").Lock()
         self._recovery_identity_cache = {}
         initialize(self.db_path)
@@ -101,10 +101,8 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
         with transaction(self.db_path) as db:   # text runs left running by a previous process: retryable, no paid side effect
             db.execute("UPDATE run SET status='stopped',reason='旧09总体独审已退出流程，由提示词本步检查接续' WHERE status='queued' AND purpose IN ('cold_read','comparison')")
             db.execute("UPDATE continuous_run SET state='paused',reason='已暂停，可继续' WHERE state='running' AND pause_requested=1")
-            db.execute("UPDATE continuous_run SET state='paused',reason='服务重启，正在自动继续',cursor=json_set(cursor,'$.resumeAfterRestart',json('true')) WHERE state='running' AND pause_requested=0")
+            db.execute("UPDATE continuous_run SET reason='服务重启，正在自动继续',cursor=json_set(cursor,'$.resumeAfterRestart',json('true')) WHERE state='running' AND pause_requested=0")
             db.execute("UPDATE project SET method_pack=? WHERE method_pack<>?", (workflow.METHOD_REF, workflow.METHOD_REF))
-            db.execute("UPDATE expert_auth SET state='stopped', stop_reason=? WHERE state='running'",
-                       (dumps(dict(reason="interrupted", token=new_id(), detail="服务重启，请核对进度后恢复")),))
             db.execute("UPDATE kickoff_check SET state='failed',error='服务重启时中断，正在自动重跑',error_class='interrupted' WHERE state='running'")
             db.execute("UPDATE free_turn SET status='failed',reason='服务重启时中断，可核对后重试' WHERE status IN ('running','queued')")
             for run in db.execute("SELECT * FROM run WHERE status='running'").fetchall():
@@ -640,7 +638,7 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                 _,catalog=self._project_resources(db,task['project_id'],task['episode_id'])
                 entries.append(dict(role='project_products',name='项目商品目录.json',text=dumps(dict(minimum=minimum,products=catalog['products']))))
                 entries.extend(method_entries(unifiedmethods.load(),'product_placement'))
-                entries.append(dict(role='stage_contract',name='商品入景要求',text='至少一个场景图条目自然出现目录中的商品，在 assets 条目独立字段写 productCode（不要仅写入 description），并写使用理由、位置朝向和需要保留的识别特征；不改变已采用剧情。'))
+                entries.append(dict(role='stage_contract',name='商品入景要求',text='商品外观使用本集独立商品参考图。空景不必画入商品；由08安排商品镜头，09在对应视频段携带商品参考图。'))
         if task['stage'] in ('asset_design','acting','plan','prompts'):
             from . import productionnotes
             entries.append(dict(role='production_note_assignments',name='制作提醒来源与分工.json',text=dumps(productionnotes.model_context(db,task['episode_id']))))
@@ -697,8 +695,9 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
 
     # ------------------------------------------------------------------ tasks, threads, runs
     def create_task(self, episode_id, stage, goal, auto_revise=False, executor=None, command_id=None, selection=None,
-                    prompt_images=None, files=(), trial_turn_id=None, workspace_revision=None, base_version_id=None, discussion_only=False, auto_dialogue=False, discussion_id=None, keep_instruction=False, bounded_judgment=None):
+                    prompt_images=None, files=(), trial_turn_id=None, workspace_revision=None, base_version_id=None, discussion_only=False, auto_dialogue=False, discussion_id=None, keep_instruction=False, bounded_judgment=None, rebuild=False):
         payload = dict(episode_id=episode_id, stage=stage, goal=goal, auto=auto_revise, ex=executor, sel=selection)
+        if rebuild:payload["rebuild"]=True
         if bounded_judgment is not None:
             if not discussion_only or auto_dialogue:
                 raise Rejected("小判断只能用于内部只读任务")
@@ -767,6 +766,7 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                     db.execute("INSERT INTO prompt_draft_task VALUES(?,?)", (tid, int(prompt_images)))
                 base = db.execute("SELECT adopted_version_id FROM artifact WHERE id=?", (aid,)).fetchone()[0] \
                     or self._latest_version(db, aid)
+                if rebuild:base=None
                 if base_version_id:
                     base = self._version_of(db, base_version_id, aid)["id"]
                 run_id = self._queue_run(db, tid, "revise" if base else "create", base, goal, selection,
@@ -973,9 +973,12 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
         pack, profile = self._episode_method(db, task["episode_id"])
         settings_text = prompts.render_settings(kickoff["settings_snapshot"])
         kickoff_text = prompts.render_kickoff(kickoff, self._source_text(db, kickoff))
+        coarse=purpose=="image_assess" and (extra_header or {}).get("imageAssessment",{}).get("coarse")
         if bounded_judgment is not None:
             entries = [dict(role="judgment_materials", name="判断材料.json", text=dumps(bounded_judgment["materials"])),
                        dict(role="judgment_instruction", name="判断任务", text=request)]
+        elif coarse:
+            entries=list(entries)
         elif entries is not None:
             entries = method_entries(pack, purpose, None if purpose == "cold_read" else profile) + entries
         elif purpose == "review":
@@ -1026,7 +1029,7 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                     header["stageDialogue"].update(auto=True, forceDraft=bool(discussion_id))
                 if bounded_judgment is not None:
                     header["stageDialogue"]["internalJudgment"] = bounded_judgment["kind"]
-                if bounded_judgment is None and (discussion_only or auto_dialogue) and task["stage"]!="stress":
+                if not coarse and bounded_judgment is None and (discussion_only or auto_dialogue) and task["stage"]!="stress":
                     states = []
                     for v in db.execute("SELECT id,display_no FROM version WHERE artifact_id=? ORDER BY display_no",(art["id"],)):
                         reviewed = self._latest_review(db,v["id"])
@@ -1035,9 +1038,9 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                                            issues=[dict(i) for i in db.execute("SELECT i.reason,i.blocking,w.reason AS waiver FROM issue i LEFT JOIN waiver w ON w.issue_id=i.id AND w.version_id=? WHERE i.review_id=?",(v["id"],reviewed["id"]))] if reviewed else []))
                     entries.append(dict(role="stage_status",name="本阶段实际版本与审核状态",text=dumps(states)))
             # 实测 143：对话带上本集连续制作的当前情况，导演问“卡在哪张图”时能直接回答。
-            live = db.execute("SELECT state,reason,cursor FROM continuous_run WHERE episode_id=? AND state NOT IN ('done','cancelled') "
+            live = db.execute("SELECT state,reason,cursor FROM continuous_run WHERE episode_id=? AND state NOT IN ('done','cancelled','failed') "
                               "ORDER BY created_at DESC,rowid DESC LIMIT 1", (task["episode_id"],)).fetchone()
-            if live and bounded_judgment is None:
+            if live and bounded_judgment is None and not coarse:
                 cur = json.loads(live["cursor"] or "{}")
                 entries.append(dict(role="stage_status", name="连续制作当前情况", text=dumps(dict(
                     state=live["state"], reason=live["reason"], stage=cur.get("stage"), progress=cur.get("progress"),
@@ -1109,6 +1112,12 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                 if header.get("storyComparisonSource") and not db.execute(
                         "SELECT 1 FROM story_candidate WHERE run_id=?", (run_id,)).fetchone():
                     raise Conflict("这份候选稿已经发起重试")
+                if command_id and ':format-switch:' in command_id and old['purpose'] in ('create','revise') and not header.get('stageDialogue'):
+                    path=self.store.run_dir(run_id)/'failed-result.json'
+                    if path.is_file():
+                        entries.append(dict(role='format_repair_source',name='上轮原稿及格式错误',text=dumps(dict(
+                            manuscript=json.loads(path.read_text()),errors=old['diagnostic'],
+                            instruction='提取并整理已有内容，保留原意，只补缺失字段。按本次契约提交整理后的稿件。'))))
                 target = provider or old["provider"]
                 replacement=None
                 if target=='claude':
@@ -1152,7 +1161,7 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
     def pending_runs(self):
         with connect(self.db_path) as db:
             held=set()
-            for saved in db.execute("SELECT cursor FROM continuous_run WHERE state NOT IN ('done','cancelled')"):
+            for saved in db.execute("SELECT cursor FROM continuous_run WHERE state NOT IN ('done','cancelled','failed')"):
                 cursor=json.loads(saved[0]);held.update(cursor.get('queue',[]));held.update(cursor.get('ownedRuns',[]))
             return [r[0] for r in db.execute("SELECT id FROM run WHERE status='queued' ORDER BY created_at") if r[0] not in held]
 
@@ -1315,6 +1324,12 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
             record_validation(problems)
             if not problems:
                 break
+            if kind=='draft' and not dialogue and not attempts and previous_reply and run['purpose'] in ('create','revise'):
+                with connect(self.db_path) as db:
+                    owned=self._continuous_owns_run(db,task['episode_id'],run_id)
+                if owned and self.episode_expert(task['episode_id']).get('provider')!=run['provider']:
+                    self._save_failed_output(run_id,outcome)
+                    return self._finish(run_id,'failed',reason='已收到回包，未通过入库校验',diagnostic=failure_diagnostic(),outcome=outcome,attempts=attempts)
             if attempts >= 1:
                 self._save_failed_output(run_id, outcome)
                 return self._finish(run_id, "failed", reason="回包两次不符合契约", diagnostic=failure_diagnostic(),
@@ -1697,7 +1712,10 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                 self._finish(run_id, "succeeded", outcome=outcome, attempts=attempts,
                              result_hash=sha256_bytes(body), db=db)
                 follow.extend(self._repair_result(db,run,kind,result,vid))
-                if task["auto_revise"] and task["stage"] == "story":   # expert mode: draft goes straight to review
+                if task["auto_revise"] and task["stage"] == "story" and not (
+                    self._continuous_owns_run(db,task['episode_id'],run_id) and
+                    (check_story(content) or not str(content.get('title','')).strip() and db.execute(
+                        "SELECT 1 FROM continuous_run WHERE episode_id=? AND state='running' AND target_stage='delivery'",(task['episode_id'],)).fetchone())):   # expert mode: draft goes straight to review
                     follow.append(self._queue_run(db, task["id"], "review", None, "", target_version_id=vid))
             else:
                 rid = new_id()
@@ -1762,7 +1780,7 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
         db.execute("INSERT INTO version VALUES(?,?,?,?,?,?,?,?,?,?)",
                    (vid, artifact_id, no, base_id, origin, run_id, dumps(content), blob, note, self.clock()))
         art = _row(db, "SELECT stage,project_id,episode_id FROM artifact WHERE id=?", artifact_id)
-        for continuous in db.execute("SELECT id,cursor FROM continuous_run WHERE episode_id=? AND state IN ('running','waiting_choice','waiting_quota','blocked')",(art["episode_id"],)).fetchall():
+        for continuous in db.execute("SELECT id,cursor FROM continuous_run WHERE episode_id=? AND state IN ('running','waiting_external')",(art["episode_id"],)).fetchall():
             cursor=json.loads(continuous['cursor'])
             # A manual retry may finish before resume/checkpoint gets to claim it.
             # Claim linked attempts before setting the external-edit flag; never clear a real edit flag.
@@ -2053,7 +2071,7 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
     def adopt(self, artifact_id, version_id, expected_adopted_version_id, command_id, and_continue=False):
         return self._adopt(artifact_id, version_id, expected_adopted_version_id, command_id, and_continue)
 
-    def _adopt(self, artifact_id, version_id, expected_adopted_version_id, command_id, and_continue, expert=None, actor="user", continuous_id=None):
+    def _adopt(self, artifact_id, version_id, expected_adopted_version_id, command_id, and_continue, actor="user", continuous_id=None):
         payload = dict(artifact_id=artifact_id, version_id=version_id, expected=expected_adopted_version_id,
                        cont=and_continue)
         with transaction(self.db_path) as db:
@@ -2069,10 +2087,6 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                     expected = cursor["base"].get(art["stage"])
                     if expected != expected_adopted_version_id:
                         raise Conflict("连续制作采用基准已变化")
-                if expert:
-                    self._expert_guard(db, expert, art["episode_id"])
-                    if self._latest_version(db, artifact_id) != version_id:
-                        raise Conflict("草稿已更新，请核对新版本")
                 self._version_of(db, version_id, artifact_id)
                 if art["adopted_version_id"] != expected_adopted_version_id:
                     raise Conflict("采用版已变化，请比较后重新决定", current=art["adopted_version_id"])

@@ -60,11 +60,11 @@ class PromptRepairs:
             # Upstream assignments/design use the existing owning-stage flow.
             targets={state['owners'][key] for key in state['missing']}
             if any(t!='prompts' for t in targets):return vid
-            if attempt:self._continuous_stop(cid,'blocked','；'.join(p['message'] for p in state['problems']))
+            if attempt:self._continuous_problem(cid,'；'.join(p['message'] for p in state['problems']))
             keys={p['id'] for p in state['problems'] if p['id']}
             keys.update(key for key,owner in state['owners'].items() if owner=='prompts')
             if not keys and not state['problems']:return vid
-            if not keys:self._continuous_stop(cid,'blocked','制作提醒记录结构无效，须修正 productionNoteResponses')
+            if not keys:self._continuous_problem(cid,'制作提醒记录结构无效，须修正 productionNoteResponses')
             notes=[n for n in basis['notes'] if n['id'] in keys]
             segments=content['segments'];valid=set(segments)
             material=dict(candidateVersion=vid,reportVersionId=basis['reportVersionId'],notes=notes,
@@ -113,7 +113,7 @@ class PromptRepairs:
                 self._continuous_cursor(cid,upstreamNoteRepair=upstream)
                 return vid
             if affected:
-                if not allow_revision:self._continuous_stop(cid,'blocked','制作提醒正文返修后仍未落实：'+'；'.join(instructions))
+                if not allow_revision:self._continuous_problem(cid,'制作提醒正文返修后仍未落实：'+'；'.join(instructions))
                 vid=self._continuous_prompt_revision(cid,vid,affected,'；'.join(instructions))
                 # A second bounded check sees the NEW prose; no pre-emptive applied.
                 return self._repair_prompt_notes(cid,vid,allow_revision=False)

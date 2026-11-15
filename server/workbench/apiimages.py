@@ -15,6 +15,10 @@ from .storage import canonical, write_atomic
 from .executors.cli import local_proxy_env
 
 
+class SlotTimeout(TimeoutError):
+    pass
+
+
 class OpenAIImageAPIProvider:
     remote_status = False
     name = "openai-image-api"
@@ -65,7 +69,8 @@ class OpenAIImageAPIProvider:
     @contextmanager
     def slot(self):
         with self.condition:
-            self.condition.wait_for(lambda: self.active < self.max_concurrency)
+            if not self.condition.wait_for(lambda: self.active < self.max_concurrency,timeout=600):
+                raise SlotTimeout('生图通道在十分钟内没有可用并发位置，请求未发送')
             self.active += 1
         try:
             yield
@@ -90,8 +95,11 @@ class OpenAIImageAPIProvider:
                             error=receipt.get("error", "请求结果待核对"))
 
     def submit(self, req):
-        with self.slot():
-            return self._submit(req)
+        try:
+            with self.slot():
+                return self._submit(req)
+        except SlotTimeout as exc:
+            return ImageOutcome('failed',error=str(exc))
 
     def _submit(self, req):
         config = self._credentials()

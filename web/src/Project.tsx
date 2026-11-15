@@ -1,5 +1,5 @@
 import {ExecutorPlanFields,useExecutorPlan} from "./ExecutorDefaults";
-import { explainStop, stageLabel } from "./Attention";
+
 import {ResourceBrowser} from "./Resources";
 import {useStoryImport} from "./storyExcerpt";
 import { KickoffCheck } from "./KickoffCheck";
@@ -75,8 +75,8 @@ export default function Project({ id }: { id: string }) {
         <div className="project-todos">
           {todos.map((t: any, i: number) => t.kind === "continuous" ? (
             <div key={i} className="card amber">
-              <div className="row"><Tag tone="amber">{t.state === "blocked" ? "已停下" : "待你选择"}</Tag><b>{t.displayCode}</b></div>
-              <div className="muted small project-card-detail">{t.state === "blocked" ? explainStop(t.reason ?? "", stageLabel(t.stage, t.phase)).summary : "AI 已备好选项，等你选择"}</div>
+              <div className="row"><Tag tone="amber">等候外部服务</Tag><b>{t.displayCode}</b></div>
+              <div className="muted small project-card-detail">{t.reason}</div>
               <a className="btn primary" href={`#/e/${t.episodeId}/${t.stage || "story"}`}>{t.action} ›</a>
             </div>) : (
             <div key={i} className={`card ${t.kind === "closure" ? "cyan" : "amber"}`}>
@@ -200,7 +200,7 @@ export function Kickoff({ projectId, prefill, onClose, pictures=[] }: { projectI
       topic_id: source === "topic" ? topicId : undefined, relation: relation === "continue" && pre ? "continue" : "independent",
       predecessor_ids: relation === "continue" && pre ? [pre] : [],
     }, pictures);
-    if (mode === "expert") { go(`#/p/${projectId}/expert?episode=${started.episodeId}`); return; }
+    if (mode === "expert") await cmd("start_continuous", {episode_id:started.episodeId,target_stage:"delivery"});
     go(`#/e/${started.episodeId}/${started.initialStage || "story"}`);
   });
   const lastPre = p.predecessorsAvailable[p.predecessorsAvailable.length - 1];

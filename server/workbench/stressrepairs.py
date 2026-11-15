@@ -23,7 +23,8 @@ def issue_stage(value):
     value = ''.join(value.split())
     for stage in EARLY:
         label = ''.join(workflow.LABELS[stage].split())
-        aliases = ('世界观', '03世界观') if stage == 'world' else ()
+        aliases = {'story': ('梗概', '故事梗概', '01梗概', '01故事梗概'),
+                   'world': ('世界观', '03世界观')}.get(stage, ())
         if value in (stage, label, label[:2], label[2:], *aliases):
             return stage
     return None
@@ -128,6 +129,8 @@ class StressRepairMixin:
                         if not issue or not (type(index) is int and 0<=index<len(options) or isinstance(index,dict) and isinstance(index.get("proposal"),str) and index["proposal"].strip()):
                             raise Rejected(f"{key} 的问题或方案不存在")
                         stage=issue_stage(issue.get("stage"))
+                        if stage is None:
+                            raise Rejected(f"{key} 的返修阶段无法识别：{issue.get('stage')}")
                         if stage not in versions:
                             raise Rejected(f"{key} 的目标阶段没有可返修的采用稿")
                         selected.append(dict(id=key,stage=stage,issue=issue,option=options[index] if type(index) is int else dict(issueId=key,proposal=index["proposal"],changesCore=False,repairScope="连续制作本轮返修")))
@@ -140,6 +143,13 @@ class StressRepairMixin:
                     first=min(EARLY.index(i["stage"]) for i in selected)
                     steps=[dict(stage=s,action="revise" if n==first else "check") for n,s in enumerate(EARLY) if n>=first and s in versions]
                     steps.append(dict(stage="stress",action="verify"))
+                elif mode=="verify":
+                    if not report_version_id or versions.get("stress")!=report_version_id:
+                        raise Conflict("当前采用的审查报告已变化")
+                    selected=[dict(id=i['id'],stage=issue_stage(i.get('stage')),issue=i) for i in issues_of(db,report_version_id) if i['id'] in (choices or {})]
+                    if not selected or len(selected)!=len(choices):
+                        raise Rejected("请选择原报告中的问题")
+                    steps=[dict(stage="stress",action="verify")]
                 elif mode=="upstream":
                     impacted={r["stage"] for r in pending_changes(db,episode_id)}
                     steps=[dict(stage=s,action="check") for s in EARLY if s in impacted and s in versions]

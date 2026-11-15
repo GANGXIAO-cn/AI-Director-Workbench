@@ -31,7 +31,24 @@ CONTRACT='''审核范围仅为当前指定用途：身份图不证明姿态；�
 实际打开候选图和角色对照图，按 image_assess.md 评估当前用途。reply 只返回 JSON 数组，每张候选恰一项，按当前用途的优先顺序排列，最好在前。
 每项含 versionId、verdict（usable/limited/blocked）、value、fitness、critical、minor、observation、props、recommendRequired（布尔）、reason。
 critical 每项含 type（identity/anatomy/usage）、where、text；minor 每项含 where、text。critical 非空时 verdict 必须 blocked。不影响本次用途的轻微差异只写 minor，不升级为 usage。value、fitness、observation、reason 均为非空文字。
-props 是道具 ID 到实际可见状态的对象，ID 只用小写字母开头的字母数字连字符。不能确认的内容如实写明，不用提示词代替所见。输入的用户已接受问题仍保留原观察，不伪称修复。'''
+props 是道具 ID 到实际可见状态的对象，ID 只用小写字母开头的字母、数字、下划线或连字符。不能确认的内容如实写明，不用提示词代替所见。输入的用户已接受问题仍保留原观察，不伪称修复。'''
+
+
+COARSE = """只看每张图本身是否有明显缺陷。单图只看大体主体与机位，除明确承担人物站位的大场景外，不核空间细节。九宫格整图看关键过程，不逐格扣细节。不要对照剧本、不要排名、不检查商品是否在空景。每个版本一项 JSON 数组：versionId、verdict（usable 或 blocked）；只有 blocked 须写 defect（明显缺陷的位置和影响）。"""
+
+
+def coarse_results(items,ids):
+    if not isinstance(items,list) or len(items)!=len(ids) or any(not isinstance(x,dict) for x in items) or {x.get('versionId') for x in items}!=set(ids):
+        raise Rejected('评图须逐一对应送审版本')
+    out=[]
+    for x in items:
+        defect=x.get('defect')
+        if x.get('verdict') not in ('usable','blocked') or (x['verdict']=='blocked' and not (isinstance(defect,str) and defect.strip())):
+            raise Rejected('明显缺陷须说明具体影响')
+        critical=[dict(type='usage',where='整图',text=defect)] if x['verdict']=='blocked' else []
+        out.append(dict(versionId=x['versionId'],verdict=x['verdict'],critical=critical,minor=[],props={},recommendRequired=False,
+                        value='',fitness='',observation='',reason=defect if critical else '基础要求符合，无明显缺陷'))
+    return out
 
 
 def validate_assessments(value,ids):
@@ -51,7 +68,7 @@ def validate_assessments(value,ids):
                 if key=='critical' and issue.get('type') not in ('identity','anatomy','usage'):raise Rejected('critical.type 无效')
         if item['critical'] and item['verdict']!='blocked':raise Rejected('critical 非空时 verdict 必须为 blocked')
         props=item.get('props')
-        if not isinstance(props,dict) or any(not re.fullmatch(r'[a-z][a-z0-9-]*',k) or not isinstance(v,str) or not v.strip() for k,v in props.items()):raise Rejected('props 须使用有效道具 ID 和可见状态')
+        if not isinstance(props,dict) or any(not re.fullmatch(r'[a-z][a-z0-9_-]*',k) or not isinstance(v,str) or not v.strip() for k,v in props.items()):raise Rejected('props 须使用有效道具 ID 和可见状态')
     if set(seen)!=set(ids) or len(set(seen))!=len(ids):raise Rejected('图片评估版本编号须与候选逐一对应')
     return value
 
@@ -66,8 +83,8 @@ class ImageAssessmentMixin:
         for item in rows:latest[(item['need_id'],item['version_id'])]=dict(item,body=json.loads(item['body']))
         return list(latest.values())
 
-    def prepare_image_assess(self,episode_id,version_ids,command_id,need_key=None,context=None):
-        if not isinstance(version_ids,list) or not 1<=len(version_ids)<=4 or len(set(version_ids))!=len(version_ids):raise Rejected('每次评估须有 1–4 张不同候选图')
+    def prepare_image_assess(self,episode_id,version_ids,command_id,need_key=None,context=None,episode_review=False):
+        if not isinstance(version_ids,list) or not version_ids or (not episode_review and len(version_ids)>4) or len(set(version_ids))!=len(version_ids):raise Rejected('每次评估须有 1–4 张不同候选图')
         with transaction(self.db_path) as db:
             def create():
                 ep=self._episode_in(db,episode_id);art=row(db,"SELECT * FROM artifact WHERE episode_id=? AND stage='asset_design'",episode_id)
@@ -76,9 +93,24 @@ class ImageAssessmentMixin:
                     info={k:need.get(k) for k in ('title','kind','description','image_prompt','role_id','state_id')}
                     info['sceneIds']=json.loads(need['scene_ids'])
                 else:info=dict(context or {})
-                script=self._adopted_content(db,episode_id,'script') or {}
-                scenes=[s for s in script.get('scenes',[]) if not info.get('sceneIds') or s.get('id') in info['sceneIds']]
-                entries=[dict(role='image_assess_context',name='条目用途与场次.json',text=dumps(dict(item=info,context=context or {},scenes=scenes))),dict(role='request',name='评估回包契约',text=CONTRACT)]
+                purposes=[]
+                if episode_review:
+                    purposes=[dict(r) for r in db.execute("SELECT id AS needId,title,description,adopted_version_id AS versionId FROM asset_need WHERE episode_id=? AND removed=0",(episode_id,)) if r['versionId'] in version_ids]
+                    grid_uses=(context or {}).get('gridPurposes',[])
+                    for use in grid_uses:
+                        av=self.asset_version(use['versionId'],db)
+                        if av['episode_id']!=episode_id or not av['grid']:raise Rejected('本段九宫格版本不符')
+                        purposes.append(dict(needId=None,**use))
+                    if {p['versionId'] for p in purposes}!=set(version_ids):
+                        raise Rejected('整集检查的素材已变化')
+                    info={'purposes':purposes}
+                contract=COARSE if episode_review else CONTRACT
+                if episode_review:
+                    entries=[dict(role='request',name='基础用途',text=dumps([dict(versionId=p['versionId'],title=p['title']) for p in purposes])),dict(role='request',name='整集一次评图',text=contract)]
+                else:
+                    script=self._adopted_content(db,episode_id,'script') or {}
+                    scenes=[s for s in script.get('scenes',[]) if not info.get('sceneIds') or s.get('id') in info['sceneIds']]
+                    entries=[dict(role='image_assess_context',name='条目用途与场次.json',text=dumps(dict(item=info,context=context or {},scenes=scenes))),dict(role='request',name='评估回包契约',text=contract)]
                 for vid in version_ids:
                     asset=self.asset_version(vid,db)
                     if asset['project_id']!=ep['project_id'] or asset['kind']!='image':raise Rejected('只能评估本项目候选图片')
@@ -89,7 +121,7 @@ class ImageAssessmentMixin:
                 role=info.get('role_id') or info.get('roleId')
                 # 实测 136：有角色的条目只附该角色；没有角色的道具、空景、商品不附角色图。
                 faceless=not role and CATEGORIES.get(info.get('kind'),info.get('kind')) in ('scene','prop','product')
-                baselines={} if faceless else {k:v for k,v in matrix['roster'].items() if (not role or k==role) and v.get('assetVersionId')}
+                baselines={} if faceless or episode_review else {k:v for k,v in matrix['roster'].items() if (not role or k==role) and v.get('assetVersionId')}
                 entries.append(dict(role='role_baselines',name='固定角色外观与身份基准.json',text=dumps(baselines)))
                 for key,baseline in baselines.items():
                     asset=self.asset_version(baseline['assetVersionId'],db)
@@ -97,12 +129,12 @@ class ImageAssessmentMixin:
                 provider='codex'
                 if provider not in self.executors or not getattr(self.executors[provider],'reads_images',False):raise Rejected('当前 Codex 执行器不能读图')
                 plan=dict(create=dict(provider=provider),review=dict(provider=provider))
-                tid,_=self._draft_thread(db,ep['project_id'],episode_id,art['id'],'asset_design',CONTRACT,plan)
+                tid,_=self._draft_thread(db,ep['project_id'],episode_id,art['id'],'asset_design',contract,plan)
                 # Freeze the approved method even for a project whose earlier pack predates H.
                 pack,profile=self._episode_method(db,episode_id)
-                if not method_entries(pack,'image_assess',profile):
+                if not episode_review and not method_entries(pack,'image_assess',profile):
                     entries=method_entries(unifiedmethods.load(),'image_assess')+entries
-                rid=self._queue_run(db,tid,'image_assess',None,CONTRACT,provider=provider,entries=entries,discussion_only=True,workspace_revision=art['revision'],extra_header=dict(imageAssessment=dict(needId=need['id'] if need else None,versionIds=version_ids)))
+                rid=self._queue_run(db,tid,'image_assess',None,contract,provider=provider,entries=entries,discussion_only=True,workspace_revision=art['revision'],extra_header=dict(imageAssessment=dict(coarse=episode_review,needId=need['id'] if need else None,versionIds=version_ids,purposes=purposes)))
                 return dict(runId=rid,taskId=tid)
             return self._command(db,command_id,'prepare_image_assess',[episode_id,version_ids,need_key,context],create)
 
@@ -113,12 +145,18 @@ class ImageAssessmentMixin:
             manifest,_=self.store.load_manifest(run['manifest_relpath'])
         spec=manifest['imageAssessment']
         reply=json.loads((self.store.run_dir(run_id)/'result.json').read_text())['reply']
-        try:values=validate_assessments(json.loads(reply),spec['versionIds'])
+        if spec.get('coarse') and isinstance(reply,str):
+            stripped=reply.strip()
+            if stripped.startswith(('```json\n','```\n')) and stripped.endswith('```'):
+                reply=stripped.split('\n',1)[1][:-3].strip()
+        try:values=(coarse_results if spec.get("coarse") else validate_assessments)(json.loads(reply),spec["versionIds"])
         except ValueError as exc:raise Rejected('图片评估 reply 须为 JSON 数组') from exc
         with transaction(self.db_path) as db:
             if not db.execute('SELECT 1 FROM image_assessment WHERE run_id=?',(run_id,)).fetchone():
                 for item in values:
-                    db.execute('INSERT INTO image_assessment VALUES(?,?,?,?,?,?,?,?)',(new_id(),manifest['episodeId'],spec['needId'],item['versionId'],run_id,item['verdict'],dumps(item),self.clock()))
+                    needs=[p['needId'] for p in spec.get('purposes',[]) if p['versionId']==item['versionId']] or [spec['needId']]
+                    for need in needs:
+                        db.execute('INSERT INTO image_assessment VALUES(?,?,?,?,?,?,?,?)',(new_id(),manifest['episodeId'],need,item['versionId'],run_id,item['verdict'],dumps(item),self.clock()))
         return values
 
     def assess_images(self,episode_id,version_ids,command_id,need_key=None,context=None,continuous_id=None):
@@ -137,6 +175,6 @@ class ImageAssessmentMixin:
                 with connect(self.db_path) as db:status=row(db,'SELECT status FROM run WHERE id=?',rid)['status']
                 if status!='succeeded':raise
                 if attempt:
-                    if continuous_id and not parallel_worker():self._continuous_stop(continuous_id,'blocked','图片评估格式重试后仍不合格：'+str(exc))
+                    if continuous_id and not parallel_worker():self._continuous_problem(continuous_id,'图片评估格式重试后仍不合格：'+str(exc))
                     raise Rejected('图片评估格式重试后仍不合格：'+str(exc)) from exc
                 context=dict(context or {},formatRetry=str(exc))

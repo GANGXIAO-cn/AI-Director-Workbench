@@ -39,7 +39,7 @@ def prop_states(cell):
     result = {}
     for pair in re.split(r'[;；]', cell):
         key, separator, value = pair.strip().partition('=')
-        if (not separator or not re.fullmatch(r'[a-z][a-z0-9-]*', key)
+        if (not separator or not re.fullmatch(r'[a-z][a-z0-9_-]*', key)
                 or not value.strip() or key in result):
             raise ValueError('关键道具状态须为 道具ID=状态，以分号分隔，无则填无')
         result[key] = value.strip()

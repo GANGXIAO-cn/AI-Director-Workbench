@@ -25,7 +25,8 @@ def test_B_T2_B_T3_B_T4_story_review(tmp_path,case,normal):
         seen.append(req)
         count=2 if case=='B-T2' else 3
         return review(req,'return', [dict(category='clarity' if normal else 'source',reason='必须交代钥匙来源')]) if len(seen)<=count else review(req)
-    env.claude.script=[reviewer]*4 if case=='B-T4' else [reviewer]*3
+    def execute(req):return reviewer(req) if req.kind=='review' else directed(req,'codex')
+    env.codex.script=[execute]*80
     result=env.wb.start_continuous(eid,command_id='start')
     assert result['state']=='done',result['reason']
     art=env.art(eid,'story')
@@ -38,12 +39,10 @@ def test_B_T2_B_T3_B_T4_story_review(tmp_path,case,normal):
         assert any('前两轮已用的修法与独审意见' in r.prompt and '必须交代钥匙来源' in r.prompt for r in env.codex.calls)
         assert len(art['versions'])==4
 
-def test_B_T22_running_expert_rejected(tmp_path):
-    env=Env(tmp_path);pid,eid=env.new_episode()
-    auth=env.wb.authorize_expert(pid,[eid],'stress',{'create':{'provider':'codex'},'review':{'provider':'claude'}},command_id='expert')
-    env.wb.claim_expert(auth['authId'])
-    with pytest.raises(Conflict,match='专家授权'):
-        env.wb.start_continuous(eid,command_id='start')
+def test_B_T22_no_legacy_authorization_gate(tmp_path):
+    env=Env(tmp_path);_,eid=env.new_episode()
+    assert not hasattr(env.wb,'authorize_expert')
+    assert env.wb.start_continuous(eid,command_id='start')['state']=='done'
 
 def test_B_T0_standard_goals_moved_verbatim():
     from workbench.workflow import STANDARD_GOALS
@@ -107,23 +106,16 @@ def test_B_T5_B_T6_B_T27_story_candidates(tmp_path,case):
         candidate='第三种表现方式' in goal or '允许调整引发问题' in goal
         passed=candidate and case!='B-T6' and (case!='B-T27' or '允许调整引发问题' in goal)
         return review(req) if passed else review(req,'return',[dict(category='source',reason='钥匙来源与必守原文冲突')])
-    env.claude.script=[reviewer]*12
+    env.codex.script=[lambda req:reviewer(req) if req.kind=='review' and env.wb.run_manifest(req.run_id)['manifest']['stage']=='story' else directed(req,'codex')]*100
     result=env.wb.start_continuous(eid,command_id='start')
-    assert result['state']=='waiting_choice',result['reason']
-    choice=result['choice']; assert choice['kind']=='story'
-    assert len(choice['candidates'])=={'B-T5':2,'B-T6':0,'B-T27':1}[case]
-    assert all(env.wb.adoption_gate(c['versionId'])['adoptable'] for c in choice['candidates'])
+    assert result['choice'] is None
     if case=='B-T6':
-        assert choice['settings'] and '钥匙来源' in choice['title']
+        assert result['state']=='failed' and result['cursor']['repairHistory'] and not result['cursor'].get('pauseHistory')
     else:
-        if case=='B-T27':
-            assert choice['current']['adoptable'] is False
-            assert '仅供对照' in choice['current']['disabledReason']
-        env.claude.script=[]
-        chosen=next(c for c in choice['candidates'] if c['key']=='B')
-        done=env.wb.choose_continuous(result['id'],'B','choose')
-        assert done['state']=='done',done['reason']
-        assert env.art(eid,'story')['adopted_version_id']==chosen['versionId']
+        assert result['state']=='done',result['reason']
+        selected=env.art(eid,'story')['adopted_version_id']
+        assert env.wb.adoption_gate(selected)['adoptable']
+        assert any(d['kind']=='expert_judgment' and d['ref']==selected for d in env.wb.continuous_view(eid)['decisions'])
 
 def test_B_T13_quota_resume_same_executor(tmp_path):
     from workbench.executors.fake import quota_exhausted
@@ -133,10 +125,12 @@ def test_B_T13_quota_resume_same_executor(tmp_path):
         return quota_exhausted(req) if len(calls)==3 else directed(req,'codex')
     env.codex.script=[run]*10;env.claude.script=[run]*10
     value=env.wb.start_continuous(eid,command_id='start')
-    assert value['state']=='waiting_quota'
+    assert value['state']=='waiting_external'
     waiting=value['cursor']['queue'][0]
     with env.db() as db: provider=db.execute('SELECT provider FROM run WHERE id=?',(waiting,)).fetchone()[0]
-    value=env.wb.resume_continuous(value['id'],'resume')
+    block=value['cursor']['blocks'][0]
+    assert env.wb.changed_continuous_runs(block['resetsAt'] or block['at']+1800)==[value['id']]
+    value=env.wb._advance_continuous(value['id'])
     assert value['state']=='done',value['reason']
     with env.db() as db:
         retry=db.execute('SELECT provider FROM run WHERE base_version_id IS NULL AND id<>? AND provider=?',(waiting,provider)).fetchone()
@@ -184,6 +178,8 @@ def repair_fixture(tmp_path, *, core=False, forbidden=False, reject_a=False, rej
             return dict(directed(req,'codex',stage_reply=False),reply='',directorRequest=manifest['stageDialogue']['request'])
         if manifest.get('stageDialogue'):
             request=manifest['stageDialogue']['request']
+            if manifest['stageDialogue'].get('internalJudgment')=='返修选稿':
+                return discussion(dict(key='B' if reject_a else 'A',reason='保留结局并说明动作因果'))
             if 'optionIndex' in request:
                 index=99 if invalid_selection else counts['selection']
                 counts['selection']+=1
@@ -201,27 +197,24 @@ def test_B_T9_B_T10_B_T11_B_T28_B_T29_repair_choices(tmp_path,case):
     env,eid,counts=repair_fixture(tmp_path,core=case in ('B-T10','B-T28','B-T29'),forbidden=case=='B-T29',reject_a=case in ('B-T28','B-T29'),reject_b=case=='B-T29',invalid_selection=case=='B-T11',unresolved=case=='B-T9')
     value=env.wb.start_continuous(eid,command_id='start')
     if case=='B-T11':
-        assert value['state']=='blocked' and counts['selection']==2,value
+        assert value['state']=='done' and counts['selection']==2 and counts['verify']==1,value
         return
     if case=='B-T29':
-        assert value['state']=='blocked' and 'required_setting' in value['reason'] and '柜台有锁' in value['reason'],value
-        assert not value['choice']['current']['adoptable']
+        assert value['state']=='failed' and '柜台有锁' in value['reason'] and value['choice'] is None,value
         return
-    assert value['state']=='waiting_choice',value['reason']
-    assert value['choice']['kind']=='repair'
-    if case=='B-T10': assert counts['selection']==0
-    if case=='B-T9': assert counts['verify']==2
-    if case=='B-T28':
-        assert len(value['choice']['candidates'])==1
-        assert value['choice']['current']['adoptable']
-        selected='current'
-    else:
-        assert len(value['choice']['candidates'])==2
-        selected='A'
-    done=env.wb.choose_continuous(value['id'],selected,'choose')
-    assert done['state']=='done',done['reason']
-    if case=='B-T28':
-        with env.db() as db: assert db.execute("SELECT 1 FROM stress_resolution WHERE disposition='carry'").fetchone()
+    if case=='B-T9':
+        assert value['state']=='failed' and '仍未解决' in value['reason'] and counts['verify']>=3 and value['choice'] is None
+        assert 'I01：核对本轮变化' in value['reason']
+        with env.db() as db:
+            base=db.execute("SELECT base_version_id FROM run JOIN task ON task.id=run.task_id WHERE task.goal LIKE '只修复被指出的字段%专家修订后仍未解决%' ORDER BY run.rowid LIMIT 1").fetchone()
+        decisions=env.wb.continuous_view(eid)['decisions']
+        assert base and any(d['kind']=='expert_judgment' and json.loads(d['detail']).get('choice') and d['ref']==base[0] for d in decisions)
+        return
+    assert value['state']=='done',value['reason']
+    assert not any(p['state']=='waiting_choice' for p in value['cursor'].get('pauseHistory',[]))
+    decisions=env.wb.continuous_view(eid)['decisions']
+    assert any(d['kind']=='expert_judgment' and '动作因果' in d['reason'] for d in decisions)
+
 
 def test_B_T23_project_methods_not_silently_adopted(tmp_path):
     env=Env(tmp_path);pid,eid=env.new_episode()
@@ -295,9 +288,7 @@ def test_B_T26_choice_resets_report_counter_preserves_history(tmp_path):
         cursor=value['cursor'];cursor.update(stressReports=3,attempts={'I01':[dict(round=1,method='历史修法',result='unresolved')]},base=adopted(db,eid))
         cursor['userStamp']=env.wb._continuous_user_stamp(db,eid,cursor['ownedRuns'])
         db.execute("UPDATE continuous_run SET state='paused',cursor=? WHERE id=?",(dumps(cursor),value['id']))
-    waiting=env.wb.resume_continuous(value['id'],'resume')
-    assert waiting['state']=='waiting_choice',waiting['reason']
-    done=env.wb.choose_continuous(value['id'],'A','choose')
+    done=env.wb.resume_continuous(value['id'],'resume')
     assert done['state']=='done',done['reason']
     assert done['cursor']['stressReports']==1
     assert done['cursor']['attempts']['I01'][0]['method']=='历史修法'
@@ -325,8 +316,8 @@ def test_B_T19_restart_continues_open_repair(tmp_path):
 
 def test_B_T16_edit_while_waiting_for_choice_continues(tmp_path):
     env,eid,_=repair_fixture(tmp_path,core=True)
-    waiting=env.wb.start_continuous(eid,command_id='start')
-    assert waiting['state']=='waiting_choice'
+    from test_continuous_wake import run_record
+    run_record(env,eid)
     art=env.art(eid,'world');content=dict(art['versions'][-1]['content']);content['notes']='用户新要求'
     env.wb.save_manual(art['id'],art['adopted_version_id'],content,'user-edit')
     assert env.wb.continuous_view(eid)['run']['state']=='running'
@@ -348,12 +339,13 @@ def test_B_T7_repair_story_gets_independent_review(tmp_path):
     assert adopted['reviews'] and adopted['gate']['adoptable']
 
 
-def test_B47_api_write_wakes_waiting_choice_without_resume(tmp_path):
+def test_B47_api_write_wakes_active_run_without_resume(tmp_path):
     from fastapi.testclient import TestClient
     from workbench.app import create_app
-    env,eid,_=repair_fixture(tmp_path,core=True)
-    waiting=env.wb.start_continuous(eid,command_id='start')
-    assert waiting['state']=='waiting_choice'
+    env=Env(tmp_path);_,eid=env.new_episode()
+    env.wb.start_continuous(eid,command_id='complete-initial-stages')
+    from test_continuous_wake import run_record
+    run_record(env,eid)
     app=create_app(env.wb,token='test',inline_worker=True)
     art=env.art(eid,'world')
     content=dict(art['versions'][-1]['content'],notes='新的用户要求')
@@ -367,8 +359,10 @@ def test_B47_api_write_wakes_waiting_choice_without_resume(tmp_path):
 
 def test_B47_explicit_pause_is_preserved_on_user_edit(tmp_path):
     env,eid,_=repair_fixture(tmp_path,core=True)
-    waiting=env.wb.start_continuous(eid,command_id='start')
-    env.wb._continuous_update(waiting['id'],state='paused',pause_requested=1)
+    from test_continuous_wake import run_record
+    cid=run_record(env,eid)
+    env.wb.pause_continuous(cid)
+    env.wb._advance_continuous(cid)
     art=env.art(eid,'world')
     env.wb.save_manual(art['id'],art['adopted_version_id'],dict(art['versions'][-1]['content'],notes='暂停期间改稿'),'edit')
     from workbench.app import Worker
@@ -415,8 +409,10 @@ def test_B47_auto_dialogue_draft_is_adopted_and_continues(tmp_path):
 def test_B47_unlock_and_spec_changes_reconcile_automatically(tmp_path,change):
     # B4.7：解锁修改和确认开工规格变更也触发接续，保留已采用稿件。
     from workbench.app import Worker
-    env,eid,_=repair_fixture(tmp_path,core=True)
-    assert env.wb.start_continuous(eid,command_id='start')['state']=='waiting_choice'
+    env=Env(tmp_path);_,eid=env.new_episode()
+    env.wb.start_continuous(eid,command_id='complete-initial-stages')
+    from test_continuous_wake import run_record
+    run_record(env,eid)
     art=env.art(eid,'world')
     if change=='unlock':
         env.wb.set_stage_edit(art['id'],True,art['revision'],'unlock')

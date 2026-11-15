@@ -32,7 +32,7 @@ class ContinuousFinishing(ContinuousJudgments, PromptRepairs):
                 if validate(answer):return answer
             except (ValueError,TypeError,KeyError,AttributeError):pass
             instruction+='\n上次回复格式不合格，请按指定 JSON 契约重回。'
-        self._continuous_stop(cid,'blocked','只读判断格式重试后仍不符合契约')
+        self._continuous_problem(cid,'只读判断格式重试后仍不符合契约')
 
     def _continuous_cast(self,cid):
         eid=self._continuous_record(cid)['episode_id'];art=self._continuous_art(eid,'plan')
@@ -47,7 +47,7 @@ class ContinuousFinishing(ContinuousJudgments, PromptRepairs):
                 vid=cell.get('assetVersionId');note='按采用方案的 visibleRoles 确认出镜'
                 present=role in visible
                 vid=vid or matrix['roster'][role].get('assetVersionId')
-                if present and not vid:self._continuous_stop(cid,'blocked',sid+' · '+role+' 在镜头中出场，但尚无采用的身份图')
+                if present and not vid:self._continuous_problem(cid,sid+' · '+role+' 在镜头中出场，但尚无采用的身份图')
                 self.set_cast(eid,sid,role,'ok' if present else 'absent',vid if present else None,note=note,command_id=f'{cid}:cast:{art["adopted_version_id"]}:{sid}:{role}:{vid}:{present}')
                 self._continuous_log(cid,'plan','fill_observation',sid+':'+role,note,dict(status='ok' if present else 'absent',assetVersionId=vid if present else None))
 
@@ -61,77 +61,87 @@ class ContinuousFinishing(ContinuousJudgments, PromptRepairs):
 
     def _continuous_products(self,cid):
         eid=self._continuous_record(cid)['episode_id']
-        placement_state=self.product_placements(eid)
+        placement_state=self.product_placements(eid,check_prompt_refs=False)
         if not placement_state['minimum']:return
         plan_art=self._continuous_art(eid,'plan');plan_id=plan_art['adopted_version_id']
         plan=self._continuous_version(plan_id);shots=compact_shots(plan)
-        design=self._continuous_art(eid,'asset_design')
-        if not design or not design['adopted_version_id']:return
-        items=self._continuous_version(design['adopted_version_id'])['assets']
-        needs={r['need_key']:r for r in self.asset_worksheet(eid)['rows']}
-        for item in items:
-            code=asset_product_code(item);need=needs.get(item['id']);vid=need.get('adopted_version_id') if need else None
-            if not code or not vid:continue
-            rule=self._continuous_image_rule(eid,vid)
-            with connect(self.db_path) as db:
-                product=db.execute('SELECT source,version_id FROM episode_product WHERE episode_id=? AND code=?',(eid,code)).fetchone()
-            if not product:continue
-            evidence=self._continuous_existing_assessment(eid,vid)
-            # Existing shot hashes and scene evidence are authoritative even when
-            # old INSERT OR IGNORE lost the image's required scope.
-            existing=[r for r in placement_state['records'] if r['code']==code and r['scene_version']==vid
-                      and r['observation'].strip() and r['intent'].strip()
-                      and r['shot_id'] in {s['id'] for s in plan['shots']}
-                      and r['shot_hash']==fingerprint(next(s for s in plan['shots'] if s['id']==r['shot_id']))]
-            materials=dict(productCode=code,product=json.loads(product['source']),productVersion=product['version_id'],
-                           sceneVersion=vid,assessment=evidence,shots=shots,minimum=placement_state['minimum'],
-                           limitations=(rule or {}).get('limitations',''))
-            source='product:'+code
-            prior=(rule or {}).get('autoBindings',{}).get(source,{})
-            current_basis=fingerprint(materials)
-            receipt_key='商品入景选择:'+code+':'+vid
-            recorded=self._continuous_record(cid)['cursor'].get('judgmentReceipts',{}).get(receipt_key)
-            complete_prior=prior.get('basisHash')==current_basis and set(prior.get('shotIds',[]))=={r['shot_id'] for r in existing}
-            if existing and (complete_prior or (not prior and not recorded)):
-                answer=dict(placements=[dict(shotId=r['shot_id'],intent=r['intent'],observation=r['observation']) for r in existing])
-            else:
-                if evidence is None:
-                    evidence=self.assess_images(eid,[vid],f'{cid}:product-observe:{vid}',context=dict(productCode=code),continuous_id=cid)[0]
-                    materials['assessment']=evidence
-                    current_basis=fingerprint(materials)
-                shot_ids={s['id'] for s in shots}
-                def validate(answer):
-                    if not isinstance(answer,dict) or not isinstance(answer.get('placements'),list):return ['placements 须为数组']
-                    records=answer['placements']
-                    if not records:return [] if isinstance(answer.get('unresolvedReason'),str) and answer['unresolvedReason'].strip() else ['无入景镜头时须说明 unresolvedReason']
-                    errors=[];seen=set()
-                    for record in records:
-                        if not isinstance(record,dict):errors.append('入景记录须为对象');continue
-                        key=record.get('shotId')
-                        if not isinstance(key,str) or key not in shot_ids or key in seen:errors.append('shotId 不存在或重复：'+str(key))
-                        else:seen.add(key)
-                        for field in ('intent','observation'):
-                            if not isinstance(record.get(field),str) or not record[field].strip():errors.append(str(key)+' 缺 '+field)
-                    return errors
-                instruction='从已提供的场景图观察及当前镜头选择含该商品的镜头。不可将转述称为本轮亲自看图，不臆造商品。reply 内业务对象 {"placements":[{"shotId":"现有镜头编号","intent":"位置朝向、识别特征及用途","observation":"所提供图片观察中的商品描述"}],"unresolvedReason":"无证据时说明"}。'
-                answer,_=self._continuous_bounded_json(cid,'商品入景选择',code+':'+vid,instruction,materials,validate)
-            self._continuous_checkpoint(cid)
-            if self._continuous_art(eid,'plan')['adopted_version_id']!=plan_id or self._continuous_image_rule(eid,vid)!=rule:
-                from .continuous import UserChange
-                raise UserChange()
-            current_need=next((n for n in self.asset_worksheet(eid)['rows'] if n['need_key']==item['id']),{})
-            if current_need.get('adopted_version_id')!=vid:
-                from .continuous import UserChange
-                raise UserChange()
-            if not answer['placements']:
-                self._continuous_stop(cid,'blocked',code+'：'+answer['unresolvedReason'])
-            for record in answer['placements']:
-                matching=next((r for r in existing if r['shot_id']==record['shotId'] and r['intent']==record['intent'] and r['observation']==record['observation']),None)
-                if matching:continue
-                self.save_product_placement(eid,code,record['shotId'],record['intent'],vid,record['observation'],
-                    f'{cid}:placement:{code}:{vid}:{current_basis}:{fingerprint(record)}')
-                self._continuous_log(cid,'plan','fill_observation',record['shotId'],'商品入景',dict(productCode=code,sceneVersion=vid,**record))
-            self._continuous_bind(cid,vid,[r['shotId'] for r in answer['placements']],plan_id,source,current_basis,'商品入景',rule,need_key=item['id'])
+        cursor=self._continuous_record(cid)['cursor']
+        with connect(self.db_path) as db:
+            drawing_allowed=set(self._kickoff(db,eid)['spec'].get('productDrawingReferences',[]))
+        pending=cursor.get('pendingProductBindings') or {}
+        if pending.get('planId')!=plan_id:pending={}
+        grid_ids={s['id'] for s in plan['segments'] if s['strategy']=='grid'}
+        outdated=any(r.get('drawingReference') and (r['code'] not in drawing_allowed or r['segment'] not in grid_ids)
+                     for r in placement_state['records'])
+        if not pending and not outdated and placement_state['verified']>=placement_state['minimum']:
+            scopes={}
+            for r in placement_state['records']:
+                if not r['issue']:scopes.setdefault((r['code'],r['scene_version']),[]).append(r['shot_id'])
+            for (code,vid),shot_ids in scopes.items():
+                rule=self._continuous_image_rule(eid,vid)
+                if not set(shot_ids)<=set((rule or {}).get('shotIds',[])):
+                    self._continuous_bind(cid,vid,shot_ids,plan_id,'product:'+code,fingerprint([plan_id,code,vid,shot_ids]),'沿用已登记商品镜头',rule)
+            direct={r['segment'] for r in placement_state['records'] if not r['issue'] and r['directReference']}
+            if any(s['strategy']=='grid' and s['id'] in direct for s in plan['segments']):
+                self._product_flex(cid,plan_art,plan_id,plan,direct)
+            return
+        with connect(self.db_path) as db:
+            pid=self._episode_in(db,eid)['project_id']
+            products=[dict(r) for r in db.execute('SELECT code,version_id,source FROM episode_product WHERE episode_id=? ORDER BY code',(eid,))]
+        catalog=[json.loads(r['source']) for r in products] or self.project_resources(pid,eid)['products']
+        if not catalog:raise Rejected('项目商品目录缺少可使用的商品主图')
+        bycode={r['code']:r for r in catalog}
+        ids={s['id'] for s in shots}
+        materials=dict(products=[dict(code=r['code'],name=r['name']) for r in catalog],shots=shots,minimum=placement_state['minimum'])
+        pinned={(code,shot['id']) for code,product in bycode.items() for shot in shots
+                if product['name'] in dumps(shot) or any(r['code']==code and r['shot_id']==shot['id'] for r in placement_state['records'])}
+        def valid(a):
+            entries=a.get('placements') if isinstance(a,dict) else None
+            if not isinstance(entries,list) or not all(isinstance(v,dict) and v.get('code') in bycode and v.get('shotId') in ids and isinstance(v.get('intent'),str) and v['intent'].strip() for v in entries):return ['须引用实际商品和镜头并说明用途']
+            actual={(v['code'],v['shotId']) for v in entries}
+            if not pinned<=actual:return ['保留分镜指定的商品镜头']
+            return [] if len(actual)>=materials['minimum'] else ['须覆盖规定数量的商品落点']
+        def use_existing_shots():
+            picks=[]
+            for code,product in bycode.items():
+                for shot in shots:
+                    if product['name'] in dumps(shot) or any(r['code']==code and r['shot_id']==shot['id'] for r in placement_state['records']):
+                        picks.append((code,shot['id']))
+            pairs=list(dict.fromkeys(picks+[(code,shot['id']) for shot in shots for code in bycode]))
+            return dict(placements=[dict(code=code,shotId=sid,intent='此镜按独立商品图呈现'+bycode[code]['name']) for code,sid in pairs[:max(len(picks),materials['minimum'])]])
+        if pending:
+            answer,basis=pending['answer'],pending['basis']
+        else:answer,basis=self._continuous_bounded_json(cid,'商品镜头安排',plan_id,
+            '若分镜已有商品镜头，沿用其位置；否则选自然落点。商品主图独立随段输入，空景无需显示商品。reply {"placements":[{"code":"目录编号","shotId":"已有镜号","intent":"摆放或使用安排"}]}。',materials,valid,fallback=use_existing_shots)
+        byshot={s['id']:s for s in shots}
+        segments={byshot[v['shotId']]['segment'] for v in answer['placements'] if v['code'] not in drawing_allowed}
+        grid_ids={s['id'] for s in plan['segments'] if s['strategy']=='grid'}-segments
+        drawings={}
+
+        if any(s['id'] in segments and s['strategy']=='grid' for s in plan['segments']):
+            plan_id=self._product_flex(cid,plan_art,plan_id,plan,segments)
+        self._continuous_cursor(cid,pendingProductBindings=dict(planId=plan_id,answer=answer,basis=basis))
+        scopes={}
+        for v in answer['placements']:
+            code=v['code'];sid=v['shotId']
+            vid=self.use_project_product(eid,code,f'{cid}:product-ref:{code}')['versionId']
+            target=byshot[sid]['segment']
+            if target in grid_ids:
+                drawings.setdefault(target,[]).append(dict(code=code,shotId=sid,intent=v['intent'],master=vid))
+                continue
+            self.save_product_placement(eid,code,sid,v['intent'],vid,'',f'{cid}:product-placement:{plan_id}:{code}:{sid}:{basis}')
+            scopes.setdefault((code,vid),[]).append(sid)
+        for (code,vid),shot_ids in scopes.items():
+            self._continuous_bind(cid,vid,list(dict.fromkeys(shot_ids)),plan_id,'product:'+code,basis,'视频段携带独立商品主图',self._continuous_image_rule(eid,vid))
+
+        self._continuous_cursor(cid,pendingProductBindings=None,productDrawings=drawings)
+
+    def _product_flex(self,cid,art,plan_id,plan,segments):
+        updated=[dict(s,strategy='flex') if s['id'] in segments else s for s in plan['segments']]
+        result=self.save_manual(art['id'],plan_id,dict(segments=updated),f'{cid}:product-flex:{plan_id}:'+fingerprint(updated),note='商品主图独立随段输入')
+        vid=self._continuous_internal_version(cid,result['versionId'])
+        self._continuous_adopt(cid,'plan',vid)
+        return vid
 
     def _continuous_prompt_revision(self,cid,vid,affected,instruction):
         eid=self._continuous_record(cid)['episode_id'];old=self._continuous_version(vid)
@@ -151,7 +161,7 @@ class ContinuousFinishing(ContinuousJudgments, PromptRepairs):
         merged={sid:entry for sid,entry in content['segments'].items() if sid in current_ids}
         for sid,entry in old['segments'].items():
             if sid not in affected and sid in current_ids:merged[sid]=entry
-        if set(merged)!=current_ids:self._continuous_stop(cid,'blocked','分段修订未覆盖当前方案全部段号')
+        if set(merged)!=current_ids:self._continuous_problem(cid,'分段修订未覆盖当前方案全部段号')
         preserved=dict(old,segments=merged)
         if resegmented or preserved!=content:
             content=preserved
@@ -179,13 +189,14 @@ class ContinuousFinishing(ContinuousJudgments, PromptRepairs):
             self._continuous_create(cid,'plan','只简化 '+segment+' 段动作与结构，其他段及镜头保持不变。'+answer['reason']+'\n问题原文：'+dumps(issues),base=base)
             candidate=self._continuous_art(eid,'plan')['versions'][-1];changed=candidate['content']
             if [s for s in changed['shots'] if s['segment']!=segment]!=[s for s in plan['shots'] if s['segment']!=segment] or [s for s in changed['segments'] if s['id']!=segment]!=[s for s in plan['segments'] if s['id']!=segment]:
-                self._continuous_stop(cid,'blocked','结构修订改变了未受影响段，需保留原段后重试')
+                self._continuous_problem(cid,'结构修订改变了未受影响段，需保留原段后重试')
             plan_vid=candidate['id']
         self._continuous_adopt(cid,'plan',plan_vid)
         self._continuous_cast(cid)
         self._continuous_required_bindings(cid)
         self._continuous_empty_scene_bindings(cid)
         self._continuous_products(cid)
+        self._grid_artwork(cid,eid,self._continuous_art(eid,'plan')['adopted_version_id'])
         return self._continuous_prompt_revision(cid,vid,affected,'按新采用镜头方案和段号映射重写受影响段，更新受影响段的引用和用途说明，继承已采用绑定，不新增逐镜图片审核。'+dumps(answer))
 
     def _continuous_prompt_checks(self,cid,vid):
@@ -196,7 +207,14 @@ class ContinuousFinishing(ContinuousJudgments, PromptRepairs):
         """
         errors=self.adoption_gate(vid)['formatErrors']
         if errors:
-            affected=set(self._continuous_version(vid).get('segments',{}))
+            segment_ids=set(self._continuous_version(vid).get('segments',{}))
+            affected=set()
+            for error in errors:
+                matches={sid for sid in segment_ids if error.startswith((sid+'：',sid+' ',sid+':'))}
+                if not matches:
+                    affected=segment_ids
+                    break
+                affected.update(matches)
             vid=self._continuous_prompt_revision(cid,vid,affected,'修正本次提示词的具体格式或引用错误，并按原尺度检查正文：'+'；'.join(errors))
         return vid
 
@@ -222,7 +240,7 @@ class ContinuousFinishing(ContinuousJudgments, PromptRepairs):
         self._continuous_products(cid)
         cursor=self._continuous_record(cid)['cursor'];art=self._continuous_art(eid,'prompts')
         receipt=cursor.get('finishingReceipt')
-        if receipt and art and receipt==dict(plan=self._continuous_art(eid,'plan')['adopted_version_id'],prompts=art['adopted_version_id']):
+        if receipt and art and receipt==dict(worksheetRefs=1,plan=self._continuous_art(eid,'plan')['adopted_version_id'],prompts=art['adopted_version_id']):
             if not self.adoption_gate(art['adopted_version_id'])['formatErrors'] and not self._continuous_reference_gaps(eid,self._continuous_version(art['adopted_version_id'])):return True
         # Last whole-content review belongs to 08, after actual reference bindings.
         plan_art=self._continuous_art(eid,'plan')
@@ -241,13 +259,23 @@ class ContinuousFinishing(ContinuousJudgments, PromptRepairs):
             self._continuous_stage(cid,'plan')
             self._continuous_cast(cid)
             self._continuous_required_bindings(cid)
+            self._continuous_empty_scene_bindings(cid)
+            self._continuous_products(cid)
             plan_id=self._continuous_art(eid,'plan')['adopted_version_id']
             gate=self.adoption_gate(plan_id)
+        if gate['review'] is None:
+            self._continuous_execute(cid,self.submit_review(plan_id,f'{cid}:plan-review:{plan_id}')['runId'])
+            gate=self.adoption_gate(plan_id)
+        if gate['blocking']:
+            self._continuous_cursor(cid,stage='plan')
+            self._continuous_problem(cid,'分镜定稿仍有独审指出的关键问题：'+dumps(gate['blocking']))
         for issue in gate['unresolved']:
             self.waive(issue,plan_id,'08分镜：不影响当前用途的普通意见按本版采用',f'{cid}:plan-waive:{issue}')
+        grids=self._grid_artwork(cid,eid,plan_id)
+        self._episode_image_review(cid,eid,self.asset_worksheet(eid)['rows'],grids)
         placements=self.product_placements(eid,check_prompt_refs=False)
         if placements['verified']<placements['minimum']:
-            self._continuous_stop(cid,'blocked','镜头交接的商品落点未完成：请在素材和镜头阶段落实指定商品场面。')
+            self._continuous_problem(cid,'镜头交接的商品落点未完成：对应镜头缺少商品参考绑定。')
         cursor=self._continuous_record(cid)['cursor'];art=self._continuous_art(eid,'prompts')
         pending=next((v['id'] for v in reversed(art['versions']) if v['id'] not in cursor.get('ignoredVersions',[]) and (v.get('source_run_id') in cursor['ownedRuns'] or v['id'] in cursor.get('ownedVersions',[]))),None) if art else None
         vid=self._resume_prompt_candidate(cid,cursor.get('promptCandidate') or pending)
@@ -267,12 +295,12 @@ class ContinuousFinishing(ContinuousJudgments, PromptRepairs):
         vid=self._repair_prompt_notes(cid,vid)
         # Only this stage's expression records may be repaired here.
         errors=self._continuous_note_errors(eid,'prompts',self._continuous_version(vid))
-        if errors:self._continuous_stop(cid,'blocked','提示词记录待修正：'+'；'.join(errors))
+        if errors:self._continuous_problem(cid,'提示词记录待修正：'+'；'.join(errors))
         placements=self.product_placements(eid,candidate=self._continuous_version(vid))
         if placements['verified']<placements['minimum']:
-            self._continuous_stop(cid,'blocked','提示词未引用已登记商品场面，请修正对应段引用；不在此重写素材或镜头。')
+            self._continuous_problem(cid,'提示词未引用已登记商品参考，请修正对应段引用；不在此重写素材或镜头。')
         vid=self._continuous_shot_observations(cid,vid)
         vid=self._continuous_prompt_checks(cid,vid)
         self._continuous_adopt(cid,'prompts',vid)
-        self._continuous_cursor(cid,finishingReceipt=dict(plan=self._continuous_art(eid,'plan')['adopted_version_id'],prompts=self._continuous_art(eid,'prompts')['adopted_version_id']))
+        self._continuous_cursor(cid,finishingReceipt=dict(worksheetRefs=1,plan=self._continuous_art(eid,'plan')['adopted_version_id'],prompts=self._continuous_art(eid,'prompts')['adopted_version_id']))
         return True

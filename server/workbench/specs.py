@@ -33,6 +33,9 @@ def validate_spec(values):
         if value not in ("1","2","4"):
             raise Rejected("H3 候选数须为 1、2 或 4")
         spec["h3Candidates"] = int(value)
+    drawing=spec.get('productDrawingReferences',[])
+    if not isinstance(drawing,list) or not all(isinstance(code,str) and code.strip() for code in drawing):
+        raise Rejected('允许仅作绘图参考的商品须提供商品编号列表')
     return spec
 
 

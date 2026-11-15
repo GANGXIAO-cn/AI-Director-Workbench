@@ -21,7 +21,7 @@ class ContinuousSupplements:
             except (ValueError,AttributeError,TypeError):
                 pass
             instruction+='\n上次回复格式不合格，请按契约重回。'
-        self._continuous_stop(cid,'blocked','制作补充判断回复不合格：'+existing['statement']+'；'+new['statement'])
+        return dict(conflict=True,keep='existing',reason='未取得有效变更依据，沿用已登记的事实')
 
     def _continuous_prepare_supplements(self,cid,stage,vid):
         if stage not in supplements.STAGES:return vid
@@ -39,7 +39,7 @@ class ContinuousSupplements:
                 decision=self._supplement_judgment(cid,stage,old,item,content)
                 self._continuous_log(cid,stage,'confirm_supplement',old['id'],decision['reason'],dict(existing=old,new=item,judgment=decision))
                 if revision:
-                    self._continuous_stop(cid,'blocked','制作补充修订后仍与登记说法不同：'+old['statement']+'；'+item['statement'])
+                    self._continuous_problem(cid,'制作补充修订后仍与登记说法不同：'+old['statement']+'；'+item['statement'])
                 if decision['keep']=='existing':
                     with transaction(self.db_path) as db:
                         self._insert_supplement(db,eid,item,stage,vid,state='rejected')

@@ -2,6 +2,7 @@
 import json
 import logging
 import threading
+from contextvars import ContextVar
 
 from .db import connect, transaction, dumps, new_id
 from .errors import Conflict, Rejected, row
@@ -17,8 +18,15 @@ from .continuous_recovery import ContinuousRecovery
 from .stressrepairs import adopted, pending_changes, issue_stage, upstream_basis
 
 STAGES = workflow.ORDER[:6]
-ACTIVE = ('running', 'paused', 'waiting_choice', 'waiting_quota', 'blocked')
+ACTIVE = ('running','paused','waiting_external')
 FORMAT_REASONS = {'schema', '回包两次不符合契约', '已收到回包，未通过入库校验'}
+
+
+candidate_scope=ContextVar('continuous_candidate',default=None)
+
+
+class CandidateRejected(Exception):
+    """Only the candidate currently being drafted exhausted its format repair."""
 
 
 class RunWait(Exception):
@@ -48,7 +56,9 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
 
     def _continuous_update(self, cid, **changes):
         with transaction(self.db_path) as db:
-            if changes.get("state") in ("blocked","paused","waiting_quota","waiting_choice"):
+            if row(db, 'SELECT state FROM continuous_run WHERE id=?', cid)['state'] in ('cancelled','failed','done'):
+                return
+            if changes.get("state")=="paused":
                 old = row(db, "SELECT state,episode_id,cursor,pause_requested FROM continuous_run WHERE id=?", cid)
                 if old["state"] != changes["state"]:
                     cursor = json.loads(old["cursor"])
@@ -72,7 +82,7 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
         with connect(self.db_path) as db:
             rows=db.execute("""SELECT c.episode_id,c.state,c.reason,c.cursor,c.updated_at,e.display_code,e.title,e.project_id,p.name project_name
                 FROM continuous_run c JOIN episode e ON e.id=c.episode_id JOIN project p ON p.id=e.project_id
-                WHERE c.rowid IN (SELECT max(rowid) FROM continuous_run GROUP BY episode_id) AND c.state IN ('blocked','waiting_choice')
+                WHERE c.rowid IN (SELECT max(rowid) FROM continuous_run GROUP BY episode_id) AND c.state='waiting_external'
                 ORDER BY c.updated_at DESC""").fetchall()
         result=[]
         for r in rows:
@@ -106,14 +116,22 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
             with connect(self.db_path) as db:
                 current=db.execute('SELECT id,purpose,status,provider,requested_model,reported_model,base_version_id FROM run WHERE id=?',(value['cursor']['runId'],)).fetchone()
                 if current:execution=dict(current)
-        return dict(run=value,execution=execution,methods=methods,decisions=decisions,expert=self.episode_expert(episode_id),issues=self.material_issues(episode_id),methodNotice=f'本项目有 {len(missing)} 份方法本集尚未采用，将按本集现有方法运行' if missing else '')
+        image_progress=None
+        if value and value['cursor'].get('phase')=='images':
+            with connect(self.db_path) as db:
+                counts=db.execute("""SELECT count(*) total,count(adopted_version_id) adopted FROM asset_need
+                    WHERE episode_id=? AND removed=0 AND decision IS NOT 'text_only'""",(episode_id,)).fetchone()
+                requests=db.execute("""SELECT b.provider,b.model,r.state,count(*) n FROM image_batch b
+                    JOIN image_request r ON r.batch_id=b.id WHERE b.episode_id=?
+                    GROUP BY b.provider,b.model,r.state ORDER BY max(b.created_at) DESC""",(episode_id,))
+                image_progress=dict(counts,requests=[dict(r) for r in requests])
+        return dict(run=value,execution=execution,imageProgress=image_progress,methods=methods,decisions=decisions,expert=self.episode_expert(episode_id),issues=self.material_issues(episode_id),methodNotice=f'本项目有 {len(missing)} 份方法本集尚未采用，将按本集现有方法运行' if missing else '')
 
     def start_continuous_precheck(self, episode_id, target_stage='stress', command_id=None, image_options=None):
         if target_stage not in ('stress','delivery'): raise Rejected('请选择故事审查或图文交付')
         with connect(self.db_path) as db:
             self._kickoff(db,episode_id)
-            if db.execute("SELECT 1 FROM continuous_run WHERE episode_id=? AND state NOT IN ('done','cancelled')",(episode_id,)).fetchone(): raise Conflict('本集已有连续制作，请从当前进度继续')
-            if any(episode_id in json.loads(r[0]) for r in db.execute("SELECT episodes FROM expert_auth WHERE state='running'")): raise Conflict('本集专家授权正在运行')
+            if db.execute("SELECT 1 FROM continuous_run WHERE episode_id=? AND state NOT IN ('done','cancelled','failed')",(episode_id,)).fetchone(): raise Conflict('本集已有连续制作，请从当前进度继续')
             if db.execute("SELECT 1 FROM run r JOIN task t ON t.id=r.task_id WHERE t.episode_id=? AND r.status IN ('queued','running')",(episode_id,)).fetchone(): raise Conflict('本集有正在执行的任务，结束后再开始')
 
     def start_continuous(self, episode_id, target_stage='stress', command_id=None, image_options=None):
@@ -122,10 +140,8 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
         with transaction(self.db_path) as db:
             self._kickoff(db,episode_id)
             def create():
-                if db.execute("SELECT 1 FROM continuous_run WHERE episode_id=? AND state NOT IN ('done','cancelled')",(episode_id,)).fetchone():
+                if db.execute("SELECT 1 FROM continuous_run WHERE episode_id=? AND state NOT IN ('done','cancelled','failed')",(episode_id,)).fetchone():
                     raise Conflict('本集已有连续制作，请从当前进度继续')
-                if any(episode_id in json.loads(r[0]) for r in db.execute("SELECT episodes FROM expert_auth WHERE state='running'")):
-                    raise Conflict('本集专家授权正在运行')
                 if db.execute("SELECT 1 FROM run r JOIN task t ON t.id=r.task_id WHERE t.episode_id=? AND r.status IN ('queued','running')",(episode_id,)).fetchone():
                     raise Conflict('本集有正在执行的任务，结束后再开始')
                 cid=new_id()
@@ -136,7 +152,8 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
         return self._advance_continuous(result['continuousId'])
 
     def pause_continuous(self, continuous_id):
-        self._continuous_update(continuous_id,pause_requested=1)
+        with transaction(self.db_path) as db:
+            db.execute("UPDATE continuous_run SET pause_requested=1,state=CASE WHEN state='waiting_external' THEN 'paused' ELSE state END,updated_at=? WHERE id=? AND state IN ('waiting_external','running')",(self.clock(),continuous_id))
         return self._continuous_record(continuous_id)
 
     def cancel_continuous(self, continuous_id):
@@ -150,7 +167,7 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
         return self._advance_continuous(result['continuousId'])
 
     def _continuous_changed(self, db, eid):
-        for value in db.execute("SELECT * FROM continuous_run WHERE episode_id=? AND state IN ('running','waiting_choice','waiting_quota','blocked')", (eid,)).fetchall():
+        for value in db.execute("SELECT * FROM continuous_run WHERE episode_id=? AND state IN ('running','waiting_external')", (eid,)).fetchall():
             cursor=json.loads(value['cursor'])
             cursor['pendingUserChange']=True
             db.execute("UPDATE continuous_run SET state='running',choice=NULL,reason=NULL,cursor=?,updated_at=? WHERE id=?", (dumps(cursor),self.clock(),value['id']))
@@ -167,12 +184,56 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
             if r['source_run_id'] not in cursor['ownedRuns'] and r['id'] not in cursor.get('ownedVersions',[]) and r['display_no']>(adopted_no[0] if adopted_no else 0): cursor['userDrafts'][r['stage']]=r['id']
         cursor.update(pendingUserChange=False,userStamp=self._continuous_user_stamp(db,eid,cursor['ownedRuns']),base=adopted(db,eid),retried={})
 
-    def _continuous_stop(self, cid, state, reason, blocks=None):
+    def _expert_repair_step(self,cid):
+        """A rejected production decision creates a scoped revision, not a user checkpoint."""
+        run=self._continuous_record(cid);c=run['cursor'];r=c.get('nextRepair')
+        if not r:return
+        stage=r['stage'];eid=run['episode_id']
+        art=self._continuous_art(eid,stage)
+        mode=r.get('method','patch')
+        base=r.get('baseVersionId') or (art['versions'][-1]['id'] if art and art['versions'] else None)
+        if mode=='rebuild':base=None
+        directions={'patch':'只修复被指出的字段或引用，保留其余原稿。',
+                    'simplify':'换用更简单可拍的方案表达同一事件，减少非必要动作及依赖。',
+                    'rebuild':'从已采用上游与开工要求重新组织本阶段，不沿用失败候选的结构。'}
+        self._continuous_cursor(cid,nextRepair=None)
+        self._continuous_create(cid,stage,
+            directions[mode]+'保留已定角色、事件因果和导演要求。具体问题：'+r['reason'],
+            base=base,format_repair=mode!='rebuild',rebuild=mode=='rebuild')
+        version=self._continuous_art(eid,stage)['versions'][-1]['id']
+        self._continuous_adopt(cid,stage,version)
+        self._continuous_cursor(cid,finishingReceipt=None,promptCandidate=version if stage=='prompts' else None)
+
+    def _continuous_problem(self,cid,reason,blocks=None,*,repair_base=None):
         from .continuous_images import cursor_lock
         with cursor_lock(cid):
-            cursor=self._continuous_record(cid)['cursor']
-            cursor['pendingBlocks']=blocks or []
-            self._continuous_update(cid,state=state,reason=reason,cursor=cursor)
+            value=self._continuous_record(cid)
+            if value['state']!='running':raise Halt()
+            cursor=value['cursor']; external=[b for b in blocks or [] if b]
+            if external:
+                # Persist the wait and its deadline atomically; a restart cannot lose the probe.
+                prior={b['id']:b for b in cursor.get('blocks',[])}
+                for block in external:
+                    old=prior.get(block['id'],{})
+                    block.update(at=old.get('at',block['at']),lastTry=old.get('lastTry'))
+                cursor.update(blocks=external,autoScope=None,wakeCounts={b['id']:cursor.get('wakeCounts',{}).get(b['id'],0) for b in external})
+                self._continuous_update(cid,state='waiting_external',reason=reason,cursor=cursor)
+                raise Halt()
+            stage=cursor.get('stage')
+            stage={'assets':'asset_design','delivery':'prompts','package':'prompts'}.get(stage,stage)
+            phase=cursor.get('judgmentKind') if cursor.get('phase')=='judgment' else stage
+            key=str(stage)+':'+str(phase)
+            history=cursor.setdefault('repairHistory',{})
+            attempts=history.setdefault(key,[])
+            if stage in workflow.ORDER:
+                for method in ('patch','simplify','rebuild'):
+                    if any(entry['method']==method for entry in attempts):continue
+                    attempts.append(dict(method=method,reason=reason,runId=cursor.get('runId')))
+                    cursor.update(nextRepair=dict(stage=stage,reason=reason,method=method),queue=[],formatRound=cursor.get('formatRound',0)+1)
+                    if repair_base:cursor['nextRepair']['baseVersionId']=repair_base
+                    self._continuous_update(cid,cursor=cursor,reason=reason)
+                    raise UserChange()
+            self._continuous_update(cid,state='failed',reason='无法产出通过校验的阶段稿：'+reason,cursor=cursor,choice=None)
         raise Halt()
 
     def _continuous_user_stamp(self, db, eid, owned):
@@ -231,7 +292,7 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
                 cursor.setdefault('formatSwitches',{})[run['id']]=detail
                 if not db.execute("SELECT 1 FROM ai_decision WHERE continuous_id=? AND kind='retry_executor' AND ref=?",(cid,run['id'])).fetchone():
                     stage=row(db,'SELECT stage FROM task WHERE id=?',task_id)['stage']
-                    action_text = f"导演继续后用 {run['provider']} 重试" if parent['provider'] == run['provider'] else f"回包未通过格式或契约校验，换 {run['provider']} 重试"
+                    action_text = f"自动改用 {run['provider']} 重试" if parent['provider'] == run['provider'] else f"回包未通过格式或契约校验，换 {run['provider']} 重试"
                     db.execute('INSERT INTO ai_decision VALUES(?,?,?,?,?,?,?,?,NULL,?)',
                                (new_id(),cid,episode,stage,'retry_executor',run['id'],
                                 action_text,dumps(detail),self.clock()))
@@ -244,8 +305,9 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
 
     def _format_retry(self, cid, run, cursor):
         with connect(self.db_path) as db:
-            ancestor=run['id']; switched=None; switched_from=None
-            while True:
+            ancestor=run['id']; switched=None; switched_from=None; visited=set()
+            while ancestor not in visited:
+                visited.add(ancestor)
                 origin=self._retry_origin(db,cid,ancestor)
                 if not origin or origin[0]=='manual':break
                 if origin[0]=='format-switch':
@@ -260,16 +322,20 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
         reason=run.get('diagnostic') or (run.get('reason') or '').split(' → 已重试为 ')[0]
         if switched:
             verb='重试过一次' if switched_from==run['provider'] else '换过一次执行器'
-            self._continuous_stop(cid,'blocked',f"本轮已{verb}（{run['provider']}），仍未通过：{reason}")
-        candidates=[plan.get('review',{}),self.episode_expert(eid),dict(provider='codex')]
-        seen={run['provider']}
+            if candidate_scope.get()==cid:raise CandidateRejected(reason)
+            self._continuous_problem(cid,f"本轮已{verb}（{run['provider']}），仍未通过：{reason}")
+        has_manuscript=(self.store.run_dir(run['id'])/'failed-result.json').is_file()
+        expert=self.episode_expert(eid)
+        candidates=[expert,plan.get('review',{})] if has_manuscript else [plan.get('review',{}),expert]
+        candidates.append(dict(provider='codex'))
+        seen=set() if has_manuscript else {run['provider']}
         for slot in candidates:
             provider=slot.get('provider')
             if not provider or provider in seen or provider not in self.executors:continue
-            seen.add(provider)
             connection=self.run_connection(provider,slot.get('model'),slot.get('effort'))
             try:self.validate_selection(provider,connection['model'],connection['effort'])
             except Rejected:continue
+            seen.add(provider)
             return self.retry_run(run['id'],provider=provider,model=connection['model'],effort=connection['effort'],
                                   command_id=f"{cid}:format-switch:{cursor.get('formatRound',0)}:{run['id']}")['runId']
         if cursor.get('formatRound',0)>0 and run['provider'] in self.executors:
@@ -280,7 +346,8 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
                                       command_id=f"{cid}:format-switch:{cursor.get('formatRound',0)}:{run['id']}")['runId']
             except Rejected:
                 pass
-        self._continuous_stop(cid,'blocked',f'回包未通过格式或契约校验，没有其他可用执行器：{reason}')
+        if candidate_scope.get()==cid:raise CandidateRejected(reason)
+        self._continuous_problem(cid,f'回包未通过格式或契约校验，没有其他可用执行器：{reason}')
 
     def _continuous_checkpoint(self, cid):
         from .continuous_images import cursor_lock
@@ -302,7 +369,8 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
                 elif claimed:
                     db.execute('UPDATE continuous_run SET cursor=? WHERE id=?',(dumps(cursor),cid))
         if value['pause_requested']:
-            self._continuous_stop(cid,'paused','已暂停，可继续')
+            self._continuous_update(cid,state='paused',reason='已按你的要求暂停')
+            raise Halt()
         if changed:raise UserChange()
         return value
 
@@ -337,7 +405,9 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
             with connect(self.db_path) as db:
                 run=dict(row(db,'SELECT * FROM run WHERE id=?',rid))
             if run['purpose'] in ('cold_read','comparison'):
-                if run['status']=='running':raise RunWait()
+                if run['status'] in ('running','preparing'):
+                    self._continuous_cursor(cid,waitingRun=rid)
+                    raise RunWait()
                 if run['status']=='queued':
                     with transaction(self.db_path) as db:
                         self._finish(rid,'stopped',reason='旧09总体独审已退出流程，由提示词本步检查接续',db=db)
@@ -356,7 +426,7 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
                     self._continuous_update(cid,cursor=cursor)
                     continue
                 if run['status']!='waiting_quota' and cursor.get('retried',{}).get(rid):
-                    self._continuous_stop(cid,'blocked',run.get('diagnostic') or run.get('reason') or '运行失败',blocks=self._run_blocks(run))
+                    self._continuous_problem(cid,run.get('diagnostic') or run.get('reason') or '运行失败',blocks=self._run_blocks(run))
                 retry=self.retry_run(rid,command_id=f'{cid}:retry:{rid}',**self._continuous_retry_slot(cid,run))['runId']
                 cursor['queue'][0]=retry
                 cursor.setdefault('retried',{})[retry]=True
@@ -366,18 +436,15 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
             with connect(self.db_path) as db:
                 run=dict(row(db,'SELECT * FROM run WHERE id=?',rid))
             if run['status']=='waiting_quota':
-                self._continuous_stop(cid,'waiting_quota','执行器额度用完，恢复后点继续',blocks=self._run_blocks(run))
+                self._continuous_problem(cid,'执行器额度用完，等待自动恢复',blocks=self._run_blocks(run))
             if run['status']=='failed':
                 continue
             if run['status']!='succeeded':
-                if run['purpose']=='image_assess' and run['status'] in ('running','preparing'):
-                    from .continuous_images import MaterialWait
-                    raise MaterialWait('正在评估图片',running=True)
                 if run['status'] in ('running','preparing'):
                     self._continuous_cursor(cid,waitingRun=rid)
                     self._continuous_update(cid,reason=None)
                     raise RunWait()
-                self._continuous_stop(cid,'blocked',run.get('reason') or '运行尚未完成')
+                self._continuous_problem(cid,run.get('reason') or '运行尚未完成')
             cursor=self._continuous_record(cid)['cursor']
             cursor.pop('waitingRun',None)
             cursor['queue']=[*cursor['queue'][1:],*follow]
@@ -409,7 +476,7 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
             errors=check_story(version['content'])
             if value['target_stage']=='delivery' and not str(version['content'].get('title','')).strip():
                 errors.append('故事稿须提供 title 标题')
-            if errors: self._continuous_stop(cid,'blocked','；'.join(errors))
+            if errors: self._continuous_problem(cid,'；'.join(errors))
         gate=self.adoption_gate(vid)
         gate['formatErrors'].extend(self._continuous_note_errors(eid,stage,version['content']))
         if stage=='prompts':
@@ -419,7 +486,7 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
             self._continuous_execute(cid,self.submit_review(vid,f'{cid}:adoption-review:{vid}')["runId"])
             gate=self.adoption_gate(vid)
         if gate['formatErrors'] or gate['blocking']:
-            self._continuous_stop(cid,'blocked','；'.join(gate['formatErrors']) or '仍有必须修正的问题')
+            self._continuous_problem(cid,'；'.join(gate['formatErrors']) or '仍有必须修正的问题')
         for issue in gate['unresolved']:
             self.waive(issue,vid,'连续制作：普通意见按本版放行（AI）',f'{cid}:waive:{issue}')
             self._continuous_log(cid,stage,'waive',issue,'普通意见按本版放行',dict(versionId=vid))
@@ -439,7 +506,7 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
 
         self._continuous_confirm_supplements(cid,stage)
 
-    def _continuous_create(self,cid,stage,goal=None,base=None,auto=False,readonly=False,prompt_images=None):
+    def _continuous_create(self,cid,stage,goal=None,base=None,auto=False,readonly=False,prompt_images=None,format_repair=False,rebuild=False):
         value=self._continuous_checkpoint(cid); eid=value['episode_id']
         art=self._continuous_art(eid,stage)
         with connect(self.db_path) as db:
@@ -448,11 +515,13 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
         self._continuous_cursor(cid,stage=stage,phase='draft',base=baseline)
         executor={role:plan[role] for role in ('create','review')}
         if stage=='stress': executor['create']=plan['review']
+        if format_repair: executor['create']=self.episode_expert(eid)
         instruction=goal or (value['cursor'].get('storyGoal') if stage=='story' else None) or workflow.CONTINUOUS_GOALS[stage]
+        if stage=='plan' and not readonly:instruction+='\n每个镜头给出 visibleRoles（实际可见角色编号数组）和 propStates（道具状态对象）；空景用空数组，没有道具状态用空对象。按段选择 flex 或 grid；grid 段在 segments 中写 gridPrompt 和九项 cells，每项含本段 shotId 与 visual，不写素材版本编号。'
         if stage=='story' and value['target_stage']=='delivery':instruction+='\n故事稿须同时填写 title 标题。'
         job=self.create_task(eid,stage,instruction,auto_revise=auto,executor=executor,
                              base_version_id=base,prompt_images=((not readonly) if prompt_images is None else prompt_images) if stage=='prompts' else None,discussion_only=readonly,workspace_revision=art['revision'] if art and readonly else None,
-                             command_id=f'{cid}:create:{new_id()}')
+                             command_id=f'{cid}:create:{new_id()}',**({'rebuild':True} if rebuild else {}))
         self._continuous_cursor(cid,taskId=job['taskId'])
         self._continuous_execute(cid,job['runId'])
         return job
@@ -465,8 +534,6 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
         pending=next((v for v in reversed(art['versions']) if v.get('source_run_id') in cursor['ownedRuns'] and v['id']!=art['adopted_version_id'] and v['id'] not in cursor.get('ignoredVersions',[])),None) if art else None
         if cursor.get('userDrafts',{}).get(stage) and art:
             pending=next(v for v in art['versions'] if v['id']==cursor['userDrafts'][stage])
-            if stage=='story' and not pending['gate']['review']:
-                self._continuous_execute(cid,self.submit_review(pending['id'],f'{cid}:resume-review:{pending["id"]}')["runId"])
         if not pending:
             self._continuous_create(cid,stage,auto=stage=='story')
         art=self._continuous_art(eid,stage); version=pending or art['versions'][-1]
@@ -482,7 +549,9 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
             script=self._continuous_version(script_art['adopted_version_id']) if script_art and script_art['adopted_version_id'] else None
             errors.extend(writing_problems(stage,version['content'],script))
         if errors:
-            self._continuous_create(cid,stage,'按结构错误修正：'+'；'.join(errors),version['id'],auto=stage=='story')
+            self._continuous_create(cid,stage,('按结构错误修正：'+'；'.join(errors)+'。直接提交修正字段。先从当前稿提取已有内容，'
+                '如正文已有标题则提取标题，角色资料已有则整理成表并保留额外列。沿用原文事实、情节与其他条目，'
+                '只补确实缺失的信息；未涉及的字段从基版继承。'),version['id'],auto=stage=='story',format_repair=True)
             version=self._continuous_art(eid,stage)['versions'][-1]
         if stage=='story' and version['gate']['blocking']:
             history=[dict(goal=t['goal'],messages=t['messages'],reviews=[v['reviews'] for v in art['versions']]) for t in art['tasks']]
@@ -498,11 +567,17 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
 
     def _continuous_repair(self,cid,pid):
         self._continuous_cursor(cid,planId=pid,phase='repair')
+        previous=None
         while True:
             self._continuous_execute(cid)
             with connect(self.db_path) as db:
                 plan=dict(row(db,'SELECT * FROM repair_plan WHERE id=?',pid))
             if plan['state']!='open': return plan['state']
+            if plan['steps']==previous:
+                # An unchanged completed child cannot advance by being executed again.
+                self._continuous_cursor(cid,planId=None)
+                self._continuous_problem(cid,'返修计划没有登记子步骤结果：'+pid)
+            previous=plan['steps']
             step=next(s for s in json.loads(plan['steps']) if s['state']!='done')
             if step['state']=='adopt':
                 self._continuous_adopt(cid,step['stage'],step['versionId'])
@@ -522,13 +597,16 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
                 except UserChange:
                     continue
         finally:
-            if self._continuous_record(cid)['state'] in ('done','cancelled'):
-                self._continuous_cursor(cid,blocks=[],wakeCounts={},autoScope=None)
-            lock.release()
+            try:
+                if self._continuous_record(cid)['state'] in ('done','cancelled'):
+                    self._continuous_cursor(cid,blocks=[],wakeCounts={},autoScope=None)
+            finally:
+                lock.release()
 
     def _run_continuous(self,cid):
         try:
             value=self._continuous_checkpoint(cid); eid=value['episode_id']
+            if value['cursor'].get('nextRepair'):self._expert_repair_step(cid)
             if value.get('mode')=='fix':return self._run_continuous_fix(cid)
             if value['cursor'].get('phase')=='kickoff' and not self._continuous_kickoff(cid): return self._continuous_record(cid)
             value=self._continuous_checkpoint(cid)
@@ -560,17 +638,26 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
         except RunWait:
             pass
         except Halt:
-            self._commit_blocks(cid)
+            pass
         except Conflict as exc:
             self._continuous_checkpoint(cid)
-            self._continuous_update(cid,state='paused',reason=str(exc)+'；点继续后从实际状态接续')
-        except (Rejected,OSError,ValueError) as exc:
-            self._continuous_cursor(cid,blocks=[],wakeCounts={},autoScope=None,pendingBlocks=[])
-            self._continuous_update(cid,state='blocked',reason=str(exc))
+            cursor=self._continuous_record(cid)['cursor']
+            stamp=cursor.get('userStamp',[])
+            prior=cursor.get('conflictRecovery',{})
+            count=prior.get('count',0)+1 if prior.get('stamp')==stamp and prior.get('base')==cursor.get('base') else 1
+            if count>=3:
+                try:self._continuous_problem(cid,'同一基版多次发生写入冲突：'+str(exc))
+                except Halt:pass
+            else:
+                self._continuous_cursor(cid,pendingUserChange=True,conflictRecovery=dict(stamp=stamp,base=cursor.get('base'),count=count))
+                raise UserChange()
+        except Rejected as exc:
+            try:self._continuous_problem(cid,str(exc))
+            except Halt:pass
         except Exception as exc:
             logging.exception('Continuous production %s failed',cid)
             self._continuous_cursor(cid,blocks=[],wakeCounts={},autoScope=None,pendingBlocks=[])
-            self._continuous_update(cid,state='blocked',reason=f'执行中断：{type(exc).__name__}：{exc}')
+            self._continuous_update(cid,state='failed',reason=f'执行中断：{type(exc).__name__}：{exc}')
         return self._continuous_record(cid)
 
     def _continuous_stress(self,cid):
@@ -611,13 +698,23 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
             keys={i['id'] for i in issues}
             options={key:[o for o in content['options'] if o['issueId']==key] for key in keys}
             if any(cursor['rounds'].get(key,0)>=2 for key in keys) or any(not any(o.get('changesCore',True) is False for o in opts) for opts in options.values()):
-                stage=min((issue_stage(i['stage']) for i in content['issues'] if i['id'] in keys),key=STAGES.index)
+                targets=[issue_stage(i['stage']) for i in content['issues'] if i['id'] in keys]
+                if None in targets:
+                    self._continuous_problem(cid,'审查报告含有无法识别的返修阶段')
+                stage=min(targets,key=STAGES.index)
                 return self._continuous_choices(cid,'repair',stage,None)
             goal=('为每条必须修正的问题选择本轮返修方案。只能从给出的 options 中选择 changesCore 为 false 的方案；如果已用方案都失败，可写 newProposal（不改变目标、结局、核心看点）。reply 为 JSON 数组，每项 issueId、optionIndex（整数或 null）、newProposal（字符串或 null）、reason（一句话）。第二轮必须选择与第一轮不同的方案，或写出新的方案。\n'+dumps(dict(options=options,attempts=cursor['attempts'])))
             selected=None
+            with connect(self.db_path) as db:
+                saved=db.execute("SELECT detail FROM ai_decision WHERE continuous_id=? AND ref=? AND kind='choose_option' AND reverted_at IS NULL ORDER BY created_at DESC LIMIT 1",(cid,report['id'])).fetchone()
+            pending=all(cursor['attempts'].get(k) and cursor['attempts'][k][-1]['result']=='待复核' for k in keys)
+            cached=json.loads(saved['detail']).get('choices') if saved and pending else None
             for attempt in range(2):
-                job=self._continuous_create(cid,'stress',goal,readonly=True)
-                result=json.loads((self.store.run_dir(self._continuous_record(cid)['cursor']['runId'])/'result.json').read_text())
+                if cached and attempt==0:
+                    result={'reply':dumps(cached)}
+                else:
+                    self._continuous_create(cid,'stress',goal,readonly=True)
+                    result=json.loads((self.store.run_dir(self._continuous_record(cid)['cursor']['runId'])/'result.json').read_text())
                 try:
                     answer=json.loads(result['reply'])
                     if not isinstance(answer,list) or sorted(x['issueId'] for x in answer)!=sorted(keys):
@@ -632,7 +729,7 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
                             choice=index; method=options[key][index]['proposal']
                         else: raise ValueError('方案编号不存在或改变核心')
                         history=cursor['attempts'].get(key,[])
-                        if cursor['rounds'].get(key,0) and history and history[-1]['method']==method:
+                        if cursor['rounds'].get(key,0) and history and history[-1]['result']!='待复核' and history[-1]['method']==method:
                             raise ValueError('第二轮须换一种修法')
                         selected[key]=choice
                         x['method']=method
@@ -640,12 +737,21 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
                 except (ValueError,KeyError,TypeError) as exc:
                     selected=None
                     goal+='\n上次回包错误：'+str(exc)+'；请只修正格式和选择。'
-            if selected is None: self._continuous_stop(cid,'blocked','选方案回包两次不符合契约')
+            if selected is None:
+                selected={};answer=[]
+                for key in sorted(keys):
+                    previous={v['method'] for v in cursor['attempts'].get(key,[])}
+                    pick=next(((i,o) for i,o in enumerate(options[key]) if o.get('changesCore',True) is False and o['proposal'] not in previous),None)
+                    if pick is None:return self._continuous_choices(cid,'repair',issue_stage(next(v['stage'] for v in content['issues'] if v['id']==key)) or 'script',None)
+                    i,o=pick;selected[key]=i
+                    answer.append(dict(issueId=key,optionIndex=i,method=o['proposal'],reason='采用未试过且保留核心的现有修法'))
             for x in answer:
                 key=x['issueId']
+                if cached and attempt==0: continue
                 cursor['attempts'].setdefault(key,[]).append(dict(round=cursor['rounds'].get(key,0)+1,method=x['method'],result='待复核'))
             self._continuous_update(cid,cursor={**self._continuous_record(cid)['cursor'], 'attempts':cursor['attempts']})
-            self._continuous_log(cid,'stress','choose_option',report['id'],'按不改变核心的方案返修',dict(choices=answer))
+            if not cached or attempt!=0:
+                self._continuous_log(cid,'stress','choose_option',report['id'],'按不改变核心的方案返修',dict(choices=answer))
             job=self.start_repair_plan(eid,'report',f'{cid}:repair:{new_id()}',report['id'],selected,max_rounds=2)
             state=self._continuous_repair(cid,job['planId'])
             cursor=self._continuous_record(cid)['cursor']
@@ -671,6 +777,7 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
         keys={b['id'] for b in blockers if b['type']=='issue'}
         issues=[i for i in report['content']['issues'] if i['id'] in keys] if report else []
         candidates=[]
+        rejected=[]
         for key in ('A','B'):
             if kind=='story':
                 instruction='保留原故事核心，按第三种表现方式修订。' if key=='A' else '允许调整引发问题的情节元素，保留主题和主要角色。'
@@ -684,6 +791,7 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
                     proposal=self._continuous_discuss(cid,stage,'从以下不改核心的方案中推荐本次候选的具体改法，结合已失败的修法换一种表现方式。只写推荐方案与理由。'+dumps(dict(options=options,attempts=value['cursor']['attempts'])),base)
                     instruction='落实模型推荐的方案：'+proposal
             for retry in range(2):
+                token=candidate_scope.set(cid)
                 try:
                     self._continuous_create(cid,stage,instruction+' 提交完整阶段稿。'+('本候选上次不合格，请换另一种表现方式。' if retry else ''),base)
                     candidate=self._continuous_art(eid,stage)['versions'][-1]
@@ -691,7 +799,12 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
                         self._continuous_execute(cid,self.submit_review(candidate['id'],f'{cid}:candidate-review:{candidate["id"]}')['runId'])
                         candidate=self._continuous_art(eid,stage)['versions'][-1]
                     gate=self.adoption_gate(candidate['id'])
-                    if gate['formatErrors'] or gate['blocking'] or (stage=='story' and check_story(candidate['content'])): continue
+                    problems=list(gate['formatErrors'])+(check_story(candidate['content']) if stage=='story' else [])
+                    if gate['blocking']:
+                        problems.extend(str(item.get('reason') or item) if isinstance(item,dict) else str(item) for item in gate['blocking'])
+                    if problems:
+                        rejected.extend(problems)
+                        continue
                     for issue in gate['unresolved']:
                         self.waive(issue,candidate['id'],'连续制作：普通意见按本版放行（AI）',f'{cid}:waive:{issue}')
                         self._continuous_log(cid,stage,'waive',issue,'候选普通意见按本版放行',dict(versionId=candidate['id']))
@@ -699,77 +812,51 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
                     summary=self._continuous_discuss(cid,stage,'概括本候选与原采用版相比改了什么，最多三句，用给导演看的白话。只写摘要。',candidate['id'])
                     candidates.append(dict(key=key,label=('保留核心，换一种呈现' if key=='A' else '调整问题情节的版本'),stage=stage,versionId=candidate['id'],summary=summary,recommended=key=='A',check='独审通过' if stage=='story' else '结构与采用检查通过'))
                     break
-                except Halt:
-                    stopped=self._continuous_record(cid)
-                    if stopped['state']!='blocked': raise
-                    self._continuous_update(cid,state='running',reason=None)
-                    self._continuous_cursor(cid,queue=[],pendingBlocks=None)   # 候选内部停下已转回运行，不留待定稿的受阻项
-        current=None
-        if len(candidates)<2:
-            forbidden=[i for i in issues if i.get('category') in ('source','decision','required_setting','format')]
-            reason='；'.join(str(i.get('category'))+'：'+str(i.get('evidence') or i.get('problem')) for i in forbidden)
-            current=dict(stage=stage,versionId=base,label='当前版本',adoptable=kind=='repair' and not forbidden,disabledReason=('仅供对照：仍有必须修正的问题' if kind=='story' else reason or None))
-        title='两种改好的版本，请选一份'
-        if kind=='story' and not candidates:
-            with connect(self.db_path) as db:
-                problems=[dict(r) for r in db.execute('SELECT i.reason,s.content FROM issue i JOIN review r ON r.id=i.review_id LEFT JOIN setting_entry s ON s.id=i.setting_id WHERE r.version_id=? AND i.blocking=1',(base,))]
-            title='仍需处理：'+'；'.join(p['content'] or p['reason'] for p in problems)
-        choice=dict(kind=kind,title=title,candidates=candidates,current=current,free=True,stage=stage,reportVersionId=report['id'] if report else None,issueIds=sorted(keys),settings=kind=='story' and not candidates)
-        self._continuous_update(cid,choice=choice,state='waiting_choice',reason=title)
-        if not candidates and current and not current['adoptable'] and kind=='repair':
-            self._continuous_update(cid,state='blocked',reason=current['disabledReason'])
-        raise Halt()
-
-    def choose_continuous(self,continuous_id,choice_key,command_id=None,text=None,files=()):
-        lock=self._continuous_choice_locks.setdefault(continuous_id,threading.Lock())
-        if not lock.acquire(blocking=False): raise Conflict('正在处理此选择，请稍候')
-        try:
-            return self._choose_continuous(continuous_id,choice_key,command_id,text,files)
-        finally:
-            lock.release()
-
-    def _choose_continuous(self,continuous_id,choice_key,command_id=None,text=None,files=()):
-        value=self._continuous_record(continuous_id); choice=value['choice']; eid=value['episode_id']
-        if value['state']!='waiting_choice' or not choice: raise Conflict('当前没有待选稿件')
-        if choice['kind']=='preview':
-            if choice_key=='free':return self.fix_after_delivery(eid,text,command_id)
-            return self._choose_delivery_preview(value,choice_key)
-        if choice['kind'] in ('visual','image_failed'):return self._choose_image_card(value,choice_key,text,command_id,files)
-        if choice['kind']=='direction': return self._choose_direction(value,choice_key,text,files)
-        if choice['kind']=='kickoff_conflict': return self._choose_kickoff(value,choice_key,text,files)
-        current=choice.get('current')
-        candidate=next((c for c in choice['candidates'] if c['key']==choice_key),None)
-        if choice_key=='current':
-            if not current or not current['adoptable']: raise Rejected('当前版本只供对照，不能采用')
-        elif candidate is None:
-            raise Rejected('请选择卡片中可用的版本')
-        cursor=value['cursor']; cursor['ignoredVersions']=[v['id'] for a in self.episode_view(eid)['artifacts'] for v in a['versions']]; cursor.update(stressReports=0,rounds={},planId=None,queue=[],externalDrafts=False)
-        with transaction(self.db_path) as db:
-            claimed=db.execute("UPDATE continuous_run SET state='running',cursor=?,reason=NULL,pause_requested=0,updated_at=? WHERE id=? AND state='waiting_choice'",(dumps(cursor),self.clock(),continuous_id))
-            if claimed.rowcount!=1: raise Conflict('此选择已处理，请刷新进度')
-        try:
-            if choice_key=='current':
-                for key in choice['issueIds']:
-                    self.carry_stress_issue(eid,choice['reportVersionId'],key,'用户选择保持现状，带着问题继续','当前版本',f'{continuous_id}:carry:{key}:{command_id}')
+                except CandidateRejected as exc:
+                    rejected.append(str(exc))
+                    self._continuous_cursor(cid,queue=[])
+                finally:
+                    candidate_scope.reset(token)
+        if not candidates:
+            self._continuous_problem(cid,'候选均未通过检查：'+'；'.join(dict.fromkeys([str(i.get('evidence') or i.get('problem','')) for i in issues]+rejected)))
+        materials=dict(original=value['cursor'].get('storyGoal') or self._direction_inputs(eid)['idea'],
+                       issues=issues, current=self._continuous_version(base),
+                       candidates=[dict(key=c['key'],content=self._continuous_version(c['versionId'])) for c in candidates])
+        allowed={c['key'] for c in candidates}
+        def validate(answer):
+            if not isinstance(answer,dict) or answer.get('key') not in allowed or not isinstance(answer.get('reason'),str) or not answer['reason'].strip():
+                return ['须选择一个实际候选并写明理由']
+            return []
+        answer,_=self._continuous_bounded_json(cid,'返修选稿',base,
+            '代导演从已通过检查的实际稿件中选最合适的一份。优先保留原故事方向、结局、角色目标和核心看点，'
+            '比较具体动作能否解决审查问题，选择改动最小而有效的版本。直接决定。reply 为 {"key":"候选编号","reason":"具体理由"}。',
+            materials,validate,stage=stage,fallback=lambda:dict(key=next((c['key'] for c in candidates if c.get('recommended')),candidates[0]['key']),reason='选用已经通过检查、优先保留原故事方向的候选'))
+        candidate=next(c for c in candidates if c['key']==answer['key'])
+        self._continuous_log(cid,stage,'expert_judgment',candidate['versionId'],answer['reason'],dict(choice=answer,base=base))
+        cursor=self._continuous_record(cid)['cursor']
+        cursor.update(ignoredVersions=[v['id'] for a in self.episode_view(eid)['artifacts'] for v in a['versions']],
+                      stressReports=0,rounds={},planId=None,queue=[],externalDrafts=False)
+        self._continuous_update(cid,cursor=cursor,choice=None)
+        self._continuous_adopt(cid,stage,candidate['versionId'])
+        if kind=='repair':
+            with connect(self.db_path) as db: impacts=pending_changes(db,eid)
+            if impacts:
+                job=self.start_repair_plan(eid,'upstream',f'{cid}:expert-upstream:{candidate["versionId"]}')
+                self._continuous_repair(cid,job['planId'])
+            if keys:
+                job=self.start_repair_plan(eid,'verify',f'{cid}:verify-choice:{candidate["versionId"]}',report['id'],{key:True for key in keys})
+                result=self._continuous_repair(cid,job['planId'])
+                self._continuous_cursor(cid,planId=None)
+                if result=='unresolved':
+                    with connect(self.db_path) as db:
+                        steps=json.loads(row(db,'SELECT steps FROM repair_plan WHERE id=?',job['planId'])['steps'])
+                    findings=[f"{f['id']}：{f['note']}" for s in steps for f in s.get('findings',[]) if f['status']=='仍存在']
+                    self._continuous_cursor(cid,stage=stage)
+                    self._continuous_problem(cid,'专家修订后仍未解决：'+'；'.join(findings),repair_base=candidate['versionId'])
             else:
-                self._continuous_adopt(continuous_id,candidate['stage'],candidate['versionId'])
-                if choice['kind']=='repair':
-                    with connect(self.db_path) as db: impacts=pending_changes(db,eid)
-                    if impacts:
-                        job=self.start_repair_plan(eid,'upstream',f'{continuous_id}:choice-upstream:{command_id}')
-                        self._continuous_repair(continuous_id,job['planId'])
-                    self._continuous_create(continuous_id,'stress')
-                    fresh=self._continuous_art(eid,'stress')['versions'][-1]
-                    self._continuous_adopt(continuous_id,'stress',fresh['id'])
-                    self._continuous_cursor(continuous_id,stressReports=1,planId=None)
-            # Retain choice receipt for a comparison route that is still open.
-            choice['selected']=choice_key
-            self._continuous_update(continuous_id,choice=choice)
-            return self._advance_continuous(continuous_id)
-        except UserChange:
-            return self._advance_continuous(continuous_id)
-        except Halt:
-            return self._continuous_record(continuous_id)
-        except (Rejected,Conflict) as exc:
-            self._continuous_update(continuous_id,state='paused',reason=str(exc))
-            return self._continuous_record(continuous_id)
+                self._continuous_create(cid,'stress')
+                fresh=self._continuous_art(eid,'stress')['versions'][-1]
+                self._continuous_adopt(cid,'stress',fresh['id'])
+                self._continuous_cursor(cid,stressReports=1,planId=None)
+        # Restart the stage walk under the existing worker lock.
+        raise UserChange()

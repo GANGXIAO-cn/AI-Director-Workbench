@@ -11,8 +11,8 @@ class ContinuousFixes:
         if not isinstance(text,str) or not text.strip():raise Rejected('请说明想改哪里')
         with connect(self.db_path) as db:
             if not db.execute('SELECT 1 FROM delivery WHERE episode_id=?',(episode_id,)).fetchone():raise Rejected('本集尚未交付，请在对应阶段说明修改要求')
-            active=db.execute("SELECT state,choice FROM continuous_run WHERE episode_id=? AND state NOT IN ('done','cancelled')",(episode_id,)).fetchone()
-            if active and (active['state']!='waiting_choice' or json.loads(active['choice'] or '{}').get('kind')!='preview'):raise Conflict('本集正在制作或修改，请在当前进度继续')
+            active=db.execute("SELECT state,choice FROM continuous_run WHERE episode_id=? AND state NOT IN ('done','cancelled','failed')",(episode_id,)).fetchone()
+            if active:raise Conflict('本集正在制作或修改，请在当前进度继续')
 
     def fix_after_delivery(self,episode_id,text,command_id=None):
         with connect(self.db_path) as db:prior=self._existing_command(db,command_id,'fix_after_delivery',[episode_id,text]) if command_id else None
@@ -21,7 +21,7 @@ class ContinuousFixes:
         with transaction(self.db_path) as db:
             def create():
                 parent=db.execute('SELECT * FROM continuous_run WHERE episode_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1',(episode_id,)).fetchone()
-                if parent and parent['state'] not in ('done','cancelled'):
+                if parent and parent['state'] not in ('done','cancelled','failed'):
                     db.execute("UPDATE continuous_run SET state='done',reason='已接续到本次反馈处理' WHERE id=?",(parent['id'],))
                 cid=new_id();cursor=dict(base=adopted(db,episode_id),ownedRuns=[],queue=[],rounds={},attempts={},stressReports=0,userStamp=self._continuous_user_stamp(db,episode_id,[]),imageOptions=json.loads(parent['cursor']).get('imageOptions',{}) if parent else {},fixText=text,fixIndex=0,fixPhase='classify',priorChoice=json.loads(parent['choice']) if parent and parent['choice'] else None,priorState=parent['state'] if parent else None)
                 db.execute('INSERT INTO continuous_run(id,episode_id,target_stage,state,cursor,created_at,updated_at,parent_id,mode,scope) VALUES(?,?,?,?,?,?,?,?,?,?)',(cid,episode_id,'delivery','running',dumps(cursor),self.clock(),self.clock(),parent['id'] if parent else None,'fix','[]'))
@@ -41,9 +41,7 @@ class ContinuousFixes:
         if answer['kind']=='discussion':
             prior=value['cursor'].get('priorChoice')
             self._continuous_cursor(cid,fixPhase='discussion',reply=answer['instruction'])
-            if prior and prior.get('kind')=='preview' and value['cursor'].get('priorState')=='waiting_choice':
-                self._continuous_update(cid,state='waiting_choice',choice=dict(prior,reply=answer['instruction']),reason=answer['instruction'])
-            else:self._continuous_update(cid,state='done',reason=answer['instruction'])
+            self._continuous_update(cid,state='done',choice=None,reason=answer['instruction'])
             return False
         scenes={s['id'] for s in context['adopted'].get('script',{}).get('content',{}).get('scenes',[])}
         needs={n['needKey'] for n in context['needs']}
@@ -108,7 +106,7 @@ class ContinuousFixes:
             content['segments']={sid:content.get('segments',{}).get(sid,entry) if sid in segment_ids else entry for sid,entry in old['segments'].items()}
             required=task.get('standardSceneVersionId')
             if required and any(not any(ref['assetVersionId']==required for ref in content['segments'][sid]['refs']) for sid in task['segments']):
-                self._continuous_stop(cid,'blocked','连续性修订未让两段都引用标准场景图')
+                self._continuous_problem(cid,'连续性修订未让两段都引用标准场景图')
         if content!=candidate['content']:
             with transaction(self.db_path) as db:new=self._new_version(db,art['id'],candidate['id'],'manual',content,baseline_from=candidate['id'])
             vid=self._continuous_internal_version(cid,new)
@@ -133,8 +131,6 @@ class ContinuousFixes:
                 need=self._need(eid,key)
                 self.set_asset_need(eid,key,need['revision'],'generate',f'{cid}:fix-image:{token}',prompt=need['image_prompt']+'\n'+task['instruction'])
                 self._image_state(cid,key,attempts=[],retiredCandidates=list(need['candidates']),libraryChecked=True,assessedRevision=None,fixPrepared=token,epoch=token)
-            state=self._image_state(cid,key)
-            if not state['attempts']:self._image_generate(cid,self._need(eid,key))
         if not self._continuous_images(cid):return False
         mapping={old:self._need(eid,key)['adopted_version_id'] for key,old in receipt.items() if old}
         prompts=self._continuous_art(eid,'prompts');content=self._continuous_version(prompts['adopted_version_id'])
@@ -151,7 +147,7 @@ class ContinuousFixes:
             if item['segment'] not in affected:continue
             for role,cell in item['cells'].items():
                 if cell.get('assetVersionId') in mapping:self.set_cast(eid,item['segment'],role,cell['status'],mapping[cell['assetVersionId']],cells=cell.get('cells',[]),note=cell.get('note',''),command_id=f'{cid}:rebind:{item["segment"]}:{role}')
-        task=dict(task,segments=sorted(affected),instruction=task['instruction']+'\n旧图替换为新图，更新对应引用与逐镜观察：'+dumps(mapping))
+        task=dict(task,segments=sorted(affected),instruction=task['instruction']+'\n旧图替换为新图，更新对应引用，不另发图片评审：'+dumps(mapping))
         self._fix_stage(cid,'prompts',task)
         self._continuous_cursor(cid,fixImageReceipt=None)
         return True
@@ -163,17 +159,14 @@ class ContinuousFixes:
             context=self._fix_context(eid)
             adopted_scenes={n['adopted_version_id'] for n in self.asset_worksheet(eid)['rows'] if n['kind']=='scene' and n['adopted_version_id']}
             images=[a for a in self.episode_assets(eid) if a['id'] in adopted_scenes]
-            ids={a['id'] for a in images};assessments=[]
-            ordered=sorted(ids)
-            for offset in range(0,len(ordered),4):
-                assessments.extend(self.assess_images(eid,ordered[offset:offset+4],f'{cid}:continuity-scene:{cursor["fixIndex"]}:{offset}',context=dict(use='核对是否为无角色、无剧情状态的标准场景图',task=task),continuous_id=cid))
-            instruction='读取所附两段原图和当前提示词，具体指出空间、站位、道具、光线哪里对不上。为两段选同一张已采用、无角色无剧情状态的标准场景图；没有合适的则要求新增。reply JSON {"explanation":"具体不一致及准备改法，一两句话","sceneVersionId":"现有标准场景图版本或 null","newSceneInstruction":"需要新图时的清晰场景要求，否则空串","stateNeedKeys":[]}。stateNeedKeys 仅列必须以该场景为基准统一的现有状态图条目。\n'+dumps(dict(task=task,context=context,images=images,actualAssessments=assessments))
+            ids={a['id'] for a in images}
+            instruction='按本次连续性反馈和两段既有绑定，选用同一张已采用的标准场景图；不复审图片质量，不虚构看图观察。没有适用的场景才要求新增。reply JSON {"explanation":"已有依据和改法","sceneVersionId":"已采用场景图版本或 null","newSceneInstruction":"需要新图时的清晰要求，否则空串","stateNeedKeys":[]}。仅列需要同步的状态图。\n'+dumps(dict(task=task,context=context,images=images))
             keys={n['needKey'] for n in context['needs']}
-            selected=self._continuous_json(cid,'prompts',instruction,lambda a:isinstance(a,dict) and isinstance(a.get('explanation'),str) and bool(a['explanation'].strip()) and (a.get('sceneVersionId') in ids or a.get('sceneVersionId') is None and isinstance(a.get('newSceneInstruction'),str) and bool(a['newSceneInstruction'].strip())) and isinstance(a.get('stateNeedKeys'),list) and set(a['stateNeedKeys'])<=keys,base=context['adopted']['prompts']['versionId'],prompt_images=True)
+            selected=self._continuous_json(cid,'prompts',instruction,lambda a:isinstance(a,dict) and isinstance(a.get('explanation'),str) and bool(a['explanation'].strip()) and (a.get('sceneVersionId') in ids or a.get('sceneVersionId') is None and isinstance(a.get('newSceneInstruction'),str) and bool(a['newSceneInstruction'].strip())) and isinstance(a.get('stateNeedKeys'),list) and set(a['stateNeedKeys'])<=keys,base=context['adopted']['prompts']['versionId'],prompt_images=False)
             # A choice must be an actually adopted scene image, not a rejected candidate.
             if selected['sceneVersionId']:
                 allowed={n['adopted_version_id'] for n in self.asset_worksheet(eid)['rows'] if n['kind']=='scene'}
-                if selected['sceneVersionId'] not in allowed:self._continuous_stop(cid,'blocked','连续性修订选中的标准场景图尚未采用')
+                if selected['sceneVersionId'] not in allowed:self._continuous_problem(cid,'连续性修订选中的标准场景图尚未采用')
             self._continuous_cursor(cid,continuitySelection=selected)
             self._continuous_log(cid,'prompts','apply_user_change',cid,selected['explanation'],dict(task=task,phase='planned'))
         if not selected['sceneVersionId']:
@@ -182,8 +175,8 @@ class ContinuousFixes:
                 self._continuous_create(cid,'asset_design','保留全部已有条目，新增一个不含角色和剧情状态的标准场景图条目，用于以下两段共用空间；不要设为 keyVisual。'+task['instruction']+'\n'+selected['newSceneInstruction'],base=art['adopted_version_id'])
                 new=self._continuous_art(eid,'asset_design')['versions'][-1]
                 added=[item for item in new['content']['assets'] if item['id'] not in {a['id'] for a in old['assets']}]
-                if len(added)!=1 or added[0]['kind']!='scene':self._continuous_stop(cid,'blocked','连续性修订须新增一个标准场景图条目')
-                if any(next((a for a in new['content']['assets'] if a['id']==item['id']),None)!=item for item in old['assets']):self._continuous_stop(cid,'blocked','标准场景新增改动了原素材条目')
+                if len(added)!=1 or added[0]['kind']!='scene':self._continuous_problem(cid,'连续性修订须新增一个标准场景图条目')
+                if any(next((a for a in new['content']['assets'] if a['id']==item['id']),None)!=item for item in old['assets']):self._continuous_problem(cid,'标准场景新增改动了原素材条目')
                 self._continuous_adopt(cid,'asset_design',new['id'])
                 selected['newNeedKey']=added[0]['id'];self._continuous_cursor(cid,continuitySelection=selected)
             if not self._continuous_images(cid):return False
@@ -213,7 +206,7 @@ class ContinuousFixes:
         task=dict(task,standardSceneVersionId=scene,instruction=task['instruction']+'\n'+selected['explanation']+'\n两段都必须引用标准场景图 '+scene+'；前段结尾与后段开场按同一空间、站位、道具状态和光线写明，保留用户原话。')
         vid=self._fix_stage(cid,'prompts',task)
         if any(not any(ref['assetVersionId']==scene for ref in self._continuous_version(vid)['segments'][sid]['refs']) for sid in task['segments']):
-            self._continuous_stop(cid,'blocked','连续性修订未让两段都引用标准场景图')
+            self._continuous_problem(cid,'连续性修订未让两段都引用标准场景图')
         self._continuous_cursor(cid,continuitySelection=None)
         return True
 

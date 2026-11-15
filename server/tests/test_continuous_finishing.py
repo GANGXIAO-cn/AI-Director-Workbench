@@ -6,8 +6,8 @@ from workbench.executors.fake import review,draft
 from test_image_assess import assessment,reply
 
 
-def finishing_fixture(tmp_path,scoped=False,config="_template"):
-    env=Env(tmp_path);case=env.full_episode(config=config,segments={'G01':[4000,4000],'G02':[8000]},deliver=False)
+def finishing_fixture(tmp_path,scoped=False,config="_template",**options):
+    env=Env(tmp_path);case=env.full_episode(config=config,segments={'G01':[4000,4000],'G02':[8000]},deliver=False,**options)
     eid=case['eid'];wb=env.wb;face=case['img']['versionId']
     if scoped:
         for shot in case['plan']['shots']:shot.update(visibleRoles=['阿福'],propStates={})
@@ -20,12 +20,9 @@ def finishing_fixture(tmp_path,scoped=False,config="_template"):
         for sid,entry in prompts['segments'].items():entry['refs'][0]['shots']=[s['id'] for s in case['plan']['shots'] if s['segment']==sid]
     vid=wb.save_manual(env.art(eid,'prompts')['id'],case['prompts'],prompts,'candidate')['versionId']
     if not scoped:env.review_segments(vid,['G01','G02'],cid='candidate-baseline')
-    run=wb.start_continuous(eid,command_id='run')
-    wb._continuous_update(run['id'],state='running',reason=None)
-    # The fixture's candidate precedes continuous execution and is not a user edit.
-    with env.db() as db:baseline={r['stage']:r['adopted_version_id'] for r in db.execute('SELECT stage,adopted_version_id FROM artifact WHERE episode_id=? AND adopted_version_id IS NOT NULL',(eid,))}
-    wb._continuous_cursor(run['id'],base=baseline)
-    return env,case,run['id'],vid
+    from test_continuous_wake import run_record
+    cid=run_record(env,eid)
+    return env,case,cid,vid
 
 
 def test_I_T2_observations_chain_final_review_and_adoption(tmp_path,monkeypatch):
@@ -43,25 +40,19 @@ def test_I_T2_observations_chain_final_review_and_adoption(tmp_path,monkeypatch)
     content=wb._continuous_version(final)
     assert all(not e['refs'][0].get('visualReviewId') for e in content['segments'].values())
     assert not wb.adoption_gate(final)['formatErrors']
-    before=len(env.claude.calls)
-    assert wb._continuous_prompt_reviews(cid,final)==final
-    calls=env.claude.calls[before:]
-    assert len(calls)==4
-    with env.db() as db:
-        assert all(db.execute('SELECT target_version_id FROM run WHERE id=?',(req.run_id,)).fetchone()[0]==final for req in calls)
+    before=len(env.codex.calls)+len(env.claude.calls)
+    assert wb._continuous_prompt_checks(cid,final)==final
+    assert len(env.codex.calls)+len(env.claude.calls)==before
     wb._continuous_adopt(cid,'prompts',final)
     assert env.art(eid,'prompts')['adopted_version_id']==final
     assert not wb._continuous_record(cid)['cursor'].get('pendingUserChange')
 
 
-def test_I_T4_ordinary_segment_issue_auto_waived_and_logged(tmp_path):
+def test_plain_prompt_needs_no_extra_model_review(tmp_path):
     env,case,cid,vid=finishing_fixture(tmp_path);wb=env.wb
-    wb.save_step_config(case['eid'],'prompts',keep='本次核对措辞')
-    env.claude.script=[lambda req:review(req,'return',[dict(category='clarity',reason='措辞可精简')])]*4
-    assert wb._continuous_prompt_reviews(cid,vid)==vid
-    assert all(item['ok'] for item in wb.prompt_review_status(vid).values())
-    decisions=wb.continuous_view(case['eid'])['decisions']
-    assert len([d for d in decisions if d['kind']=='waive_segment'])==2
+    before=tuple(len(e.calls) for e in (env.codex,env.claude))
+    assert wb._continuous_prompt_checks(cid,vid)==vid
+    assert tuple(len(e.calls) for e in (env.codex,env.claude))==before
 
 
 def test_I_T1_unclear_cast_bound_and_unbound_resolved(tmp_path):
@@ -76,35 +67,19 @@ def test_I_T1_unclear_cast_bound_and_unbound_resolved(tmp_path):
     assert len([d for d in wb.continuous_view(eid)['decisions'] if d['kind']=='fill_observation'])>=2
 
 
-def test_I_T3_blocking_two_rounds_repairs_only_affected_segment(tmp_path):
-    env,case,cid,vid=finishing_fixture(tmp_path);wb=env.wb;eid=case['eid'];before=len(env.claude.calls);count=[]
-    # Change G01 only; G02 and its join remain untouched, so the hash-based
-    # scope computation can reuse its completed review.
+def test_prompt_repair_targets_only_invalid_segment(tmp_path,monkeypatch):
+    env,case,cid,vid=finishing_fixture(tmp_path);wb=env.wb
     original=wb._continuous_version(vid)
-    original['segments']['G01']['txt']+='\n检查动作。'
-    new=wb.save_manual(env.art(eid,'prompts')['id'],vid,original,'changed')['versionId']
-    wb._continuous_internal_version(cid,new)
-    def reviewer(req):
-        from workbench.executors.fake import context
-        ctx=context(req.prompt)
-        if ctx['segment']=='G01' and ctx['passName']=='cold_read':
-            count.append(req.run_id)
-            if len(count)<=2:return review(req,'return',[dict(category='source',reason='动作缺来源')])
-        return review(req)
-    env.claude.script=[reviewer]*20
-    def creator(req):
-        if '判断阻断意见' in req.prompt:return reply(dict(kind='wording',reason='补明已有动作的主语'))(req)
-        content=wb._continuous_version(wb._continuous_art(eid,'prompts')['versions'][-1]['id'])
-        content['segments']['G01']['txt']+='\n阿福主动检查。'
-        return draft(req,segments=json.dumps({'G01':content['segments']['G01']}))
-    env.codex.script=[creator]*12
-    final=wb._continuous_prompt_reviews(cid,new)
-    assert len(count)==3
-    assert wb._continuous_version(final)['segments']['G02']==original['segments']['G02']
-    # The adjacent comparison includes G01's join; G02 cold read is reused.
-    assert all(wb.run_manifest(r.run_id)['manifest']['scope']=='G01' or r.purpose=='comparison' for r in env.claude.calls[before:])
-    wb._continuous_adopt(cid,'prompts',final)
-    assert env.art(eid,'prompts')['adopted_version_id']==final
+    old=original['segments']['G02'].copy()
+    original['segments']['G01']['txt']+=' 图片9'
+    invalid=wb.save_manual(env.art(case['eid'],'prompts')['id'],vid,original,'invalid-label')['versionId']
+    calls=[]
+    def fix(cid,base,affected,why):
+        calls.append((base,affected,why));return vid
+    monkeypatch.setattr(wb,'_continuous_prompt_revision',fix)
+    assert wb._continuous_prompt_checks(cid,invalid)==vid
+    assert len(calls)==1 and calls[0][:2]==(invalid,{'G01'})
+    assert wb._continuous_version(invalid)['segments']['G02']==old
 
 
 def test_I_T5_structure_splits_plan_updates_bindings_preserves_other_segment(tmp_path):
@@ -155,9 +130,9 @@ def test_I_T6_candidate_product_coverage_requires_record_mark_reference(tmp_path
     assert '商品入景覆盖不足' in wb._continuous_record(cid)['reason']
     assert env.art(eid,'prompts')['adopted_version_id']!=candidate
     wb.mark_image(eid,image,'required',['S01'],command_id='required-again')
-    wb._continuous_update(cid,state='running',reason=None)
-    wb._continuous_prompt_reviews(cid,candidate)
-    wb._continuous_adopt(cid,'prompts',candidate)
+    from test_continuous_wake import run_record
+    cid=run_record(env,eid)
+    wb._continuous_adopt(cid,'prompts',wb._continuous_prompt_checks(cid,candidate))
     assert env.art(eid,'prompts')['adopted_version_id']==candidate
 
 
@@ -177,6 +152,7 @@ def test_PN_T4_continuous_returns_unapplied_note_to_plan_and_finishes(tmp_path):
         db.execute('UPDATE continuous_run SET cursor=?,state=? WHERE id=?',(dumps(cursor),'running',cid))
     called=[]
     def executor(req):
+        if req.kind=='review':return review(req)
         manifest=wb.run_manifest(req.run_id)['manifest'];stage=manifest['stage']
         if req.purpose=='image_assess':return reply([assessment(face,observation='阿福可见',props={})])(req)
         called.append(stage)
@@ -190,7 +166,7 @@ def test_PN_T4_continuous_returns_unapplied_note_to_plan_and_finishes(tmp_path):
     assert 'plan' not in called
     adopted_prompt=env.art(eid,'prompts')['adopted_version_id']
     assert not wb._continuous_note_errors(eid,'prompts',wb._continuous_version(adopted_prompt))
-    assert all(item['ok'] for item in wb.prompt_review_status(adopted_prompt).values())
+    assert not wb.adoption_gate(adopted_prompt)['formatErrors']
 
 
 import pytest
@@ -220,25 +196,16 @@ def test_I_T7_prompt_supplement_decided_before_adoption(tmp_path,conflict):
 def test_I_entry_from_07_finishes_09_and_resumes_without_new_drafts(tmp_path,monkeypatch):
     from workbench import promptdraft
     env,case,cid,vid=finishing_fixture(tmp_path,True);wb=env.wb;eid=case['eid']
-    wb.cancel_continuous(cid)
-    # J now follows I; isolate this test at the verified 09 boundary. J-T2
-    # separately exercises real delivery and package creation.
-    monkeypatch.setattr(wb,'_continuous_delivery',lambda c:wb._continuous_update(c,state='blocked',reason='01–09 已完成；交付预览调度将在 J/K 包接入'))
-    def scripted(req):
-        if req.purpose=='image_assess':
-            ids=[re.search(r'候选-([a-f0-9-]+)',p.name)[1] for p in req.images if '候选-' in p.name]
-            return reply([assessment(i,observation='可见场景和柴犬阿福',props={}) for i in ids])(req)
-        content=promptdraft.draft(wb,eid)
-        return draft(req,segments=json.dumps(content['segments']))
-    env.codex.script=[scripted]*30
-    result=wb.start_continuous(eid,target_stage='delivery',command_id='full')
-    assert result['reason']=='01–09 已完成；交付预览调度将在 J/K 包接入',result['reason']
-    final=env.art(eid,'prompts')['adopted_version_id']
-    assert final!=case['prompts'] and all(item['ok'] for item in wb.prompt_review_status(final).values())
-    count=len(env.art(eid,'prompts')['versions'])
-    result=wb.resume_continuous(result['id'],'resume')
-    assert result['reason']=='01–09 已完成；交付预览调度将在 J/K 包接入',result['reason']
-    assert len(env.art(eid,'prompts')['versions'])==count
+    # Exercise the actual 07 → 08 → 09 boundary directly, without a synthetic stop.
+    assert wb._continuous_images(cid)
+    assert wb._continuous_finish_stages(cid)
+    art=env.art(eid,'prompts');final=art['adopted_version_id']
+    assert final and not wb.adoption_gate(final)['formatErrors']
+    versions=[v['id'] for v in art['versions']]
+    before=len(env.codex.calls)
+    assert wb._continuous_finish_stages(cid)
+    assert [v['id'] for v in env.art(eid,'prompts')['versions']]==versions
+    assert not any(c.purpose=='image_assess' for c in env.codex.calls[before:])
 
 
 def test_empty_scene_segment_chooses_existing_scene_reference(tmp_path,monkeypatch):
@@ -255,7 +222,7 @@ def test_empty_scene_segment_chooses_existing_scene_reference(tmp_path,monkeypat
     monkeypatch.setattr(wb,'asset_worksheet',lambda _:dict(rows=[dict(kind='scene',adopted_version_id=image,title='门厅',description='已采用门厅基准',scene_ids=['scene-1'])]))
     from workbench import imagechoices
     monkeypatch.setattr(imagechoices,'requirements',lambda *_:[])
-    def choose(cid,kind,key,instruction,materials,validate):
+    def choose(cid,kind,key,instruction,materials,validate,**kwargs):
         answer=dict(selections=[dict(segment=s['segment'],versionId=image,reason='同场门厅参考') for s in materials['segments']])
         assert not validate(answer)
         assert validate(dict(selections=[]))
@@ -264,3 +231,16 @@ def test_empty_scene_segment_chooses_existing_scene_reference(tmp_path,monkeypat
     monkeypatch.setattr(wb,'_continuous_bind',lambda *args,**kwargs:bound.append(args))
     wb._continuous_empty_scene_bindings(cid)
     assert len(bound)==2 and all(row[1]==image for row in bound)
+
+
+def test_format_error_targets_named_segment(monkeypatch,tmp_path):
+    env, _, cid, vid = finishing_fixture(tmp_path)
+    wb = env.wb
+    monkeypatch.setattr(wb,"adoption_gate",lambda _: {"formatErrors":["G01：参考标签与上传顺序不符"]})
+    scopes=[]
+    def revise(cid, vid, affected, instruction):
+        scopes.append(affected)
+        return vid
+    monkeypatch.setattr(wb,"_continuous_prompt_revision",revise)
+    assert wb._continuous_prompt_checks(cid,vid)==vid
+    assert scopes==[{"G01"}]

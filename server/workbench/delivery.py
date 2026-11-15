@@ -324,9 +324,9 @@ class DeliveryMixin:
         placements = self.product_placements(episode_id)
         if scope == "full" and placements["verified"] < placements["minimum"]:
             reason = "、".join(dict.fromkeys(p["issue"] for p in placements["records"] if p["issue"]))
-            problems.append(dict(stage="assets", segment=None, file=None,
+            problems.append(dict(stage="assets", kind="product_reference", segment=None, file=None,
                                  problem=f"商品入景覆盖 {placements['verified']}/{placements['minimum']}："
-                                         + (reason or "请在素材页关联镜头、场面与实际看图观察")))
+                                         + (reason or "对应镜头须绑定商品参考，并随该段交付")))
         frozen, choice_problems = imagechoices.check_scope(required, plan, scope, [s["id"] for s in segs], image_usage)
         problems.extend(choice_problems)
         for rule in frozen:
@@ -351,7 +351,7 @@ class DeliveryMixin:
         path = self.store._inside(self.store.root/source["relpath"])
         return dict(prior, path=str(path), html=str(path/"00_图文对照.html"))
 
-    def _deliver(self, episode_id, scope, command_id, segments=None, expert=None):
+    def _deliver(self, episode_id, scope, command_id, segments=None):
         payload = dict(e=episode_id, s=scope, g=segments)
         with connect(self.db_path) as db:
             prior = self._existing_command(db, command_id, "deliver", payload)
@@ -391,8 +391,6 @@ class DeliveryMixin:
                     raise Rejected("写入交付期间交接要求发生变化，请重新核验")
                 if self._cast_matrix(db, episode_id) != ctx["cast"]:
                     raise Rejected("写入交付期间角色设定发生变化，请重新核验")
-                if expert:
-                    self._expert_guard(db, expert, episode_id)
                 os.rename(staging, final)
                 db.execute("INSERT INTO delivery VALUES(?,?,?,?,?,?,?,?,?,?)",
                            (did, episode_id, scope, dumps([s["id"] for s in segs]), manifest_hash,
@@ -523,6 +521,12 @@ class DeliveryMixin:
                 shotrefs.export_packets(root,manifest,put,packets=packets)
         placements = ctx["placements"]
         for p in placements:
+            if p.get('drawingReference'):
+                review_lines.append(f"- 商品 {p['code']} · {p['segment']}/{p['shot_id']} · 主图仅作九宫格绘制参考，视频只接收本段九宫格 {p['scene_version']} · 动态 not_tested")
+                continue
+            if p.get('directReference'):
+                review_lines.append(f"- 商品 {p['code']} {p['product']['name']} · {p['segment']}/{p['shot_id']} · 独立商品参考 {p['scene_version']} · 交付文件 {next(a['sha256'] for a in assets if a['id']==p['scene_version'])} · 目录原图 {p['product']['sha256']} · 动态 not_tested")
+                continue
             review_lines.append(f"- 商品 {p['code']} {p['product']['name']} · {p['segment']}/{p['shot_id']} · 场面版本 {p['scene_version']} · "
                                 f"主图 {p['product']['sha256']} · 看图观察：{p['observation']} · 动态 not_tested")
         put("review.md", "\n".join(review_lines).encode())

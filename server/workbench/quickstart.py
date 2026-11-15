@@ -121,18 +121,30 @@ class QuickStartMixin:
             retry=cursor.setdefault('attempts',{}).get('kickoff',0)
             if check['state']=='failed':
                 retry+=1;cursor['attempts']['kickoff']=retry;self._continuous_update(cid,cursor=cursor)
+            if retry:slot=args['executor_plan'].get('expert') or slot
             check=self.kickoff_check_run(source,check['basis'],slot['provider'],slot.get('model'),slot.get('effort'),cid+':kickoff:'+check['basis']+(f':{retry}' if retry else ''))
-            if check['state']!='done': self._continuous_stop(cid,'blocked',check['error'] or '开工核对未完成',blocks=self._run_blocks(dict(check,role='kickoff')))
+            self._continuous_checkpoint(cid)  # The director may have cancelled during the external call.
+            if check['state']!='done':
+                external=self._run_blocks(dict(check,role='kickoff'))
+                if external:self._continuous_problem(cid,check['error'] or '开工核对等待通道',blocks=external)
+                if check['state']=='running':
+                    self._continuous_problem(cid,'开工核对正在执行',blocks=[self._recovery_block('run:kickoff:check','transient',role='kickoff')])
+                if retry<2:
+                    from .continuous import UserChange
+                    raise UserChange()
+                # A malformed optional comparison cannot veto a story: retain all
+                # project rules in the actual kickoff snapshot and story instructions.
+                self._continuous_log(cid,'story','decide_skip',check['basis'],'核对回包不可用，起草时沿用全部项目必守设定',dict(error=check['error']))
+
             conflicts=[]
             for item in check['checks']:
                 conflict=item['verdict']=='conflict'
-                if not item['requestQuote'].strip(): self._continuous_stop(cid,'blocked','开工核对缺少可验证的要求引文：'+item['key'])
-                self.kickoff_check_decide(source,check['basis'],item['key'],item['requestQuote'],conflict)
+                if item['requestQuote'].strip():self.kickoff_check_decide(source,check['basis'],item['key'],item['requestQuote'],conflict)
                 self._continuous_log(cid,'story','decide_skip',check['basis'],'开工检查：'+item['key']+' 判断为'+('冲突' if conflict else '不冲突'),dict(check=item,conflict=conflict))
                 if conflict:conflicts.append(item)
             if conflicts:
-                self._continuous_update(cid,choice=dict(kind='kickoff_conflict',stage='story',title='想法与必守设定有冲突',conflicts=conflicts,candidates=[],basis=check['basis']),state='waiting_choice',reason='请选择怎样处理想法与设定的冲突')
-                return False
+                self._adjust_kickoff(cid,args,cursor,check,conflicts)
+                return self._continuous_kickoff(cid)
         with connect(self.db_path) as db:started=db.execute('SELECT 1 FROM kickoff WHERE episode_id=?',(value['episode_id'],)).fetchone()
         if not started:
             files=[(f['name'],self.store.read_blob(f['sha256'])) for f in cursor.get('frozenFiles',[])]
@@ -160,10 +172,11 @@ class QuickStartMixin:
         value=self._continuous_checkpoint(cid);eid=value['episode_id'];cursor=value['cursor']
         if cursor.get('directionRunId'):
             rid=cursor['directionRunId'];self._continuous_execute(cid,rid)
-            return json.loads((self.store.run_dir(rid)/'result.json').read_text())['reply']
+            return json.loads((self.store.run_dir(self._continuous_record(cid)['cursor']['runId'])/'result.json').read_text())['reply']
         with transaction(self.db_path) as db:
             ep=self._episode_in(db,eid);art=row(db,"SELECT * FROM artifact WHERE episode_id=? AND stage='story'",eid)
             kickoff=self._kickoff(db,eid);plan={**kickoff['executor_plan'],**self._stage_executors(db,eid,'story')}
+            plan['create']=self.episode_expert(eid)
             tid,thread=self._draft_thread(db,ep['project_id'],eid,art['id'],'story',instruction,plan)
         for hit in context['knowledge']:
             self.cite(tid,hit['id'],'AI 自动检索：与想法相似',cid+':cite:'+tid+':'+hit['id'])
@@ -176,7 +189,7 @@ class QuickStartMixin:
             rid=self._queue_run(db,tid,'create',None,instruction,message_entries=entries,workspace_revision=art['revision'],discussion_only=True,extra_header=dict(direction=True))
         self._continuous_cursor(cid,directionTaskId=tid,directionRunId=rid)
         self._continuous_execute(cid,rid)
-        return json.loads((self.store.run_dir(rid)/'result.json').read_text())['reply']
+        return json.loads((self.store.run_dir(self._continuous_record(cid)['cursor']['runId'])/'result.json').read_text())['reply']
 
     def _continuous_direction(self,cid):
         value=self._continuous_record(cid);cursor=value['cursor'];eid=value['episode_id']
@@ -197,56 +210,39 @@ class QuickStartMixin:
             except (ValueError,Rejected) as exc:
                 error=str(exc)
                 self._continuous_cursor(cid,directionRunId=None)
-                if attempt:self._continuous_stop(cid,'blocked','方向格式重试后仍不合格：'+error)
+                if attempt:
+                    self._continuous_cursor(cid,directionDone=True,storyGoal=workflow.STANDARD_GOALS['story']+'\n直接按已给选题及开工要求起草：'+context['idea'])
+                    self._continuous_log(cid,'story','decide_skip',eid,'方向候选格式无效，沿用原选题起草',dict(reason=error))
+                    return True
         if answer['completeStory']:
             self._continuous_cursor(cid,directionDone=True,storyGoal=workflow.STANDARD_GOALS['story']+'\n按用户完整故事走向起草，不改事件：\n'+items[0]['story']+'\n用户原话：\n'+context['idea'])
             self._continuous_log(cid,'story','decide_skip',eid,'想法已有完整故事走向，直接起草',dict(direction=items[0]))
             return True
-        self._continuous_update(cid,state='waiting_choice',choice=dict(kind='direction',stage='story',title='选一个你想看的故事',candidates=items,contextNotice=context['mechanisms'] if context['mechanisms']=='未提供机制库' else ''),reason='请选择故事方向')
-        return False
+        item=next(i for i in items if i['recommended'])
+        self._continuous_log(cid,'story','choose_direction',item['key'],item['reason'],item)
+        self._continuous_cursor(cid,directionDone=True,storyGoal=workflow.STANDARD_GOALS['story']+'\n按专家选定的方向写：\n'+item['story'])
+        return True
 
-    def _choose_direction(self,value,choice_key,text=None,files=()):
-        cid=value['id'];cursor=value['cursor'];choice=value['choice'];eid=value['episode_id']
-        if choice_key=='free':
-            if not isinstance(text,str) or not text.strip():raise Rejected('请写下你的想法')
-            count=cursor['attempts'].get('direction',0)+1;cursor['attempts']['direction']=count
-            cursor.update(directionFeedback=text,previousDirections=choice['candidates'],directionRunId=None,feedbackFiles=[dict(name=name,sha256=self.store.put_blob(raw)) for name,raw in files])
-            if count>=3:cursor.update(directionDone=True,storyGoal=workflow.STANDARD_GOALS['story']+'\n按用户原话起草：\n'+text)
-        else:
-            item=next((c for c in choice['candidates'] if c['key']==choice_key),None)
-            if not item:raise Rejected('请选择 A、B 或 C')
-            self.add_decision(eid,'故事方向：'+item['title']+'——'+item['premise'],'story','episode',[],cid+':direction:'+choice_key)
-            self._continuous_log(cid,'story','choose_direction',choice_key,'按用户选择起草故事',item)
-            cursor.update(directionDone=True,storyGoal=workflow.STANDARD_GOALS['story']+'\n按导演选定的方向写：\n'+item['story'])
-        cursor.update(phase='direction',stressReports=0,rounds={})
-        self._continuous_update(cid,state='running',cursor=cursor,choice=None,reason=None)
-        return self._advance_continuous(cid)
-
-    def _choose_kickoff(self,value,choice_key,text=None,files=()):
-        cid=value['id'];cursor=value['cursor'];args=cursor['startArgs'];choice=value['choice']
-        if choice_key=='settings':
-            cursor['settingsBasis']=choice['basis'];cursor['waitingSettings']=True
-            self._continuous_update(cid,cursor=cursor)
-            return self._continuous_record(cid)
-        old=self.kickoff_check_view(self._kickoff_source(args))['request']
-        if choice_key=='free':
-            if not isinstance(text,str) or not text.strip():raise Rejected('请写下新的想法')
-            new=text
-        elif choice_key=='adjust':
-            slot=args['executor_plan']['create'];connection=self.run_connection(slot['provider'],slot.get('model'),slot.get('effort'));rid=new_id();work=self.store.run_dir(rid)/'work';work.mkdir(parents=True)
-            prompt='只改写下列想法中与设定冲突的句子，其余原话保留。返回 JSON 的 idea 字段。\n'+dumps(dict(idea=old,conflicts=choice['conflicts']))
+    def _adjust_kickoff(self,cid,args,cursor,check,conflicts):
+        old=check['request'];slot=args['executor_plan'].get('expert') or self.executor_defaults()['expert']
+        new=None
+        if not cursor.get('kickoffAdjustment'):
+            connection=self.run_connection(slot['provider'],slot.get('model'),slot.get('effort'))
+            rid=new_id();work=self.store.run_dir(rid)/'work';work.mkdir(parents=True)
+            prompt='只改写与必守设定冲突的部分，保留原事件、时长和交付要求。返回 JSON 的 idea 字段。\n'+dumps(dict(idea=old,conflicts=conflicts))
             schema=dict(type='object',additionalProperties=False,required=['idea'],properties=dict(idea=dict(type='string')))
-            self.store.put_blob(prompt.encode())
             outcome=self.executors[slot['provider']].start(ExecRequest(rid,'kickoff_adjust','kickoff_adjust',prompt,schema,'ephemeral',work,connection['model'],connection['effort'],connection=connection))
-            if not outcome.ok or not isinstance(outcome.structured,dict) or not isinstance(outcome.structured.get('idea'),str) or not outcome.structured['idea'].strip():
-                raise Rejected('想法调整没有返回有效文本')
-            new=outcome.structured['idea']
-        else:raise Rejected('请选择调整想法或修改设定')
-        from .attachments import prepare
-        prepare(files,images_only=True)
-        cursor.setdefault('frozenFiles',[]).extend(dict(name=name,sha256=self.store.put_blob(raw)) for name,raw in files)
+            self._continuous_checkpoint(cid)
+            if outcome.ok and isinstance(outcome.structured,dict):new=outcome.structured.get('idea')
+        if not isinstance(new,str) or not new.strip() or new==old:
+            new=old
+            for item in conflicts:
+                new=new.replace(item['requestQuote'],'',1)
+            new=new.strip()+'\n遵守项目设定：'+'；'.join(check['settings'][item['key']] for item in conflicts)
         cursor.setdefault('originalRequest',old)
         cursor['kickoffAdjustment']=dict(before=old,after=new)
-        args.update(source_type='idea',idea_text=new,topic_id=None,source_import_id=None,goal='')
-        self._continuous_update(cid,state='running',cursor=cursor,choice=None,reason=None)
-        return self._advance_continuous(cid)
+        count=cursor.setdefault('attempts',{}).get('kickoffAdjustment',0)+1
+        cursor['attempts']['kickoffAdjustment']=count
+        if count>2:raise RuntimeError('必守设定核对在定向改写后仍返回明确冲突：'+dumps(conflicts))
+        args.update(source_type='idea',idea_text=new,topic_id=None,source_import_id=None)
+        self._continuous_update(cid,cursor=cursor,choice=None,reason=None)

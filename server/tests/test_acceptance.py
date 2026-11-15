@@ -320,17 +320,12 @@ def test_07_missing_write_reason(env):
     decisions = [dict(itemId=it["id"], decision="write_setting", strength=s, reason=reason)
                  for it, s, reason in zip(items, ("required", "variable", "required"), ("夜班笑点来自流程", "", "人手有限"))]
     env.wb.decide_items(c["closureId"], decisions, "d1")
-    with pytest.raises(Rejected) as exc:
-        env.wb.confirm_closure(c["closureId"], "c1")
-    assert exc.value.detail == dict(rows=[2])                                 # 指出鹦鹉条目缺理由
-    decisions[1]["reason"] = "首集结尾留下假提示音"
-    env.wb.decide_items(c["closureId"], decisions, "d2")
     out = env.wb.confirm_closure(c["closureId"], "c2")
     assert len(out["settings"]) == 3
     settings = env.wb.project_view(r["pid"])["settings"]
     assert len(settings) == 3 and all(s["source_ref"] for s in settings)
     with env.db() as db:
-        assert {r_[0] for r_ in db.execute("SELECT user_reason FROM setting_entry")} == {"夜班笑点来自流程", "首集结尾留下假提示音", "人手有限"}
+        assert {r_[0] for r_ in db.execute("SELECT user_reason FROM setting_entry")} == {"夜班笑点来自流程", "", "人手有限"}
 
 
 def test_08_three_destinations(env):
@@ -811,21 +806,9 @@ def test_28_models_and_image_channel(env):
 
 
 # 29 ---------------------------------------------------------------------------------------------
-def test_29_expert_stops(env):
-    wb = env.wb
-    pid, eid = env.new_episode()
-    env.claude.script = [lambda r: review(r, "return", [dict(reason="动机不清")])] * 3
-    auth = wb.authorize_expert(pid, [eid], "story", {}, stops=[])
-    res = wb.expert_run(auth["authId"])
-    assert res["reason"] == "rounds_exhausted" and res["usedRounds"] == 2
-    task = wb.task_records(episode_id=eid)[0]
-    wb.post_message(task["id"], "继续原线程，再改一次", "m")                    # 普通消息不重置
-    assert wb.task_records(episode_id=eid)[0]["used_rounds"] == 2
-    latest = env.art(eid, "story")["versions"][-1]["id"]
-    with pytest.raises(Rejected, match="隔离"):
-        wb.submit_review(latest, "ag", provider="antigravity")                # 未验证隔离时必需审核等待
-    auth2 = wb.authorize_expert(pid, [eid], "story", dict(review=dict(provider="antigravity")), stops=[])
-    assert "paid_batch" in auth2["stops"]                                     # 付费批次不可关的停点
+def test_29_retired_expert_authorization(env):
+    assert all(not hasattr(env.wb, name) for name in ("authorize_expert", "expert_run", "_expert_guard"))
+    assert callable(env.wb.start_continuous)
 
 
 # 30 ---------------------------------------------------------------------------------------------

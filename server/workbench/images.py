@@ -627,7 +627,6 @@ class ImagesMixin:
                     if batch["state"] != "awaiting_authorization":
                         raise Rejected("批次状态已变化，请刷新核对")
                     currency = self._batch_currency(batch)
-                    self._reserve_expert_budget(db, batch, None)
                     auth = dict(summaryHash=summary_hash, currency=currency, budget_cents=None,
                                 costPolicy="not_gated", at=self.clock(), command=command_id)
                     db.execute("UPDATE image_batch SET state='authorized',authorization=?,budget_cents=NULL WHERE id=?",
@@ -644,7 +643,6 @@ class ImagesMixin:
                 if b["state"] != "awaiting_authorization":
                     raise Rejected("批次不在待授权状态")
                 currency = self._batch_currency(b)
-                self._reserve_expert_budget(db, b, None)
                 auth = dict(summaryHash=summary_hash, currency=currency, budget_cents=None,
                             costPolicy="not_gated", at=self.clock(), command=command_id)
                 db.execute("UPDATE image_batch SET state='authorized', authorization=?, budget_cents=NULL WHERE id=?",
@@ -847,8 +845,9 @@ class ImagesMixin:
             try:out=prov.inspect(req['local_request_id'])
             except Exception:out=None
             if not out or out.state not in ('succeeded','failed'):
-                if getattr(prov,'remote_status',False):continue
-                out=ImageOutcome('failed',error=INTERRUPTED_IMAGE)
+                # Absence of a query API or local result does not prove non-execution.
+                # Preserve the request identity; the expert monitor owns its deadline.
+                continue
             ordinal=self._original_ordinal(req)
             item=json.loads(batch['spec'])['items'][ordinal-1]
             self._land(batch['id'],req['id'],out,batch,item)
@@ -978,7 +977,8 @@ class ImagesMixin:
                 raise Conflict('素材用途已变化，请按当前绑定重新匹配')
             plan = self._adopted_content(db, episode_id, 'plan')
             shots = {s['id']: s['segment'] for s in plan['shots']}
-            if not shot_ids or len(set(shot_ids)) != len(shot_ids) or set(shot_ids) - shots.keys():
+            release = not shot_ids and source == 'worksheet' and source in (current or {}).get('autoBindings', {})
+            if (not shot_ids and not release) or len(set(shot_ids)) != len(shot_ids) or set(shot_ids) - shots.keys():
                 raise Rejected('素材用途须指定当前方案中不重复的镜头')
             def apply():
                 old = current or dict(shotIds=[], targetSegments=[], selectedBy='agent',
@@ -1000,8 +1000,14 @@ class ImagesMixin:
                         targets.update(value.get('targetSegments', []))
                 added = set(shot_ids) - kept
                 derived = {shots[s] for s in shot_ids}
-                sources[source] = dict(basisHash=basis_hash, shotIds=list(shot_ids), targetSegments=sorted(derived),
-                                       addedShotIds=sorted(added), addedSegments=sorted(derived-targets), reason=reason, needKey=need_key)
+                if release:
+                    sources.pop(source)
+                    if not sources and not kept and not targets and old['selectedBy'] == 'agent':
+                        db.execute("DELETE FROM image_choice WHERE episode_id=? AND asset_version_id=? AND mark='required'", (episode_id, version_id))
+                        return dict(ok=True)
+                else:
+                    sources[source] = dict(basisHash=basis_hash, shotIds=list(shot_ids), targetSegments=sorted(derived),
+                                           addedShotIds=sorted(added), addedSegments=sorted(derived-targets), reason=reason, needKey=need_key)
                 details.update(autoBindings=sources, targetSegments=sorted(targets | derived))
                 choice = db.execute("SELECT id FROM image_choice WHERE episode_id=? AND asset_version_id=? AND mark='required'", (episode_id,version_id)).fetchone()
                 choice_id = choice['id'] if choice else new_id()

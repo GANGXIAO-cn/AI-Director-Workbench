@@ -188,7 +188,7 @@ def plan_rows(plan, selected=None):
                 if (not isinstance(roles,list) or any(not isinstance(r,str) or not r.strip() or re.search(r"[、,，\s|]", r)
                         or r in ("无","待填") for r in roles) or len(set(roles))!=len(roles)):
                     raise ValueError(key+" 须填写不重复的实际可见角色 ID，空镜使用空数组")
-                if not isinstance(props,dict) or any(not re.fullmatch(r"[a-z][a-z0-9-]*",k) or
+                if not isinstance(props,dict) or any(not re.fullmatch(r"[a-z][a-z0-9_-]*",k) or
                         not isinstance(v,str) or not v.strip() or re.search(r"[;；|\n\r]",v) for k,v in props.items()):
                     raise ValueError(key+" 须填写关键道具 ID 与状态，没有道具使用空对象")
                 row["实际可见角色ID"] = "、".join(roles) or "无"

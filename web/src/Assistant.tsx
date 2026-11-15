@@ -1,5 +1,4 @@
 import { ContinuousStatus, ContinuousChoice } from "./Continuous";
-import { ContinuousStopped } from "./Attention";
 import { StressReviewChat } from "./StressReviewChat";
 import { FirstDraft } from "./FirstDraft";
 import { ChatMarkdown } from "./ChatMarkdown";
@@ -56,7 +55,6 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
     if(STAGES.some(([key])=>key===aiStage)) go(`#/e/${view.episode.id}/${aiStage}`);
   },[aiStage,active]);
   const standardGoals=useQuery<Record<string,string>>("standard_goals");
-  const imageChoiceActive=continuous.data?.run?.state==="waiting_choice" && ["visual","image_failed","preview"].includes(continuous.data.run.choice?.kind);
   // 实测 122：07 素材的各页签（备图工作单、按镜头补图、全部图片）共用 07 的对话与输入框，切换页签对话不消失。
   const chatStage = ["worksheet","shot_assets","assets"].includes(stage) ? "asset_design" : stage;
   const art = artifactFor(view, chatStage);
@@ -103,9 +101,6 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
   }, [focusV?.id, art?.adopted_version_id]);
   const send = () => act.run(async () => {
     if (!text.trim()) { if (files.length) throw new Error("请写明希望助手怎样使用附件"); return; }
-    if(continuous.data?.run?.state==="waiting_choice" && ["direction","kickoff_conflict","visual","image_failed","preview"].includes(continuous.data.run.choice?.kind)) {
-      await submit("choose_continuous",{continuous_id:continuous.data.run.id,choice_key:"free",text},files);setText("");setFiles([]);await continuous.reload();await reload();return;
-    }
     if(["delivery","package"].includes(stage)) {
       await submit("fix_after_delivery",{episode_id:view.episode.id,text},files);setText("");setFiles([]);await continuous.reload();await reload();return;
     }
@@ -144,9 +139,7 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
     if(report) stream.current.scrollTop+=report.getBoundingClientRect().top-stream.current.getBoundingClientRect().top;
     else stream.current.scrollTop=stream.current.scrollHeight;
   }},[task?.id,(task?.messageCount ?? task?.messages?.length),live.length]);
-  useEffect(()=>{if(continuous.data?.run?.state==="waiting_choice" && stream.current)stream.current.scrollTop=0;},[continuous.data?.run?.state,(task?.messageCount ?? task?.messages?.length)]);
   // 实测 117：停下时滚到对话末尾的“已停下”卡片。
-  useEffect(()=>{if(continuous.data?.run?.state==="blocked" && stream.current)stream.current.scrollTop=stream.current.scrollHeight;},[continuous.data?.run?.state,continuous.data?.run?.reason]);
   const startRevision=(version:any,issues:any[])=>{
     const items=issues.map(i=>({id:i.id,location:i.loc,reason:i.reason,blocking:!!i.blocking,setting:i.setting_content}));
     const anchor=items.length===1 ? items[0].location.anchor : "本轮 "+items.length+" 条审查意见";
@@ -154,10 +147,13 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
     setText("请基于 "+rno(version.display_no)+" 修订所选的 "+items.length+" 条审查意见，逐条核对定位和依据，提交一份完整新稿。");
     requestAnimationFrame(()=>input.current?.focus());
   };
+  const deliveryFinished = continuous.data?.run?.state === "done" && continuous.data.run.target_stage === "delivery";
+  const continuousStatus = <ContinuousStatus data={continuous.data?{...continuous.data,episodeId:view.episode.id,projectId:view.episode.project_id}:null} error={continuous.error} reload={async()=>{await continuous.reload();await reload();}}/>;
   return (
     <aside className="assistant">
       <div className="head"><strong>导演助手</strong><button className="btn focus-toggle" aria-pressed={focusChat} onClick={()=>setFocusChat(!focusChat)}>{focusChat ? "返回成果文档" : "专注对话"}</button>
       <details className="director-more"><summary className="btn">更多工具</summary><div className="director-menu">
+        {deliveryFinished && <details><summary>连续制作记录</summary>{continuousStatus}</details>}
         {stage==="story"&&<details><summary>本集开工资料</summary>
           <p>{view.sourceImport?.parsed_text?.split("\n")[0]||view.kickoff?.idea_text||(view.kickoff?.source_type==="topic"?"来源：项目选题卡":"")}</p>
           {view.kickoff?.goal&&<p>要求：{view.kickoff.goal}</p>}
@@ -172,7 +168,7 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
 </>}<span className="tiny muted">{task ? "任务："+task.goal.slice(0,32)+" · 自动修订 "+task.used_rounds+"/"+task.max_rounds+" 轮" : "尚无任务"}</span>
         <button className="btn" onClick={e=>e.currentTarget.closest("details")?.removeAttribute("open")}>收起</button>
       </div></details></div>
-      <ContinuousStatus data={continuous.data?{...continuous.data,episodeId:view.episode.id,projectId:view.episode.project_id}:null} error={continuous.error} reload={async()=>{await continuous.reload();await reload();}}/>
+      {!deliveryFinished && continuousStatus}
       <div className="msgs" ref={stream} role="log" aria-label="本阶段对话" onScroll={e=>{const n=e.currentTarget;follow.current=n.scrollHeight-n.scrollTop-n.clientHeight<60;}}>
         <ContinuousChoice run={continuous.data?.run} eid={view.episode.id} pid={view.episode.project_id} onCompare={route=>{setFocusChat(false);go(route);}} reload={async()=>{await continuous.reload();await reload();}}/>
         {adoptedStory && art && !art.versions.length && !tasks.length &&
@@ -256,9 +252,8 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
             <div className="muted tiny" style={{ margin: "6px 0" }}>{b.count} 张 · {b.size}</div>
             <button className="btn" onClick={() => onOpenBatch(b)}>{b.state === "awaiting_authorization" ? "确认、调整或取消" : "打开批次"}</button>
           </div>))}
-        <ContinuousStopped run={continuous.data?.run} reload={async()=>{await continuous.reload();await reload();}}/>
       </div>
-      {STAGE_ART[chatStage] && !art ? <div className="composer"><button className="btn primary" onClick={openTrial}>用现有资料先试写</button></div> : (STAGE_ART[chatStage] || imageChoiceActive || ["delivery","package"].includes(stage)) ? <div className="composer">
+      {STAGE_ART[chatStage] && !art ? <div className="composer"><button className="btn primary" onClick={openTrial}>用现有资料先试写</button></div> : (STAGE_ART[chatStage] || ["delivery","package"].includes(stage)) ? <div className="composer">
         {showReviewHint && <p className="composer-review-hint" role="status"><strong>{reviewLabels} 独审尚未完成。</strong>
           现在发送会基于 {rno(baseVersion.display_no)} 另出一版。独审意见只对应 {reviewLabels}。想参考这次意见，请等独审完成后再发送。</p>}
         {sel && <div className="selchip">选区：{sel.label} <span style={{ cursor: "pointer" }} onClick={() => setSel(null)}>×</span></div>}

@@ -26,7 +26,7 @@ export const commandId = () => crypto.randomUUID();
 /** Workbench command (writes). commandId is added automatically unless given. */
 export const cmd = <T = any,>(name: string, args: Record<string, any> = {}) =>
   send<T>("POST", `/cmd/${name}`, "command_id" in args || NO_ID.has(name) ? args : { ...args, command_id: commandId() });
-const NO_ID = new Set(["visit_project", "execute_batch", "expert_run", "backup", "restore", "set_publish_settings", "set_task_executor", "open_stage", "save_canvas", "preview_acting","package_preview"]);
+const NO_ID = new Set(["visit_project", "execute_batch", "backup", "restore", "set_publish_settings", "set_task_executor", "open_stage", "save_canvas", "preview_acting","package_preview"]);
 /** Workbench read model. */
 export const q = <T = any,>(name: string, args: Record<string, any> = {}) =>
   send<T>("GET", `/q/${name}?args=${encodeURIComponent(JSON.stringify(args))}`);

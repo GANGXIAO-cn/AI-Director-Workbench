@@ -119,6 +119,21 @@ class ProjectLibraryMixin:
                 return dict(versionId=asset["versionId"], originalSha256=ref["originalSha256"])
             return self._command(db, command_id, "use_project_product", dict(episode=episode_id, code=code), run)
 
+    def _product_drawing_source(self,db,eid,board,master,sid):
+        """Verify the actual successful generation/edit receipt, including resubmitted requests."""
+        visited=set()
+        while board and board not in visited:
+            visited.add(board)
+            req=db.execute("SELECT r.*,b.spec FROM image_request r JOIN image_batch b ON b.id=r.batch_id WHERE b.episode_id=? AND r.asset_version_id=? AND r.state='succeeded'",(eid,board)).fetchone()
+            if not req:return False
+            item=json.loads(req['spec'])['items'][self._original_ordinal(req)-1]
+            if not item.get('target',{}).get('grid') or item.get('segments')!=[sid]:return False
+            inputs=item.get('inputs',[])
+            if master in inputs:return True
+            parent=self.asset_version(board,db).get('source_version_id')
+            board=parent if parent in inputs else None
+        return False
+
     def save_product_placement(self, episode_id, code, shot_id, intent, scene_version=None, observation="", command_id=None):
         from .storage import canonical
         with transaction(self.db_path) as db:
@@ -129,11 +144,12 @@ class ProjectLibraryMixin:
                 shot = get_item(plan.get("shots", []), "id", shot_id)
                 if not isinstance(intent, str) or not intent.strip():
                     raise Rejected("请填写使用理由、位置与朝向、需保留的识别特征")
-                if scene_version:
+                if scene_version and scene_version != product["version_id"]:
                     asset = self.asset_version(scene_version, db)
                     if asset["episode_id"] != episode_id or asset["kind"] != "image" or asset["category"] not in ("state","scene","grid"):
                         raise Rejected("入景证据须选本集的场面图、场景图或九宫格")
-                    if not isinstance(observation, str) or not observation.strip():
+                    drawing=asset['grid'] and self._product_drawing_source(db,episode_id,scene_version,product['version_id'],shot['segment'])
+                    if (not isinstance(observation, str) or not observation.strip()) and not drawing:
                         raise Rejected("请记录实际看图所见的款式、自然性及接续")
                     # A re-upload of the catalog image cannot establish placement in a scene.
                     ref = self.asset_version(product["version_id"], db)
@@ -157,10 +173,14 @@ class ProjectLibraryMixin:
             plan = self._adopted_content(db, episode_id, "plan") or {}
             prompts = candidate if candidate is not None else self._adopted_content(db, episode_id, "prompts") or {}
             products = {p["code"]:json.loads(p["source"]) for p in db.execute("SELECT * FROM episode_product WHERE episode_id=?", (episode_id,))}
+            product_versions = dict(db.execute("SELECT code,version_id FROM episode_product WHERE episode_id=?", (episode_id,)))
             required = {r[0] for r in db.execute("SELECT asset_version_id FROM image_choice WHERE episode_id=? AND mark='required'", (episode_id,))}
             from .imagechoices import requirements
             uses = {r['versionId']:r.get('autoBindings',{}) for r in requirements(db,episode_id)}
             records = [dict(r) for r in db.execute("SELECT * FROM product_placement WHERE episode_id=? ORDER BY code,shot_id", (episode_id,))]
+            byshot={s['id']:s for s in plan.get('shots',[])}
+            for item in records:
+                item['drawingReference']=bool(item['scene_version'] and item['scene_version']!=product_versions[item['code']] and not item['observation'] and self._product_drawing_source(db,episode_id,item['scene_version'],product_versions[item['code']],byshot.get(item['shot_id'],{}).get('segment')))
         shots = {shot["id"]:shot for shot in plan.get("shots", [])}
         for item in records:
             shot = shots.get(item["shot_id"])
@@ -174,11 +194,11 @@ class ProjectLibraryMixin:
             elif not shot or sha256_bytes(canonical(shot)) != item["shot_hash"]:
                 issue = "关联镜头已变动，须复核入景位置"
             elif not version:
-                issue = "待登记实际场面与看图观察"
+                issue = "待绑定该镜头的商品参考"
             elif version not in required:
-                issue = "场面图未标必用"
+                issue = "商品参考未标必用"
             elif check_prompt_refs and not any(r.get("assetVersionId") == version for r in refs):
-                issue = "采用提示词的对应段未引用该场面图"
-            item.update(segment=sid, issue=issue, product=products[item["code"]], dynamic="not_tested")
+                issue = "采用提示词的对应段未引用该商品参考"
+            item.update(segment=sid, issue=issue, product=products[item["code"]], directReference=(version==product_versions.get(item["code"])), dynamic="not_tested")
         return dict(minimum=minimum, products=list(products.values()), records=records,
                     verified=sum(not item["issue"] for item in records))

@@ -50,25 +50,9 @@ class ContinuousRecovery:
                                      provider=run.get('provider'), role=role, resetsAt=parse_resets(run))
         return [block] if block else []
 
-    def _commit_blocks(self, cid):
-        with cursor_lock(cid):
-            value = self._continuous_record(cid)
-            cursor = value['cursor']
-            pending = cursor.pop('pendingBlocks', None) or []
-            if value['state'] in ('blocked','waiting_quota'):
-                old = {b['id']:b for b in cursor.get('blocks', [])}
-                for b in pending:
-                    if b['id'] in old:
-                        b.update(at=old[b['id']]['at'], lastTry=old[b['id']].get('lastTry'))
-                cursor['blocks'] = pending
-                cursor['wakeCounts'] = {b['id']:cursor.get('wakeCounts',{}).get(b['id'],0) for b in pending}
-            cursor.pop('autoScope', None)
-            self._continuous_update(cid, cursor=cursor)
-
     def _claim_resume(self, db, cid, auto=None, now=None):
         value = row(db, 'SELECT * FROM continuous_run WHERE id=?', cid)
-        legacy = json.loads(value['choice'] or '{}').get('kind') in ('visual','image_failed')
-        allowed = value['state'] in ('paused','waiting_quota','blocked') or (auto is None and value['state']=='waiting_choice' and legacy)
+        allowed = (auto is None and value['state']=='paused') or (auto is not None and value['state'] in ('running','waiting_external'))
         if not allowed or (auto is not None and value['pause_requested']):
             if auto is not None:
                 return None
@@ -116,14 +100,15 @@ class ContinuousRecovery:
     def restart_continuous_runs(self):
         ready=[]
         with transaction(self.db_path) as db:
-            for r in db.execute("SELECT id,cursor FROM continuous_run WHERE state='paused' AND pause_requested=0").fetchall():
+            for r in db.execute("SELECT id,cursor FROM continuous_run WHERE state='running' AND pause_requested=0").fetchall():
                 if json.loads(r['cursor']).get('resumeAfterRestart') and self._claim_resume(db,r['id'],auto=[]):
                     ready.append(r['id'])
         return ready
 
     def _block_ready(self, b, now, probes, counts):
         kind=b['kind']
-        if counts.get(b['id'],0)>=LIMIT[kind]:return False
+        # Exhausted probes slow down; changed external conditions remain recoverable.
+        if counts.get(b['id'],0)>=LIMIT[kind] and b.get('lastTry') is not None and now-b['lastTry']<max(60,GAP[kind]):return False
         if b.get('lastTry') is not None and now-b['lastTry']<GAP[kind]:return False
         since=b.get('lastTry') if b.get('lastTry') is not None else b['at']
         if kind=='auth':return probes.get('switched',False) or probes.get('identity',{}).get(b.get('provider')) is True
@@ -175,7 +160,7 @@ class ContinuousRecovery:
     def changed_continuous_runs(self, now=None):
         now=self.clock() if now is None else now
         with connect(self.db_path) as db:
-            snapshots=[dict(r) for r in db.execute("SELECT * FROM continuous_run WHERE state IN ('running','waiting_choice','blocked','waiting_quota')")]
+            snapshots=[dict(r) for r in db.execute("SELECT * FROM continuous_run WHERE state IN ('running','waiting_external')")]
         for r in snapshots:r['cursor']=json.loads(r['cursor'])
         probes=self._recovery_probes(snapshots,now)
         ready=[]
@@ -184,12 +169,45 @@ class ContinuousRecovery:
                 r=dict(row(db,'SELECT * FROM continuous_run WHERE id=?',snapshot['id']))
                 cursor=json.loads(r['cursor']);r['cursor']=cursor
                 if r['pause_requested']:continue
-                if r['state'] in ('blocked','waiting_quota'):
-                    if cursor.get('pendingBlocks') is not None or cursor.get('blocks')!=snapshot['cursor'].get('blocks'):continue
-                    ids=[b['id'] for b in cursor.get('blocks',[]) if self._block_ready(
-                        b,now,dict(probes,switched=self._provider_switched(db,r,b) if b['kind']=='auth' else False),cursor.get('wakeCounts',{}))]
-                    if ids and self._claim_resume(db,r['id'],auto=ids,now=now):ready.append(r['id'])
+                if r['state']=='waiting_external':
+                    if cursor.get('blocks')!=snapshot['cursor'].get('blocks'):continue
+                    blocks=cursor.get('blocks',[])
+                    deadlines={'auth':3600,'transient':3600,'image_wait':7200,'quota':86400}
+                    expired=next((b for b in blocks if now>=b['at']+deadlines[b['kind']]
+                                  or cursor.get('wakeCounts',{}).get(b['id'],0)>=LIMIT[b['kind']]),None)
+                    # Conditions are evaluated per item: run any still-eligible siblings first.
+                    eligible=[b for b in blocks if now<b['at']+deadlines[b['kind']]]
+                    ids=[b['id'] for b in eligible if self._block_ready(
+                        b,now,dict(probes,switched=self._provider_switched(db,r,b) if b['kind']=='auth' else False),cursor.get('wakeCounts',{}))
+                        and cursor.get('wakeCounts',{}).get(b['id'],0)<LIMIT[b['kind']]]
+                    if ids:
+                        if self._claim_resume(db,r['id'],auto=ids,now=now):ready.append(r['id'])
+                        continue
+                    if expired or not blocks:
+                        db.execute("UPDATE continuous_run SET state='failed',reason=?,updated_at=? WHERE id=? AND state='waiting_external'",('外部服务未能完成请求：'+(r['reason'] or ''),now,r['id']))
                 elif r['state']=='running' and snapshot['state']=='running':
+                    # Polling and restarts do not extend a live request's first deadline.
+                    waiting_images=[cursor.get('images',{}).get(k,{}) for k,w in cursor.get('waits',{}).items() if w.get('running')]
+                    text_ids={rid for item in waiting_images for rid in item.get('parkedQueue',[])}
+                    if cursor.get('waitingRun'):text_ids.add(cursor['waitingRun'])
+                    live=sorted(text_ids | {item['pendingBatch'] for item in waiting_images if item.get('pendingBatch')})
+                    if live:
+                        previous=cursor.get('liveWaitSince',{})
+                        since={key:previous.get(key,now) for key in live}
+                        if since!=previous:
+                            cursor['liveWaitSince']=since
+                            db.execute('UPDATE continuous_run SET cursor=? WHERE id=?',(dumps(cursor),r['id']))
+                        overdue=[]
+                        for key in live:
+                            if now-since[key]<7200:continue
+                            if key in text_ids:
+                                task=db.execute('SELECT status FROM run WHERE id=?',(key,)).fetchone()
+                                if task and task[0] not in ('running','preparing','queued'):continue
+                            elif probes['batches'].get(key):continue
+                            overdue.append(key)
+                        if overdue:
+                            db.execute("UPDATE continuous_run SET state='failed',reason=?,updated_at=? WHERE id=? AND state='running'",('外部请求超过时限，保留原请求以核对结果：'+','.join(overdue),now,r['id']))
+                            continue
                     if cursor.get('pendingUserChange'):ready.append(r['id']);continue
                     if cursor.get('waitingRun'):
                         waiting=db.execute('SELECT status FROM run WHERE id=?',(cursor['waitingRun'],)).fetchone()
@@ -202,12 +220,6 @@ class ContinuousRecovery:
                         runs=[db.execute('SELECT status FROM run WHERE id=?',(rid,)).fetchone() for rid in image.get('parkedQueue',[])]
                         if probes['batches'].get(image.get('pendingBatch')) or runs and all(v and v[0] not in ('queued','running') for v in runs):
                             ready.append(r['id']);break
-                elif r['state']=='waiting_choice' and cursor.get('waitingSettings'):
-                    current=self.kickoff_check_view(self._kickoff_source(cursor['startArgs']))
-                    if current['basis']!=cursor['settingsBasis']:
-                        cursor.update(waitingSettings=False,phase='kickoff')
-                        db.execute("UPDATE continuous_run SET state='running',cursor=?,updated_at=? WHERE id=?",(dumps(cursor),self.clock(),r['id']))
-                        ready.append(r['id'])
         return ready
 
     def _continuous_retry_slot(self, cid, run):

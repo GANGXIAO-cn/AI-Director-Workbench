@@ -45,7 +45,7 @@ class ContinuousDelivery:
 
     def _continuous_delivery_problem(self,cid,problem):
         value=self._continuous_record(cid);eid=value['episode_id'];stage=problem['stage'];reason=problem['problem']
-        if reason.endswith(' 尚未采用') or stage=='spec':self._continuous_stop(cid,'blocked',reason)
+        if reason.endswith(' 尚未采用') or stage=='spec':self._continuous_problem(cid,reason)
         if stage=='space':
             self._continuous_confirm_supplements(cid,'prompts')
             return self._image_fill_records(cid)
@@ -83,6 +83,10 @@ class ContinuousDelivery:
             self._continuous_adopt(cid,'plan',self._continuous_art(eid,'plan')['versions'][-1]['id'])
             self._continuous_cursor(cid,promptCandidate=None,finishingReceipt=None)
             return self._continuous_finish_stages(cid)
+        if problem.get('kind')=='product_reference':
+            self._continuous_products(cid)
+            self._continuous_cursor(cid,finishingReceipt=None)
+            return self._continuous_finish_stages(cid)
         if stage=='assets':
             # Route the concrete broken references back through the same 07
             # generation/assessment path; keep every historical image and file.
@@ -96,13 +100,13 @@ class ContinuousDelivery:
             self._continuous_create(cid,stage,'修复交付核验问题：'+reason,base=art['adopted_version_id'])
             self._continuous_adopt(cid,stage,self._continuous_art(eid,stage)['versions'][-1]['id'])
             return True
-        self._continuous_stop(cid,'blocked',reason)
+        self._continuous_problem(cid,reason)
 
     def _continuous_repair_delivery_assets(self,cid,problem):
         eid=self._continuous_record(cid)['episode_id']
         needs=self.asset_worksheet(eid)['rows']
         art=self._continuous_art(eid,'asset_design');base=art['adopted_version_id']
-        instruction='根据具体交付问题修订必要素材条目，保留其余条目；商品覆盖不足时按项目商品入景方法补条目并声明 productCode。问题：'+dumps(problem)
+        instruction='根据具体交付问题修订必要素材条目，保留其余条目。问题：'+dumps(problem)
         self._continuous_create(cid,'asset_design',instruction,base=base)
         self._continuous_adopt(cid,'asset_design',self._continuous_art(eid,'asset_design')['versions'][-1]['id'])
         # Actual file problems name a reference label and segment. Resolve that
@@ -123,8 +127,8 @@ class ContinuousDelivery:
             problems,_=self.delivery_problems(eid,'full')
             if not problems:break
             problem=problems[0];cursor=self._continuous_record(cid)['cursor']
-            key=dumps(problem);attempts=cursor.get('deliveryAttempts',{})
-            if attempts.get(key,0)>=2:self._continuous_stop(cid,'blocked',problem['problem'])
+            key=dumps({k:problem.get(k) for k in ('stage','kind','segment','file')});attempts=cursor.get('deliveryAttempts',{})
+            if attempts.get(key,0)>=2:self._continuous_problem(cid,problem['problem'])
             attempts[key]=attempts.get(key,0)+1
             self._continuous_cursor(cid,deliveryAttempts=attempts,stage=problem['stage'],phase='repair')
             if not self._continuous_delivery_problem(cid,problem):return False
@@ -132,20 +136,9 @@ class ContinuousDelivery:
         cursor=self._continuous_record(cid)['cursor']
         result=self.deliver(eid,'full',f'{cid}:deliver:{cursor.get("deliveryRound",0)}')
         delivery=self.delivery_view(result['deliveryId'])
-        title='图文交付 R'+str(delivery['revision']).zfill(2)+' 已完成，看一眼'
-        choice=dict(kind='preview',title=title,deliveryId=delivery['id'],segments=delivery['segments'],free=True,stage='delivery',candidates=[])
         self._continuous_cursor(cid,stage='delivery',phase='preview',deliveryId=delivery['id'])
-        with connect(self.db_path) as db:mode=self._cooperation_mode(db,eid)
-        if mode=='expert':
-            self._continuous_update(cid,state='done',reason='图文交付已完成',choice=None)
-            return True
-        self._continuous_update(cid,state='waiting_choice',choice=choice,reason=title)
+        self._continuous_update(cid,state='done',reason='图文交付已完成',choice=None)
         return True
-
-    def _choose_delivery_preview(self,value,key):
-        if key!='satisfied':raise Rejected('请确认图文交付，或在下方说明修改要求')
-        self._continuous_update(value['id'],state='done',reason='图文交付已完成',choice=dict(value['choice'],selected='satisfied'))
-        return self._continuous_record(value['id'])
 
     def _continuous_late_recheck(self,cid):
         from .decisions import _text_fields

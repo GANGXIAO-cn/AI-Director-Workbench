@@ -558,7 +558,7 @@ class ProductionMixin:
                 if not isinstance(observed,str) or not observed.strip() or not isinstance(conflicts,list) or any(
                     (not isinstance(c,str) or not c.strip()) if not isinstance(c,dict) else (not isinstance(c.get("text"),str) or not c["text"].strip() or not (isinstance(c.get("acceptedIssue"),str) or isinstance(c.get("provisionalIssue"),str))) for c in conflicts):
                     raise Rejected("请填写实际看图观察，冲突须逐条说明")
-                if not isinstance(prominent_props,dict) or any(not re.fullmatch("[a-z][a-z0-9-]*",k) or
+                if not isinstance(prominent_props,dict) or any(not re.fullmatch("[a-z][a-z0-9_-]*",k) or
                        not isinstance(v,str) or not v.strip() for k,v in prominent_props.items()):
                     raise Rejected("显眼道具须逐项填写道具ID和状态")
                 if type(combined) is not bool or (other_uses is not None and (not isinstance(other_uses,dict)

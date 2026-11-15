@@ -1,6 +1,4 @@
-import {ImageCompare} from "./ImageCompare";
-import {DirectionCompare, PreKickoffWorkspace} from "./Directions";
-import { CandidateCompare } from "./CandidateCompare";
+import {PreKickoffWorkspace} from "./Directions";
 import { RepairProgress } from "./RepairProgress";
 import { AssetWorksheet } from "./AssetWorksheet";
 import { stressGrade } from "./StressReviewChat";
@@ -198,7 +196,7 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
           {routeParams.get("report") && <StressRepair ctx={ctx} stage={stage} reportId={routeParams.get("report")!} optionIndex={routeParams.get("option")}/>}
           {stageArtifact && inputVersion && <StageInputs key={inputVersion} versionId={inputVersion} records={decisions.data??[]} art={stageArtifact} onSave={async vid=>{await reload();setFocus(vid);}}/>}
           {(["space","cast"].includes(stage) || OPTIONAL_FILM_STAGES.has(stage)) && <OptionalStage key={id+stage} eid={id} stage={stage} skippedReason={v.skippedStages[stage] || ""} reload={view.reload}/>}
-          {routeParams.get("directions")?<DirectionCompare eid={id} cid={routeParams.get("directions")!} reload={reload}/>:routeParams.get("compare") && !stageArtifact?.versions.some((version:any)=>version.id===routeParams.get("compare"))?stage==="assets"?<ImageCompare eid={id} continuousId={routeParams.get("compare")!} reload={reload} onBack={()=>go(`#/e/${id}/${stage}`)}/>:<CandidateCompare eid={id} stage={stage} continuousId={routeParams.get("compare")!} view={v} reload={reload} onBack={()=>go(`#/e/${id}/${stage}`)}/>:stage==="package"?<PackageView ctx={ctx} panel={packagePanel}/>:!v.skippedStages[stage] && <StageView key={id+stage+String(ctx.locked)} stage={stage} ctx={ctx} />}
+          {stage==="package"?<PackageView ctx={ctx} panel={packagePanel}/>:!v.skippedStages[stage] && <StageView key={id+stage+String(ctx.locked)} stage={stage} ctx={ctx} />}
         </div>
         {stage==="package" && <aside className="assistant package-aside" aria-label="出包设置" ref={setPackagePanel}/>}
         {/* 实测 122：备图工作单也保留导演助手，切换素材页签时对话不消失。 */}

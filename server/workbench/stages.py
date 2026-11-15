@@ -40,6 +40,15 @@ def normalize(stage, field, value):
             if (stage, field) == ("script", "scenes"):
                 return [dict(id="全文", action=value)]
             raise
+    boolean_fields = {('characters','characters'): 'identityRequired',
+                      ('asset_design','assets'): 'keyVisual', ('stress','options'): 'changesCore'}
+    key = boolean_fields.get((stage,field))
+    if key and isinstance(value,list):
+        for item in value:
+            if isinstance(item,dict) and isinstance(item.get(key),str):
+                literal = item[key].strip().lower()
+                if literal in ('true','false'):
+                    item[key] = literal == 'true'
     if stage == 'asset_design' and field == 'assets' and isinstance(value, list):
         for asset in value:
             if isinstance(asset, dict) and not asset.get('productCode'):

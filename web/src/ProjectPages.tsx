@@ -17,7 +17,6 @@ import { ProjectLibrary, HistoricalChecks } from "./ProjectLibrary";
 import { ProjectPresets } from "./ProjectPresets";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { Fragment, useEffect, useState } from "react";
-import Expert from "./Expert";
 import { blob, cmd, commandId, q, setCliPath, upload } from "./api";
 import { ErrorLine, Modal, PROVIDER_LABEL, pickable, Pills, Tag, fmtMs, useAction, usePoll, useQuery } from "./ui";
 
@@ -26,6 +25,7 @@ const CATS: Record<string, string> = { character: "角色", relationship: "关�
 export function ProjectPage({ id, sub, arg }: { id: string; sub: string; arg?: string }) {
   const route=useProjectRoute();
   const p = useQuery<any>("project_view", { project_id: id }, [sub, arg]);   // re-read on every page switch
+  useEffect(() => { if (sub === "expert") { const episode=new URLSearchParams(route.hash.split("?")[1]).get("episode"); route.go(episode ? `#/e/${encodeURIComponent(episode)}/story` : `#/p/${id}`); } }, [sub, id, route.hash]);
   const head = <div className="spread" style={{ marginBottom: 18 }}><div className="row"><a className="muted" href={`#/p/${id}`}>← {p.data?.name ?? "项目"}</a></div></div>;
   const body = (() => {
     switch (sub) {
@@ -40,7 +40,7 @@ export function ProjectPage({ id, sub, arg }: { id: string; sub: string; arg?: s
       case "closure": return <Closure id={id} cid={arg!} />;
       case "closure-start": return <ClosureStart id={id} did={arg!} />;
       case "ref": return <RefFilm id={id} packId={arg!} p={p.data} />;
-      case "expert": return <Expert key={id} id={id} episodes={p.data?.episodes ?? []} arg={arg} />;
+      case "expert": return null;
       default: return <div className="empty">未知页面</div>;
     }
   })();

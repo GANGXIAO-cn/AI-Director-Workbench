@@ -151,6 +151,9 @@ def directed(req: ExecRequest, name: str, stage_reply=True):
     request = sec.get("request", "")
     if MARK_QUOTA in request and name == "codex":
         return quota_exhausted(req)
+    if req.purpose=='image_assess' and '只有 blocked 须写 defect' in p:
+        ids=[m[1] for image in req.images if (m:=re.search(r'候选-([a-f0-9-]+)',image.name))]
+        return dict(draft(req),kind='discussion',changes=[],directorRequest='',reply=_json.dumps([dict(versionId=i,verdict='usable') for i in ids]))
     if stage_reply and "directorRequest" in req.schema.get("properties", {}):
         if "removedIds" in req.schema["properties"] and ("导演已经选择按讨论生成新稿" in p or "【测试：改稿】" in request):
             return dict(directed(req,name,stage_reply=False), directorRequest=request.strip(),reply="",removedIds=[])
@@ -159,7 +162,7 @@ def directed(req: ExecRequest, name: str, stage_reply=True):
         ref = re.search(r"^===== research_source · (R\d+) · ", p, re.M).group(1)
         return {"candidates":[dict(title="错拿的钥匙", premise="值班员试图在交班前归还拿错的钥匙。",
                                    mechanism="两人互换线索", motivation="按时完成交班",
-                                   difference="将发现遗失改为主动归还。",reference_id=ref)]}
+                                   difference="将发现遗失改为主动归还。",reference_id=ref) for _ in range(req.schema["properties"]["candidates"]["minItems"])]}
     if req.kind == "free_chat":
         return {"reply":"已按本轮资料回应。"+request.strip()}
     if req.kind == "cut_explanation":
@@ -197,7 +200,7 @@ def directed(req: ExecRequest, name: str, stage_reply=True):
         "world":dict(rules=[dict(id="night",rule="夜间只留值班员",choiceImpact="必须自己检查异常")]),
         "treatment":dict(scenes=[dict(id="场01",heading="便利店 夜",event="检查抽屉",result="完成登记")],durationBudget="8秒估计，非实测"),
         "stress":dict(retelling="值班员想完成交接，发现抽屉异常后推回并登记。",scope="已采用剧本",diagnosis="事件因果清楚；此为离线夹具，不评价创作质量。",issues=[],options=[],productionNotes=[]),
-        "asset_design":dict(strategy="lightweight",assets=[dict(id="store",kind="scene",description="夜间便利店收银台",imagePrompt="夜间便利店内景，阿福站在收银台前检查抽屉。")]),
+        "asset_design":dict(strategy="lightweight",assets=[dict(id="afu-base",kind="character",roleId="afu",title="阿福身份",description="值夜班的柴犬",imagePrompt="柴犬阿福的身份图"),dict(id="store",kind="scene",description="夜间便利店收银台",imagePrompt="夜间便利店收银台空景")]),
         "acting":dict(scenes=[dict(sceneId="场01",objective="完成检查",obstacle="异常抽屉",strategy="观察再处理",beats=["看向抽屉","推回并登记"])]),
     }
     if contract and contract[1] in unified:
@@ -223,7 +226,7 @@ def directed(req: ExecRequest, name: str, stage_reply=True):
             scenes[-1]["action"] += f"（按要求：{request.strip()[:40]}）"
         return draft(req, scenes=_json.dumps(scenes, ensure_ascii=False))
     if "shots" in writable and not base:
-        shots = [dict(id="K01",segment="G01",order=1,duration_ms=8000,camera="固定中景",action="测试角色推开店门。",
+        shots = [dict(id="K01",segment="G01",order=1,duration_ms=8000,camera="固定中景",action="阿福推开店门。",visibleRoles=["afu"],propStates={},
                       origin=dict(scene="场01",line="测试分场"))]
         segments = [dict(id="G01",order=1,strategy="flex")]
         return draft(req, shots=_json.dumps(shots, ensure_ascii=False), segments=_json.dumps(segments))
@@ -238,7 +241,12 @@ def directed(req: ExecRequest, name: str, stage_reply=True):
                     s["camera"] = "正俯拍 近景"
         return draft(req, shots=_json.dumps(plan["shots"], ensure_ascii=False))
     if "prompt_scaffold" in sec and "segments" in writable:
-        return draft(req, segments=sec["prompt_scaffold"].strip())
+        segments=_json.loads(sec["prompt_scaffold"])
+        plan=_json.loads(sec["plan_layout"])
+        for sid,item in segments.items():
+            shots=[shot for shot in plan["shots"] if shot["segment"]==sid]
+            item["txt"]="\n".join(["参考："+'、'.join(r['label'] for r in item['refs']),*[f"Shot {n}: {shot['camera']}，{shot['action']}" for n,shot in enumerate(shots,1)],"overall_soundscape: 现场环境声","non_diegetic_music: N/A"])
+        return draft(req,segments=_json.dumps(segments,ensure_ascii=False))
     if "title" in writable:
         return draft(req, title="First Night Shift", body="Afu takes his first night shift.", suno_title="Night Shift",
                      suno_style="lofi, quiet, 90 BPM", suno_exclude="vocals")

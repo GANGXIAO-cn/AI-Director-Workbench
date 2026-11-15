@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS continuous_run(
   id TEXT PRIMARY KEY,
   episode_id TEXT NOT NULL REFERENCES episode(id),
   target_stage TEXT NOT NULL,                      -- 本步固定 'stress'
-  state TEXT NOT NULL CHECK(state IN ('running','paused','waiting_choice','waiting_quota','blocked','done','cancelled')),
+  state TEXT NOT NULL CHECK(state IN ('running','paused','waiting_external','done','cancelled','failed')),
   cursor TEXT NOT NULL DEFAULT '{}',                -- 见 B4.0
   reason TEXT,                                      -- 停下时的白话原因
   choice TEXT,                                      -- waiting_choice 时的选择卡（见 B5）
@@ -21,8 +21,8 @@ CREATE TABLE IF NOT EXISTS continuous_run(
   parent_id TEXT REFERENCES continuous_run(id),
   mode TEXT NOT NULL DEFAULT 'full' CHECK(mode IN ('full','fix')),
   scope TEXT NOT NULL DEFAULT '[]');
-CREATE UNIQUE INDEX IF NOT EXISTS continuous_one_active
-  ON continuous_run(episode_id) WHERE state IN ('running','paused','waiting_choice','waiting_quota','blocked');
+CREATE UNIQUE INDEX IF NOT EXISTS continuous_one_active_v2
+  ON continuous_run(episode_id) WHERE state IN ('running','paused','waiting_external');
 
 CREATE TABLE IF NOT EXISTS continuous_issue(
   id TEXT PRIMARY KEY, episode_id TEXT NOT NULL, continuous_id TEXT NOT NULL REFERENCES continuous_run(id),
@@ -483,6 +483,7 @@ def initialize(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
     with connect(path) as db:
         _migrate_stage_constraints(db, path)
+        _migrate_continuous_states(db)
         db.executescript(SCHEMA)
         if "error_class" not in {r[1] for r in db.execute("PRAGMA table_info(kickoff_check)")}:
             db.execute("ALTER TABLE kickoff_check ADD COLUMN error_class TEXT")
@@ -492,6 +493,56 @@ def initialize(path: Path):
             db.execute("ALTER TABLE continuous_run ADD COLUMN mode TEXT NOT NULL DEFAULT 'full'")
         if "scope" not in {r[1] for r in db.execute("PRAGMA table_info(continuous_run)")}:
             db.execute("ALTER TABLE continuous_run ADD COLUMN scope TEXT NOT NULL DEFAULT '[]'")
+
+
+def _migrate_continuous_states(db):
+    old=db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='continuous_run'").fetchone()
+    if not old or "'blocked'" not in old[0]:return
+    # Preserve the original rows and indexes, including historical decision receipts.
+    db.execute('PRAGMA foreign_keys=OFF')
+    db.execute('PRAGMA legacy_alter_table=ON')
+    db.execute('BEGIN IMMEDIATE')
+    try:
+        db.execute('ALTER TABLE continuous_run RENAME TO continuous_run_before_autonomy')
+        db.execute(SCHEMA.split(';',1)[0])
+        columns=[r[1] for r in db.execute('PRAGMA table_info(continuous_run_before_autonomy)')]
+        for raw in db.execute('SELECT * FROM continuous_run_before_autonomy'):
+            r=dict(raw);state=r['state'];c=json.loads(r['cursor']);choice=json.loads(r['choice'] or '{}')
+            if state in ('blocked','waiting_choice','waiting_quota'):
+                blocks=c.pop('pendingBlocks',None) or c.get('blocks') or []
+                c['blocks']=[]
+                for b in blocks if isinstance(blocks,list) else []:
+                    if not isinstance(b,dict) or b.get('kind') not in ('quota','auth','transient','image_wait'):continue
+                    kind=b['kind'];scope=b.get('scope') or 'run:'+str(c.get('stage','story'))+':recovery'
+                    batches=[bid for bid in (b.get('batchIds') or []) if isinstance(bid,str)]
+                    if kind=='image_wait' and not batches:continue
+                    at=b.get('at') if isinstance(b.get('at'),(int,float)) else r['updated_at']
+                    c['blocks'].append(dict(b,scope=scope,batchIds=batches,at=at,
+                        id=b.get('id') or f'{scope}|{kind}|'+(','.join(batches) or str(b.get('provider') or '')),
+                        lastTry=b.get('lastTry') if isinstance(b.get('lastTry'),(int,float)) else None,
+                        resetsAt=b.get('resetsAt') if isinstance(b.get('resetsAt'),(int,float)) else None))
+                if r['pause_requested']:state='paused'
+                elif c['blocks']:state='waiting_external'
+                elif choice.get('kind')=='preview' and db.execute('SELECT 1 FROM delivery WHERE id=? AND episode_id=?',(c.get('deliveryId'),r['episode_id'])).fetchone():state='done'
+                elif (state=='waiting_choice' and choice.get('kind') in ('visual','image_failed','direction','kickoff_conflict','story','repair','preview')) or c.get('judgmentKind') in ('商品入景选择','素材用途接续','引用用途核对'):
+                    state='running'
+                    if choice.get('kind')=='direction':
+                        pick=next((v for v in choice.get('candidates',[]) if v.get('recommended')),None)
+                        if pick and pick.get('story'):c.update(directionDone=True,storyGoal=pick['story'])
+                else:state='failed'  # No recoverable stage/request evidence; preserve diagnosis.
+                c['legacyResume']=dict(state=r['state'],reason=r['reason'],kind=choice.get('kind'))
+                r.update(state=state,cursor=dumps(c),choice=None)
+            elif state=='paused' and not r['pause_requested'] and c.get('resumeAfterRestart'):
+                r.update(state='running')
+            db.execute('INSERT INTO continuous_run('+','.join(columns)+') VALUES('+','.join('?' for _ in columns)+')',[r[k] for k in columns])
+        if db.execute('PRAGMA foreign_key_check(continuous_run)').fetchone():raise RuntimeError('连续制作历史记录引用无效')
+        db.execute('COMMIT')
+    except BaseException:
+        db.execute('ROLLBACK')
+        raise
+    finally:
+        db.execute('PRAGMA legacy_alter_table=OFF')
+        db.execute('PRAGMA foreign_keys=ON')
 
 
 def _migrate_stage_constraints(db, path):
