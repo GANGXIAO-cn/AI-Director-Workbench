@@ -34,7 +34,7 @@ def draft(req: ExecRequest, **fields) -> dict:
 
 def review(req: ExecRequest, decision="pass", issues=()) -> dict:
     ctx = context(req.prompt)
-    vid = ctx["reviewedVersionId"]
+    vid = ctx["reviewedVersionId"] or ("G01" if ctx["passName"] == "plan" else "全文")
     seg = ctx["segment"]
     if seg:
         obs = [dict(objectId=seg, versionId=vid, unit="segment", anchor="00:00", evidence="看到角色与动作")]
@@ -155,21 +155,27 @@ def directed(req: ExecRequest, name: str, stage_reply=True):
         ids=[m[1] for image in req.images if (m:=re.search(r'候选-([a-f0-9-]+)',image.name))]
         return dict(draft(req),kind='discussion',changes=[],directorRequest='',reply=_json.dumps([dict(versionId=i,verdict='usable') for i in ids]))
     if stage_reply and "directorRequest" in req.schema.get("properties", {}):
+        if "你是本集写稿人" in request:
+            proposal = dict(analysis="观众先看见送错蛋糕，悬念是学徒怎样发现失误。",directions=[
+                dict(key="A",title="追船",story="学徒追上渡船，靠盒上店章找到寿星。"),
+                dict(key="B",title="认错人",story="两个同名收件人争执，学徒用生日蜡烛找到真正的寿星。")],
+                recommendation="A",reason="追船给行动一个可见的期限。")
+            return dict(draft(req),kind="discussion",changes=[],directorRequest="",reply=_json.dumps(proposal,ensure_ascii=False))
+        if "你是本集定案专家" in request:
+            return dict(draft(req),kind="discussion",changes=[],directorRequest="",reply="选 B，把两人拿出同名票根作为中段转折，结尾由蜡烛兑现。")
         if "removedIds" in req.schema["properties"] and ("导演已经选择按讨论生成新稿" in p or "【测试：改稿】" in request):
             return dict(directed(req,name,stage_reply=False), directorRequest=request.strip(),reply="",removedIds=[])
         return dict(draft(req), kind="discussion", changes=[], directorRequest="", reply="本次只讨论当前稿件。", **({"removedIds":[]} if "removedIds" in req.schema["properties"] else {}))
     if req.kind == "topic_research":
         ref = re.search(r"^===== research_source · (R\d+) · ", p, re.M).group(1)
-        return {"candidates":[dict(title="错拿的钥匙", premise="值班员试图在交班前归还拿错的钥匙。",
+        return {"candidates":[dict(title=f"错拿的钥匙 {i+1}", premise=f"第{i+1}位值班员试图在交班前归还拿错的钥匙。",
                                    mechanism="两人互换线索", motivation="按时完成交班",
-                                   difference="将发现遗失改为主动归还。",reference_id=ref) for _ in range(req.schema["properties"]["candidates"]["minItems"])]}
+                                   difference="将发现遗失改为主动归还。",reference_id=ref) for i in range(req.schema["properties"]["candidates"]["minItems"])]}
     if req.kind == "free_chat":
         return {"reply":"已按本轮资料回应。"+request.strip()}
     if req.kind == "cut_explanation":
-        ctx = context(p)
-        at = int(re.search(r"atMs 填 (\d+)", p).group(1))
-        return dict(schemaVersion=1, kind="cut_explanation", runId=ctx["runId"], inputFingerprint=ctx["inputFingerprint"],
-                    atMs=at, judgement="cut", reason="（替身）两图主色与构图完全不同，没有连续运动的物体，判断为切镜。",
+        at = int(re.search(r"观察切点（毫秒）：(\d+)", p).group(1))
+        return dict(judgement="cut", reason="（替身）两图主色与构图完全不同，没有连续运动的物体，判断为切镜。",
                     evidence=[dict(atMs=max(0, at - 500), observation="（替身）切点前画面"),
                               dict(atMs=at + 500, observation="（替身）切点后画面")])
     if req.kind == "proposal":
@@ -245,8 +251,19 @@ def directed(req: ExecRequest, name: str, stage_reply=True):
         plan=_json.loads(sec["plan_layout"])
         for sid,item in segments.items():
             shots=[shot for shot in plan["shots"] if shot["segment"]==sid]
-            item["txt"]="\n".join(["参考："+'、'.join(r['label'] for r in item['refs']),*[f"Shot {n}: {shot['camera']}，{shot['action']}" for n,shot in enumerate(shots,1)],"overall_soundscape: 现场环境声","non_diegetic_music: N/A"])
+            item["txt"]="\n".join([*[f"Shot {n}: The subject moves into frame." for n,_ in enumerate(shots,1)],
+                                     "overall_soundscape: Footsteps.", "non_diegetic_music: N/A"])
+
         return draft(req,segments=_json.dumps(segments,ensure_ascii=False))
+    if "tempoBpm" in (req.schema or {}).get("properties", {}):
+        props = req.schema["properties"]
+        result = dict(title="First Night Shift", body="Afu takes his first night shift.", tags=[],
+                      tempoBpm=90, suno_title="Night Shift", suno_style="quiet lofi", suno_exclude="vocals")
+        basis = _json.loads(sec["publish_basis"])
+        result["cues"] = [dict(segment=s["segment"], at=s["at"], action="轻柔进入") for s in basis["segments"]]
+        if "extraFields" in props:
+            result["extraFields"] = {k:"本集补充" for k in props["extraFields"]["properties"]}
+        return result
     if "title" in writable:
         return draft(req, title="First Night Shift", body="Afu takes his first night shift.", suno_title="Night Shift",
                      suno_style="lofi, quiet, 90 BPM", suno_exclude="vocals")

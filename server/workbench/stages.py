@@ -7,7 +7,7 @@ from .storycheck import STORY_FIELDS, check_story, render_story
 from . import workflow, supplements
 from .worksheet import asset_product_code
 
-DOCUMENT_STAGES = {"characters", "world", "treatment", "script", "asset_design", "acting", "plan", "prompts"}
+DOCUMENT_STAGES = {"characters", "world", "treatment", "script", "asset_design", "acting", "plan", "prompts", "publish"}
 
 WRITABLE = {
     **workflow.FIELDS,

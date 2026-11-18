@@ -133,11 +133,11 @@ def prompt_from(entries: list[dict], trailer: str, purpose: str, document=False)
         head = "你负责本次限定范围的只读判断。只依据提供的材料，不使用工具，不读取其他文件。"
     body = "\n\n".join(f"===== {e['role']} · {e['name']} =====\n" + (e['text'] if e.get('text') is not None
                          else f"（图片，按顺序附在本次请求中，sha256={e['sha256']}）") for e in entries)
-    heading = "本次运行信息（仅供对照，不需要写进回复）" if document else "固定字段（回包原样填写）"
+    heading = "本次回复要求"
     return f"{head}\n\n{body}\n\n===== {heading} =====\n{trailer}\n"
 
 
-def draft_trailer(run_id, fingerprint, artifact_id, base_id, stage, entries=(), mode="changes", dialogue=False) -> str:
+def draft_trailer(stage, entries=(), mode="changes", dialogue=False) -> str:
     writable = WRITABLE[stage]
     if stage == "publish":
         import json
@@ -146,9 +146,12 @@ def draft_trailer(run_id, fingerprint, artifact_id, base_id, stage, entries=(), 
         enabled = {f["key"] for f in settings(cfg)["additional_fields"]}
         writable = [k for k in writable if k not in LEGACY_KEYS or k in enabled]
     fields = ", ".join(writable)
+    if stage == "publish":
+        fields += "\nmusic 只填 backup（备用）或 enabled（启用）。配乐描述写入对应风格字段，分段处理写入 cues。"
+        if settings(cfg).get("copy_format") == "instrumental_v1":
+            fields += "\nsuno_style 写出具体速度，例如 112 BPM；suno_exclude 包含 vocals。tags 只填本集新增标签。"
     if mode == "document":
-        return (f"运行号：{run_id}\n输入指纹：{fingerprint}\n目标对象：{artifact_id}\n基版：{base_id or 'null'}\n"
-                f"可写字段：{fields}\n"
+        return (f"可写字段：{fields}\n"
                 + ('直接输出一个 JSON 对象，不加代码块，前后也不写任何说明文字：{"kind":"draft","fields":{字段名: 字段值}}。'
                    "fields 只放本次要修改的字段，字段名只能取自上述可写字段。" if dialogue else
                    # 实测 153：新稿按 Antigravity 的自然写法要求“裸稿件”，即顶层直接是要修改的字段。
@@ -162,30 +165,29 @@ def draft_trailer(run_id, fingerprint, artifact_id, base_id, stage, entries=(), 
         guidance += ("本次是参考包改编。adaptation 填 JSON 数组，至少写一行实际借鉴或改写的事件。"
                      "每行 pack 和 unit 取自本次 adaptation_source 的 pack 和 units[].code，"
                      "original 写原事件，adapted 写本集新事件，reason 写取舍理由。仅修订其他字段时可沿用基稿的对照。")
-    return (f"运行号：{run_id}\n输入指纹：{fingerprint}\n目标对象：{artifact_id}\n基版：{base_id or 'null'}\n"
-            f"可写字段：{fields}\n"
-            "回包为 kind=draft：changes 中每项 targetId 为目标对象，field 只能是可写字段，value 为该字段完整新文本。"
-            "baseVersionId 填基版（为 null 时填 null）。" + guidance)
+    return (f"可写字段：{fields}\n"
+            "提交 changes 数组，每项只写 field（可写字段名）和 value（完整新文本）。"
+            + guidance)
 
 
-def review_trailer(run_id, fingerprint, version_id, required_keys, stage="story") -> str:
+def review_trailer(required_keys, stage="story") -> str:
     if stage == "plan":
-        return (f"运行号：{run_id}\n输入指纹：{fingerprint}\n被审版本：{version_id}\n遍次：plan\n"
-                "回包为kind=review、pass=plan，reviewedVersionId填被审版本。observations记录分镜实际观察，"
-                "objectId填段号或窗口编号，versionId填被审版本；issues定位具体原句和影响。"
+        return (f"遍次：plan\n"
+                "observations记录分镜实际观察，"
+                "objectId填段号或窗口编号；issues定位具体原句和影响。"
                 "仅违反已提供设定时填写settingId，其他为null。不要补造故事审核的逐条编号观察。"
                 "无问题decision=pass、issues=[]；有问题decision=return或uncertain。")
     keys = "、".join(required_keys) or "（无）"
-    return (f"运行号：{run_id}\n输入指纹：{fingerprint}\n被审版本：{version_id}\n遍次：story\n"
+    return (f"遍次：story\n"
             f"必守设定编号：{keys}\n"
-            "回包为 kind=review，pass=story，reviewedVersionId 填被审版本。observations 第一条为冷读复述"
-            "（objectId 与 versionId 均填被审版本）；每个必守设定编号各写一条 observation，objectId 填该编号、versionId 填被审版本。"
-            "issues 中 location.objectId 与 versionId 填被审版本，anchor 写段落或原句位置；违反设定时 category=setting、"
+            "observations 第一条为冷读复述"
+            "（objectId 填“全文”）；每个必守设定编号各写一条 observation，objectId 填该编号。"
+            "issues 中 location.anchor 写段落或原句位置；违反设定时 category=setting、"
             "settingId 填该设定编号，否则 settingId 为 null。没有问题时 decision=pass 且 issues 为空；"
             "有问题时 decision=return 或 uncertain。")
 
 
-def segment_review_trailer(run_id, fingerprint, version_id, pass_name, segment, required_keys) -> str:
+def segment_review_trailer(pass_name, segment, required_keys) -> str:
     extra = ("本遍为冷读：检查最终输入的表达、标签和文字自洽；settingId 一律为 null。"
              if pass_name == "cold_read" else
              "本遍为对照：检查本段提示词是否忠实翻译已采用的剧本、表演、镜头及素材用途，定位遗漏、错引和表达偏离。"
@@ -193,23 +195,21 @@ def segment_review_trailer(run_id, fingerprint, version_id, pass_name, segment, 
              "适用导演决定仍逐条观察，objectId 填决定编号；未落实记 category=decision 并填写 decisionId。"
              "对设定或制作补充的可选观察，objectId 可填输入中实际提供的设定编号或补充 code，也可把编号写在本段观察的 anchor。"
              "真实表达矛盾引用本稿原句与对应来源，不要求重复抄写整套角色标准或重新证明上游方案。")
-    return (f"运行号：{run_id}\n输入指纹：{fingerprint}\n被审版本：{version_id}\n遍次：{pass_name}\n被审段：{segment}\n"
-            f"项目必守设定参考（仅检查本段表达是否违背，非逐条填表要求）：{'、'.join(required_keys) or '（无）'}\n"
-            f"回包为 kind=review，pass={pass_name}，reviewedVersionId 填被审版本。observations 至少包含一条 objectId={segment} 的本段观察。"
-            "所有 versionId 填被审版本，unit 用 segment 或 grid_cell；issues.location.objectId 只能填被审段，anchor 写秒数、原句或格号。" + extra +
+    return (f"遍次：{pass_name}\n被审段：{segment}\n"
+            + f"项目必守设定参考（仅检查本段表达是否违背，非逐条填表要求）：{'、'.join(required_keys) or '（无）'}\n"
+            + ("observations 至少包含一条本段观察。" if pass_name == "cold_read" else f"observations 至少包含一条 objectId={segment} 的本段观察。")
+            + "unit 用 segment 或 grid_cell，anchor 写秒数、原句或格号。" + extra +
             "尚未生成的视频、实际触达、轴线、动态剪接及声画同步未验证，只在 observations 说明未测，不因缺少这些证据生成 issues 或 uncertain。"
             "不将静态参考图当作动作完成证明，也不声称动态已通过。没有本阶段实际表达问题时 decision=pass 且 issues 为空；真实表达问题用 return 或 uncertain 并定位原句。")
 
 
-def judgment_trailer(run_id, fingerprint, artifact_id, base_id, document=False):
+def judgment_trailer(document=False):
     import json
     example = dict(kind="discussion", reply='{"业务字段":"按本次判断任务约定填写"}', directorRequest="")
     if document:
         example["fields"] = {}
     else:
-        example.update(schemaVersion=1, runId=run_id, inputFingerprint=fingerprint,
-                       baseVersionId=base_id, changes=[])
-    return (f"运行号：{run_id}\n输入指纹：{fingerprint}\n目标对象：{artifact_id}\n基版：{base_id or 'null'}\n"
-            "本次只做指定判断，不起草或修改稿件。只返回完整外层 JSON 对象；reply 是业务 JSON 对象编码后的字符串。"
+        example["changes"] = []
+    return ("本次只做指定判断，不起草或修改稿件。只返回完整外层 JSON 对象；reply 是业务 JSON 对象编码后的字符串。"
             "kind 固定为 discussion，directorRequest 留空，修改字段保持空。唯一适用的外层示例：\n"
             + json.dumps(example, ensure_ascii=False))

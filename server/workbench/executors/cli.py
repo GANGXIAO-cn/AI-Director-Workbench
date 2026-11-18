@@ -41,6 +41,7 @@ def local_proxy_env() -> dict:
 def classify(text: str) -> str:
     s = text.lower()
     for tag, words in [
+        ("model_not_found", ["model_not_found", "model is not supported when using codex"]),
         ("quota", ["usage limit", "rate limit", "5-hour limit", "quota", "limit reached", "out of credits",
                    "insufficient_quota"]),
         ("authentication", ["unauthorized", "not logged in", "authentication required", "not authenticated",
@@ -378,7 +379,9 @@ class AntigravityExecutor(CliExecutor):
         return Path(found) if found else None
 
     def native_identity(self, binary, env):
-        return dict(authenticated=None, accountLabel=None)   # only a real request proves it (phase 0)
+        # ConnectionsMixin serves explicit native-banner verification receipts;
+        # ordinary status reads must not launch an interactive CLI each time.
+        return dict(authenticated=None, accountLabel=None)
 
     def start(self, req: ExecRequest) -> ExecOutcome:
         binary = self.binary()

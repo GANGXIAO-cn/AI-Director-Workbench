@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AttentionTag, useAttention, useAttentionTitle } from "./Attention";
-import { BookOpen, Boxes, Clapperboard, FileClock, FolderOpen, Images, ListChecks, Menu,
+import { BookOpen, Clapperboard, FileClock, FolderOpen, Images, ListChecks, Menu,
   MessagesSquare, NotebookPen, Palette, PanelLeftClose, PencilLine, Settings,
   type LucideIcon } from "lucide-react";
 
@@ -38,8 +38,7 @@ export function SideNav({active, projects, projectId, owner, episode, hash}:{
   } catch { /* use recent episodes */ }
   const items:NavItem[] = [["idea","创作","#/",PencilLine],["projects","项目","#/projects",FolderOpen]];
   items.push(["library","资产库",owner ? "#/p/"+owner+"/library" : "#/library",Images]);
-  items.push(["knowledge","剧本知识库","#/knowledge",BookOpen],["palette","导演风格与色卡","#/palette",Palette],
-    ["deliveries","本地交付包","#/deliveries",Boxes]);
+  items.push(["knowledge","剧本知识库","#/knowledge",BookOpen],["palette","导演风格与色卡","#/palette",Palette]);
   if (episode || workspace) items.push(["episode","导演工作区",episode?hash:workspace,MessagesSquare]);
   const system:NavItem[]=[["tasks","任务记录","#/sys/tasks",ListChecks],["settings","设置","#/sys/settings",Settings]];
   const link=([key,label,href,Icon]:NavItem)=><a key={key} className={"nav"+(active===key?" on":"")} href={href}

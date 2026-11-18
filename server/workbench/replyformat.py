@@ -21,3 +21,45 @@ def document_to_internal(run, task, reply, dialogue=None, writable=()):
         if dialogue.get("auto"):
             result["removedIds"] = reply.get("removedIds", [])
     return result
+
+
+def bind_writing_reply(run, task, reply, *, selectable_kind=False):
+    """Bind the result of this executor invocation to the frozen draft target."""
+    if not isinstance(reply, dict):
+        return reply
+    result = dict(reply, schemaVersion=1, runId=run["id"], inputFingerprint=run["input_hash"])
+    if not selectable_kind:
+        result.setdefault("kind", "draft")
+    if result.get("kind") in ("draft", "discussion"):
+        result["baseVersionId"] = run["base_version_id"]
+        if isinstance(result.get("changes"), list):
+            result["changes"] = [dict(change, targetId=task["artifact_id"]) if isinstance(change, dict) else change
+                                 for change in result["changes"]]
+    return result
+
+
+def bind_review_reply(run, reply, pass_name, segment):
+    if not isinstance(reply, dict):
+        return reply
+    version = run["target_version_id"]
+    result = dict(reply, kind="review", schemaVersion=1, runId=run["id"],
+                  inputFingerprint=run["input_hash"], reviewedVersionId=version)
+    result["pass"] = pass_name
+
+    def locate(location, observation):
+        if not isinstance(location, dict):
+            return location
+        location = dict(location, versionId=version)
+        if pass_name == "story":
+            if not observation or location.get("objectId") in ("全文", None):
+                location["objectId"] = version
+        elif pass_name == "cold_read" or (pass_name == "comparison" and not observation):
+            location["objectId"] = segment
+        return location
+
+    if isinstance(result.get("observations"), list):
+        result["observations"] = [locate(item, True) for item in result["observations"]]
+    if isinstance(result.get("issues"), list):
+        result["issues"] = [dict(item, location=locate(item["location"], False))
+                            if isinstance(item, dict) and "location" in item else item for item in result["issues"]]
+    return result

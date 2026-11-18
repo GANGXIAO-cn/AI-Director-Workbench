@@ -236,7 +236,7 @@ def test_fallback_selects_unique_identifier_aliases_only():
                                                dict(key='state_parasol',shots=['S2'])]
 
 
-def test_text_state_preserves_base_for_dependents(tmp_path):
+def test_missing_state_keeps_image_and_original_dependencies(tmp_path):
     from workbench.stressrepairs import adopted
     env,case,cid,_=finishing_fixture(tmp_path)
     wb,eid=env.wb,case['eid']
@@ -246,12 +246,12 @@ def test_text_state_preserves_base_for_dependents(tmp_path):
     env.save_adopt(eid,'asset_design',dict(assets=items,notes=''),'wet-design')
     with env.db() as db:
         wb._continuous_cursor(cid,base=adopted(db,eid),userStamp=wb._continuous_user_stamp(db,eid,[]),pendingUserChange=False)
-    assert wb._material_bottleneck(cid,wb._need(eid,'wet'),dict(reason='未取得文件'))
-    assert wb._need(eid,'wet')['decision']=='text_only'
+    assert not wb._material_bottleneck(cid,wb._need(eid,'wet'),dict(reason='未取得文件'))
+    assert wb._need(eid,'wet')['decision']!='text_only'
     dep=wb._need(eid,'detail')
-    assert dep['depends_on']==['base'] and '湿透的雨衣' in dep['image_prompt']
+    assert dep['depends_on']==['wet'] and dep['image_prompt']=='下摆近景'
     state=next(s for s in wb.cast_matrix(eid)['roleStates'] if s['stateId']=='wet')
-    assert state['textOnly'] and not state['confirmed']
+    assert not state['textOnly'] and not state['confirmed']
 
 
 def test_readable_checks_use_derived_presence(tmp_path,monkeypatch):

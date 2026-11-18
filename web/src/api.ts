@@ -8,16 +8,20 @@ export class ApiError extends Error {
 }
 
 async function ensureToken() {
-  if (!token) token = (await (await fetch("/api/session")).json()).token;
+  if (!token) token = (await (await fetch("/api/session", {cache: "no-store"})).json()).token;
   return token!;
 }
 
-async function send<T = any>(method: string, path: string, body?: unknown, form?: FormData): Promise<T> {
+async function send<T = any>(method: string, path: string, body?: unknown, form?: FormData, canRefresh = true): Promise<T> {
   const headers: Record<string, string> = {};
   if (method !== "GET") headers["x-adw-token"] = await ensureToken();
   if (body !== undefined) headers["content-type"] = "application/json";
   const res = await fetch("/api" + path, { method, headers, body: form ?? (body !== undefined ? JSON.stringify(body) : undefined) });
   const data = await res.json().catch(() => ({}));
+  if (canRefresh && method !== "GET" && res.status === 403 && data.error === "missing session token") {
+    if (token === headers["x-adw-token"]) token = null;
+    return send<T>(method, path, body, form, false);
+  }
   if (!res.ok) throw new ApiError(res.status, data.error ?? res.statusText, data.detail, data.current);
   return data as T;
 }

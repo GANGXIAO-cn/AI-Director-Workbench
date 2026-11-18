@@ -8,7 +8,7 @@
     "story": ["puggy-methods/story.md"],
     "script": ["puggy-methods/script.md"],
     "asset_design": ["puggy-methods/asset_design.md"],
-    "acting": ["puggy-methods/acting.md"],
+    "plan": ["puggy-methods/acting.md"],
     "prompts": ["puggy-methods/prompts.md"]
   },
   "extractedFrom": [
@@ -16,6 +16,9 @@
     "/Users/xiaogang/Documents/自媒体 2/series/milo-leo/系列设定.md"
   ],
   "settings": [
+    {"key": "short-video-story-rhythm", "category": "rule", "strength": "required",
+     "content": "故事与剧本创作、自检和审稿均核对三处。① 前三秒钩子：第一画面就进入本集特有的异常，陌生观众静音也能看出发生了什么，并对接下来的结果产生具体期待。② 第一次回报：开头之后尽早让这个期待得到一个可见的小结果，例如本领奏效、笑点落地或意外后果；省去只为解释开场而重复的准备。③ 中段新看点：通过角色换招、对方反制、代价变化或新信息，让观众有新的期待。反转按故事选用，次数和发生秒点由本集决定。审稿以正文中的具体动作及结果为依据，定位最需要调整的段落；文字阶段按预期画面判断，实际前三秒留给粗剪核对。专家模式沿用自动决策和推进，由专家自行取舍、按需局部修订；这三项不触发人工选方案、确认或额外审批。",
+     "sourceRef": "PUGGY ROOM 短视频创作与审稿要求", "userReason": "强化开头、首次回报和中段吸引力，沿用专家自动推进"},
     {"key": "cat-no-dialogue", "category": "rule", "strength": "required",
      "content": "MILO、LEO 不说话、不唱歌，无拟人配音或内心独白；喜剧是无对白的肢体与视觉喜剧。",
      "sourceRef": "系列设定.md#固定角色资产", "userReason": "系列已确认的生产边界"},

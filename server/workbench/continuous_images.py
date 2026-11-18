@@ -8,7 +8,7 @@ from .errors import Rejected,Conflict,row
 from .worksheet import CATEGORIES, asset_product_code
 from .progress_expert import ProgressExpert
 from .storage import canonical, sha256_bytes
-from .images import INTERRUPTED_IMAGE
+from .images import INTERRUPTED_IMAGE, TRANSPORT_FAILURE
 
 
 local=threading.local()
@@ -122,10 +122,8 @@ class ContinuousImages(ProgressExpert):
                 if not any(r['state']=='succeeded' for r in requests):
                     attempts=state['attempts'];attempt=attempts[-1]
                     errors=[r.get('error') or r['state'] for r in requests]
-                    interrupted=bool(errors) and all(e==INTERRUPTED_IMAGE for e in errors)
+                    interrupted=bool(errors) and all(e in (INTERRUPTED_IMAGE, TRANSPORT_FAILURE) for e in errors)
                     auth=batch['provider']=='codex-native' and any('本机Codex尚未登录' in e for e in errors)
-                    if interrupted and state.get('interruptionRetries',0)>=3:
-                        raise MaterialWait('连续 3 次中断恢复后仍未取得图片')
                     attempt['result']='被打断，未出图' if interrupted else '出图失败：'+'；'.join(dict.fromkeys(errors))
                     if interrupted:attempt['interrupted']=True
                     if auth:attempt['blockedBy']='auth'
@@ -289,11 +287,6 @@ class ContinuousImages(ProgressExpert):
                 need=self._image_generate(cid,need)
             available=[v for v in need['candidates'] if v not in retired]
             if not available:
-                latest=self._image_state(cid,key)
-                attempts=latest.get('attempts',[])
-                if (CATEGORIES.get(need['kind']) in ('state','costume','scene','prop') and attempts
-                        and not latest.get('pendingBatch') and not attempts[-1].get('interrupted')):
-                    return dict(reason='本条生成已结束，未取得候选图',running=False)
                 raise MaterialWait('出图未取得文件，可重试',kind='transient',role='image')
             vid=available[-1]
             entry=state.get('libraryEntries',{}).get(vid)
@@ -382,9 +375,10 @@ class ContinuousImages(ProgressExpert):
         return [dict(shotId=s['id'],visual=s.get('action','')) for s in (ordered[round(i*(len(ordered)-1)/8)] for i in range(9))]
 
     def _grid_artwork(self,cid,eid,plan_id):
+        from . import gridcontinuity
         plan=self._continuous_version(plan_id)
         matrix=self.cast_matrix(eid)
-        owned=self._continuous_record(cid)['cursor'].get('gridArtwork',{})
+        owned=gridcontinuity.restore(self,cid,eid)
         current_grids={s['id'] for s in plan['segments'] if s['strategy']=='grid'}
         for sid,g in list(owned.items()):
             if sid in current_grids:continue
@@ -395,9 +389,6 @@ class ContinuousImages(ProgressExpert):
                     if c.get('assetVersionId')!=board:continue
                     source=g.get('roleInputs',{}).get(role) or matrix['roster'].get(role,{}).get('assetVersionId')
                     if source:self.set_cast(eid,sid,role,'ok',source,note='分镜改用独立参考图',command_id=f'{cid}:restore-cast:{plan_id}:{sid}:{role}:{source}')
-            rule=self._continuous_image_rule(eid,board)
-            if rule and rule.get('selectedBy')=='agent' and set(rule.get('autoBindings',{}))=={'grid:'+sid}:
-                self.mark_image(eid,board,'required',enabled=False,command_id=f'{cid}:release-board:{plan_id}:{sid}:{board}')
             owned.pop(sid)
             self._continuous_cursor(cid,gridArtwork=owned)
         from . import worksheetrefs
@@ -424,7 +415,7 @@ class ContinuousImages(ProgressExpert):
             replacements=self._continuous_record(cid)['cursor'].get('reviewReplacements',{})
             # Keep accepted artwork when only a visually reviewed source was repaired.
             original_inputs=prior.get('inputs',[])
-            if prior.get('prompt')==prompt and [replacements.get(v,v) for v in original_inputs]==inputs:continue
+            if prior.get('prompt')==prompt and {replacements.get(v,v) for v in original_inputs}==set(inputs):continue
             basis=sha256_bytes(canonical([sid,prompt,inputs]))
             if owned.get(sid,{}).get('basis')==basis:continue
             keys[sid]=basis
@@ -437,7 +428,7 @@ class ContinuousImages(ProgressExpert):
                 job=self.create_batch(eid,operation='generate',items=fresh,command_id=cid+':grids:'+sha256_bytes(canonical(fresh)),**opts)
                 receipts.update({item['basis']:job['batchId'] for item in fresh})
                 self._continuous_cursor(cid,gridBatches=receipts)
-            waiting=[];failed=[]
+            waiting=[];failed=[];interrupted=[]
             for bid in dict.fromkeys(receipts[item['basis']] for item in items):
                 batch=self.batch_view(bid)
                 if not batch['authorization']:self.authorize_batches(eid,{bid:batch['summary_hash']},cid+':grid-auth:'+bid)
@@ -450,17 +441,19 @@ class ContinuousImages(ProgressExpert):
                         item=batch['spec']['items'][r['sourceOrdinal']-1];sid=item['segments'][0]
                         if keys.get(sid)!=item['basis']:continue
                         if r['state']=='succeeded':
-                            old=owned.get(sid,{}).get('versionId')
-                            if old and old!=r['asset_version_id']:
-                                self.mark_image(eid,old,'required',enabled=False,command_id=f'{cid}:retire-grid:{old}:{sid}')
                             owned[sid]=dict(roleInputs={role:source for role,source in owned.get(sid,{}).get('roleInputs',{}).items() if source in item['inputs']},versionId=r['asset_version_id'],basis=item['basis'],inputs=item['inputs'],prompt=item['prompt'],title='本段九宫格：'+'；'.join(str(s.get('action','')) for s in plan['shots'] if s['segment']==sid)[:120])
                         elif r['state'] in ('failed','confirmed_not_executed'):
-                            if not r['replaces_id'] and turn==0:retry.append(r['id'])
+                            if r.get('error') in (INTERRUPTED_IMAGE, TRANSPORT_FAILURE):
+                                if turn==0:retry.append(r['id'])
+                                else:interrupted.append(sid)
+                            elif not r['replaces_id'] and turn==0:retry.append(r['id'])
                             else:failed.append(sid)
                         elif bid not in waiting:waiting.append(bid)
                     if not retry:break
                     for rid in retry:self.resubmit_request(rid,f'{cid}:grid-resubmit:{rid}')
                 self._continuous_cursor(cid,gridArtwork=owned)
+            if interrupted:
+                self._continuous_problem(cid,'九宫格连接中断，等待补图：'+'、'.join(interrupted),blocks=[self._recovery_block('grid:'+sid,'transient',role='image') for sid in interrupted])
             if failed:
                 # A storyboard is a drawing strategy. Preserve the shots and use
                 # the segment's actual base references when the drawing service fails.
@@ -498,6 +491,7 @@ class ContinuousImages(ProgressExpert):
                 # The creation receipt proves the drawing source, not visual fidelity.
                 self._continuous_cursor(cid,gridArtwork=owned)
                 self.set_cast(eid,sid,role,'ok',vid,note='本段九宫格以已绑定的角色参考版本绘制：'+sources[role],opening_confirmed=True,command_id=f'{cid}:board-cast:{sid}:{role}:{vid}')
+        gridcontinuity.reconcile(self,cid,eid,plan_id,owned)
         return {s['id']:owned[s['id']] for s in plan['segments'] if s['strategy']=='grid'}
 
     def _episode_image_review(self,cid,eid,rows,grids=None):
@@ -580,10 +574,6 @@ class ContinuousImages(ProgressExpert):
                         self._continuous_adopt(cid,'plan',self._continuous_internal_version(cid,update['versionId']))
                         self._continuous_products(cid)
                 elif failures:
-                    plan=self._continuous_version(self._continuous_art(eid,'plan')['adopted_version_id'])
-                    matrix=self.cast_matrix(eid)
-                    fixed={cell.get('assetVersionId') for row in matrix['rows'] for cell in row['cells'].values()}
-                    fixed.update(shot.get(k) for shot in plan['shots'] for k in ('startAssetId','endAssetId'))
                     remaining=[]
                     for key,reason in failures:
                         need=self._need(eid,key)
@@ -592,11 +582,6 @@ class ContinuousImages(ProgressExpert):
                             with cursor_lock(cid):
                                 replacements=self._continuous_record(cid)['cursor'].get('reviewReplacements',{})
                                 self._continuous_cursor(cid,reviewReplacements={**replacements,vid:need['adopted_version_id']})
-                            continue
-                        if (CATEGORIES.get(need['kind']) in ('state','costume','prop','scene') and vid not in fixed
-                                and not self._continuous_image_rule(eid,vid)
-                                and not any(vid in g['inputs'] for g in (grids or {}).values())
-                                and self._material_text_only(cid,need,dict(summary='修图未取得文件，按原素材文字说明接续'))):
                             continue
                         remaining.append((key,reason))
                     if not remaining:continue
@@ -678,10 +663,11 @@ class ContinuousImages(ProgressExpert):
                 raise MaterialWait('修图等待原请求回执',kind='image_wait',role='image',batchIds=[batch['id']])
             error=req.get('error') or req['state']
             external='quota' if 'insufficient_quota' in error else 'auth' if '本机Codex尚未登录' in error else None
-            if external and not req.get('replaces_id'):
+            if error in (INTERRUPTED_IMAGE, TRANSPORT_FAILURE):external='transient'
+            if external and (external=='transient' or not req.get('replaces_id')):
                 provider='codex' if external=='auth' else batch['provider']
                 block=self._recovery_block('need:'+key,external,provider=provider,role='image',batchIds=[batch['id']])
-                if block['id'] in (cursor.get('autoScope') or []):
+                if block['id'] in (cursor.get('autoScope') or []) or (external=='transient' and cursor.get('autoScope') is None and cursor.get('resumedAt')):
                     self.resubmit_request(req['id'],f'{cid}:repair-resume:{req["id"]}')
                     self.execute_batch(batch['id'])
                     req=next(r for r in self.batch_view(batch['id'])['requests'] if not r.get('replaced'))
@@ -693,6 +679,8 @@ class ContinuousImages(ProgressExpert):
                     error=req.get('error') or req['state']
                 else:
                     raise MaterialWait(error,kind=external,provider=provider,role='image',batchIds=[batch['id']])
+            if error in (INTERRUPTED_IMAGE, TRANSPORT_FAILURE):
+                raise MaterialWait(error,kind='transient',provider=batch['provider'],role='image',batchIds=[batch['id']])
             errors.append(error)
             if 'insufficient_quota' in error or '本机Codex尚未登录' in error:
                 return key,error
@@ -834,53 +822,15 @@ class ContinuousImages(ProgressExpert):
         eid=need['episode_id'];key=need['need_key'];state=self._image_state(cid,key)
         reason=wait.get('reason','') if isinstance(wait,dict) else str(wait)
         # The scheduler handles live requests before considering a local fallback.
-        if state.get('pendingBatch') or (isinstance(wait,dict) and wait.get('running')):
+        if need.get('missing') or state.get('pendingBatch') or (isinstance(wait,dict) and wait.get('running')):
             return False
         if not need['image_prompt'] and not state.get('inputFilled'):
             prompt='生成'+need['title']+'的制作参考图。'+(need.get('description') or '')
             self.set_asset_need(eid,key,need['revision'],'edit_prompt',f'{cid}:fill:{key}:{state.get("epoch",0)}',prompt=prompt)
             self._image_state(cid,key,inputFilled=True)
             return True
-        if CATEGORIES.get(need['kind']) in ('scene','prop','state','costume'):
-            if state.get('textOnlyPhase') not in ('failed','done'):
-                answer=state.get('textOnlyAction') or dict(summary='沿用基图和文字说明：'+need['description'])
-                return self._material_text_only(cid,need,answer)
         self._material_issue(cid,need,text=reason,state='missing')
         return False
-
-    def _material_text_only(self,cid,need,answer):
-        eid=need['episode_id'];key=need['need_key'];state=self._image_state(cid,key)
-        epoch=state.get('epoch',0)
-        if not state.get('textOnlyPhase'):
-            art=self._continuous_art(eid,'asset_design')
-            dependents=[r['need_key'] for r in self.asset_worksheet(eid)['rows'] if key in r['depends_on'] and r['decision']!='text_only']
-            state=self._image_state(cid,key,textOnlyTried=True,textOnlyPhase='deps',textOnlyAction=answer,textOnlyBase=art['adopted_version_id'],textOnlyDependents=dependents)
-        try:
-            if state['textOnlyPhase']=='deps' and state['textOnlyDependents']:
-                art=self._continuous_art(eid,'asset_design')
-                base=state['textOnlyBase']
-                assets=self._continuous_version(base)['assets']
-                by_key={item['id']:item for item in assets}
-                missing=by_key[key]
-                for dep in state['textOnlyDependents']:
-                    item=by_key[dep]
-                    item['dependsOn']=list(dict.fromkeys(v for k in item.get('dependsOn',[]) for v in
-                        (missing.get('dependsOn',[]) if k==key else [k])))
-                    item['imagePrompt']=(item.get('imagePrompt') or item['description'])+'。文字参考：'+missing['description']
-                update=self.save_manual(art['id'],base,dict(assets=assets),f'{cid}:textonly-deps:{base}:{key}',note='保留基图依赖并以文字传递缺失状态')
-                vid=self._continuous_internal_version(cid,update['versionId'])
-                if art['adopted_version_id'] not in (vid,base):raise Conflict('依赖调整期间资产设计已更新')
-                if art['adopted_version_id']!=vid:self._continuous_adopt(cid,'asset_design',vid)
-            self._image_state(cid,key,textOnlyPhase='set')
-            need=self._need(eid,key)
-            if need['decision']!='text_only':
-                self.set_asset_need(eid,key,need['revision'],'text_only',f'{cid}:textonly:{key}:{epoch}:set',reason=answer['summary'])
-            self._image_state(cid,key,textOnlyPhase='done')
-            return True
-        except Rejected as exc:
-            self._image_state(cid,key,textOnlyPhase='failed')
-            self._material_issue(cid,need,text='文字降级未完成：'+str(exc),state='missing')
-            return False
 
     def _director_adopted(self,eid,vid):
         """实测 144：这张已采用图不是 AI 选的（没有 AI 的选图或暂用记录），就是导演在备图工作单亲手采用的。"""
@@ -908,7 +858,7 @@ class ContinuousImages(ProgressExpert):
             values=[r['body'] for r in self.image_assessments(eid,need['need_key']) if r['version_id']==vid]
             # Adopted assets are production decisions, including legacy ones.
             # Keep any actual observations; absence is not a new rejection.
-            observation=values[-1]['observation'] if values else '沿用已采用素材；历史看图观察未登记。'
+            observation=(values[-1].get('observation') or '').strip() if values else ''
             if CATEGORIES.get(need['kind'])=='identity' and need['role_id'] and need['state_id'] in (None,'','default','base'):
                 with connect(self.db_path) as db:fixed=bool(db.execute('SELECT 1 FROM fixed_role_asset WHERE episode_id=? AND role=? AND asset_version_id=?',(eid,need['role_id'],vid)).fetchone())
                 appearance='' if fixed else need['description'].strip() or observation.split('。')[0]
@@ -919,7 +869,11 @@ class ContinuousImages(ProgressExpert):
                 self._continuous_log(cid,'assets','fill_observation',vid,'采用身份图并登记外观',dict(observation=appearance))
             for state in matrix['roleStates']:
                 if (state['role'],state['stateId'])!=(need['role_id'],need['state_id']):continue
-                if state['confirmed'] and self._continuous_record(cid)['cursor'].get('reviewReplacements',{}).get(state.get('imageId'))!=vid:continue
+                if state['confirmed'] and state.get('imageId')==vid:continue
+                if not observation:
+                    checked=self.assess_images(eid,[vid],f'{cid}:observe-state:{state["designHash"]}:{vid}',need_key=need['need_key'],
+                        context=dict(instruction='复看这张已采用的状态图，在 observation 写明图中实际可见的角色外观、状态及限制。不重选、不重新出图。'),continuous_id=cid)
+                    observation=checked[0]['observation'].strip()
                 self.confirm_role_state(eid,state['role'],state['stateId'],state['designHash'],vid,observation,f'{cid}:role-state:{state["designHash"]}:{vid}')
                 self._continuous_log(cid,'assets','fill_observation',vid,'继承已采用状态图与现有观察',dict(observation=observation))
         for lock in self.space_locks(eid):

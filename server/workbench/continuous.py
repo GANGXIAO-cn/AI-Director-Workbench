@@ -124,7 +124,16 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
                 requests=db.execute("""SELECT b.provider,b.model,r.state,count(*) n FROM image_batch b
                     JOIN image_request r ON r.batch_id=b.id WHERE b.episode_id=?
                     GROUP BY b.provider,b.model,r.state ORDER BY max(b.created_at) DESC""",(episode_id,))
-                image_progress=dict(counts,requests=[dict(r) for r in requests])
+                failure=db.execute("""SELECT r.ordinal,r.replaces_id,r.error,b.spec FROM image_request r
+                    JOIN image_batch b ON b.id=r.batch_id
+                    WHERE b.episode_id=? AND r.state IN ('failed','unknown') AND r.error IS NOT NULL
+                    ORDER BY coalesce(r.ended_at,r.submitted_at,b.created_at) DESC LIMIT 1""",(episode_id,)).fetchone()
+                latest_error=None
+                if failure:
+                    ordinal=self._original_ordinal(failure)
+                    item=json.loads(failure['spec'])['items'][ordinal-1]
+                    latest_error=dict(title=(item.get('target') or {}).get('name'),error=failure['error'])
+                image_progress=dict(counts,requests=[dict(r) for r in requests],latestError=latest_error)
         return dict(run=value,execution=execution,imageProgress=image_progress,methods=methods,decisions=decisions,expert=self.episode_expert(episode_id),issues=self.material_issues(episode_id),methodNotice=f'本项目有 {len(missing)} 份方法本集尚未采用，将按本集现有方法运行' if missing else '')
 
     def start_continuous_precheck(self, episode_id, target_stage='stress', command_id=None, image_options=None):
@@ -145,7 +154,7 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
                 if db.execute("SELECT 1 FROM run r JOIN task t ON t.id=r.task_id WHERE t.episode_id=? AND r.status IN ('queued','running')",(episode_id,)).fetchone():
                     raise Conflict('本集有正在执行的任务，结束后再开始')
                 cid=new_id()
-                cursor=dict(imageOptions=image_options or {},enableDirections=target_stage=='delivery',base=adopted(db,episode_id),attempts={},rounds={},stressReports=0,queue=[],ownedRuns=[],userStamp=self._continuous_user_stamp(db,episode_id,[]))
+                cursor=dict(imageOptions=image_options or {},enableDirections=True,base=adopted(db,episode_id),attempts={},rounds={},stressReports=0,queue=[],ownedRuns=[],userStamp=self._continuous_user_stamp(db,episode_id,[]))
                 db.execute('INSERT INTO continuous_run(id,episode_id,target_stage,state,cursor,reason,choice,pause_requested,created_at,updated_at) VALUES(?,?,?,?,?,NULL,NULL,0,?,?)',(cid,episode_id,target_stage,'running',dumps(cursor),self.clock(),self.clock()))
                 return dict(continuousId=cid)
             result=self._command(db,command_id,'start_continuous',[episode_id,target_stage,image_options],create)
@@ -197,6 +206,9 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
                     'simplify':'换用更简单可拍的方案表达同一事件，减少非必要动作及依赖。',
                     'rebuild':'从已采用上游与开工要求重新组织本阶段，不沿用失败候选的结构。'}
         self._continuous_cursor(cid,nextRepair=None)
+        if stage=='prompts':
+            plan=self._continuous_art(eid,'plan')
+            self._grid_artwork(cid,eid,plan['adopted_version_id'])
         self._continuous_create(cid,stage,
             directions[mode]+'保留已定角色、事件因果和导演要求。具体问题：'+r['reason'],
             base=base,format_repair=mode!='rebuild',rebuild=mode=='rebuild')
@@ -251,7 +263,7 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
         if name.startswith(prefix):
             round_text,_,source=name[len(prefix):].partition(':')
             if round_text.isdigit() and source==parent:return ('format-switch',int(round_text),parent)
-        if name in (f'{cid}:retry:{parent}',f'{cid}:restart-retry:{parent}'):
+        if name in (f'{cid}:retry:{parent}',f'{cid}:restart-retry:{parent}',f'{cid}:segment-repair:{parent}'):
             return ('auto',None,parent)
         return ('manual',None,parent)
 
@@ -323,6 +335,9 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
         if switched:
             verb='重试过一次' if switched_from==run['provider'] else '换过一次执行器'
             if candidate_scope.get()==cid:raise CandidateRejected(reason)
+            if stage=='prompts' and run.get('base_version_id'):
+                self._continuous_update(cid,state='paused',reason='本次提示词修订仍需处理，已保留原稿：'+reason)
+                raise Halt()
             self._continuous_problem(cid,f"本轮已{verb}（{run['provider']}），仍未通过：{reason}")
         has_manuscript=(self.store.run_dir(run['id'])/'failed-result.json').is_file()
         expert=self.episode_expert(eid)
@@ -420,6 +435,18 @@ class ContinuousMixin(ContinuousRecovery, QuickStartMixin, ContinuousSupplements
                 self._continuous_update(cid,cursor=cursor)
                 continue
             if run['status'] in ('waiting_quota','failed','stopped'):
+                if (run.get('reason') or '').split(' → 已重试为 ')[0] == '分段提示词校验失败':
+                    segment = (run.get('diagnostic') or '').partition('：')[0]
+                    if cursor.get('retried',{}).get(rid) == segment:
+                        self._continuous_update(cid,state='paused',reason='本段仍需修正，已保留其他段：'+run['diagnostic'])
+                        raise Halt()
+                    expert = self.episode_expert(value['episode_id'])
+                    retry = self.retry_run(rid, provider=expert['provider'], model=expert.get('model'),
+                                           effort=expert.get('effort'), command_id=f'{cid}:segment-repair:{rid}')
+                    cursor['queue'][0] = retry['runId']
+                    cursor.setdefault('retried',{})[retry['runId']] = segment
+                    self._continuous_update(cid, cursor=cursor)
+                    continue
                 if run['purpose'] in ('create','revise','parallel') and (run.get('reason') or '').split(' → 已重试为 ')[0] in FORMAT_REASONS:
                     retry=self._format_retry(cid,run,cursor)
                     cursor['queue'][0]=retry

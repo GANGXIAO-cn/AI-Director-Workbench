@@ -55,3 +55,51 @@ def stage_dialogue_schema(track_removals=False, read_only=False):
             "field":{"type":"string"},"id":{"type":"string"}},"required":["field","id"],"additionalProperties":False}}
         schema["required"].append("removedIds")
     return schema
+
+
+def omit_properties(schema, *keys):
+    for key in keys:
+        schema["properties"].pop(key, None)
+    schema["required"] = [key for key in schema["required"] if key not in keys]
+
+
+def content_schema(kind):
+    schema = branch_schema(kind)
+    omit_properties(schema, "schemaVersion", "kind", "runId", "inputFingerprint")
+    if kind == "proposal":
+        omit_properties(schema["properties"]["items"]["items"]["properties"]["source"], "versionId")
+    if kind == "cut_explanation":
+        omit_properties(schema, "atMs")
+    return schema
+
+
+def review_content_schema(pass_name):
+    schema = content_schema("review")
+    omit_properties(schema, "pass", "reviewedVersionId")
+    props = schema["properties"]
+    observation = props["observations"]["items"]
+    location = props["issues"]["items"]["properties"]["location"]
+    omit_properties(observation, "versionId")
+    omit_properties(location, "versionId")
+    if pass_name != "plan":
+        omit_properties(location, "objectId")
+    if pass_name == "cold_read":
+        omit_properties(observation, "objectId")
+    return schema
+
+
+def writing_schema(dialogue=None, clarify=False):
+    """Model-facing subset. The complete internal contract still validates before saving."""
+    schema = (stage_dialogue_schema(dialogue.get("auto"), bool(dialogue.get("internalJudgment")))
+              if dialogue else wrapped_schema() if clarify else branch_schema("draft"))
+    branches = schema["properties"]["result"]["anyOf"] if clarify else [schema]
+    for branch in branches:
+        fixed = {"schemaVersion", "runId", "inputFingerprint", "baseVersionId"}
+        if not (dialogue or clarify):
+            fixed.add("kind")
+        props = branch["properties"]
+        omit_properties(branch, *fixed)
+        if "changes" in props:
+            item = props["changes"]["items"]
+            omit_properties(item, "targetId")
+    return schema

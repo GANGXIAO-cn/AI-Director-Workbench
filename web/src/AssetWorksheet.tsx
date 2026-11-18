@@ -7,7 +7,7 @@ type Need = {
   id:string; need_key:string; role_id?:string; kind:string; title:string; description:string; scene_ids:string[]; missing:string[];
   decision:string; decision_reason:string; image_prompt:string; source_prompt:string; prompt_changed:boolean;
   revision:number; adopted_version_id:string|null; candidates:string[]; generation_requested:boolean;
-  request:{batchId:string;state:string}|null;
+  request:{batchId:string;batchState?:string;state:string}|null;
 };
 const groups=["角色身份","场景锁定图","道具基准","状态变体"];
 const category=(kind:string)=>({character:"identity",location:"scene"}[kind] || kind);
@@ -15,6 +15,7 @@ function group(r:Need) {
   return ({identity:0,scene:1,state:3,costume:3}[category(r.kind)] ?? 2);
 }
 function status(r:Need) {
+  if(r.request?.batchState==="awaiting_authorization") return "待批准";
   if(r.request) return r.request.state==="unknown"?"待核对":"出图中";
   if(r.adopted_version_id) return r.decision==="reuse"?"已有图":"已完成";
   if(r.decision==="text_only") return "只用文字";
@@ -43,6 +44,8 @@ export function AssetWorksheet({ctx,space}:{ctx:any;space:React.ReactNode}) {
   const providers=useQuery<any>("image_providers");
   const [preferences,choose]=useState(readChannel);
   const [excluded,setExcluded]=useState<string[]>([]);
+  const [productPicker,setProductPicker]=useState<string|null>(null);
+  const catalog=useQuery<{products:{code:string;name:string}[]}>(productPicker ? "project_resources" : null,{project_id:ctx.view.episode.project_id,episode_id:ctx.eid});
   const [required,setRequired]=useState<any>(null);
   const supplement=useQuery<any[]>("production_supplements",{episode_id:ctx.eid});
   const act=useAction();
@@ -176,6 +179,9 @@ export function AssetWorksheet({ctx,space}:{ctx:any;space:React.ReactNode}) {
         {index!==0 && unpicked.length>1 && <button className="btn" title={unpicked.map(r=>r.title).join("、")} disabled={act.busy} onClick={()=>act.run(()=>select(unpicked,true))}>采用已出图的 {unpicked.length} 项（各第一张）</button>}
       </div></div>
       <div className="worksheet-grid">{members.map(r=><NeedRow key={r.id} r={r} ctx={ctx} scenes={scenes} library={library.data||[]} rows={rows}
+        productPicker={productPicker===r.id} toggleProducts={()=>setProductPicker(productPicker===r.id?null:r.id)}
+        products={catalog.data?.products} productError={catalog.error}
+        useProduct={async(code:string)=>{await setNeed(r,"reuse",{product_code:code});setProductPicker(null);await refresh();}}
         checked={!excluded.includes(r.id)} toggle={()=>setExcluded(excluded.includes(r.id)?excluded.filter(id=>id!==r.id):[...excluded,r.id])}
         change={async(action:string,extra:any)=>{
           await setNeed(r,action,extra);
@@ -204,7 +210,7 @@ export function AssetWorksheet({ctx,space}:{ctx:any;space:React.ReactNode}) {
     {required && <RequiredImage ctx={ctx} asset={required} close={()=>setRequired(null)}/>}
   </section>;
 }
-function NeedRow({r,ctx,scenes,library,rows,checked,toggle,change,adopt,required}:any) {
+function NeedRow({r,ctx,scenes,library,rows,checked,toggle,change,adopt,required,productPicker,toggleProducts,products,productError,useProduct}:any) {
   const [prompt,setPrompt]=useState(r.image_prompt);
   useEffect(()=>setPrompt(r.image_prompt),[r.image_prompt]);
   const [reason,setReason]=useState(r.decision_reason || "");
@@ -241,6 +247,18 @@ function NeedRow({r,ctx,scenes,library,rows,checked,toggle,change,adopt,required
       <button className="btn" disabled={act.busy||!!r.request||prompt===r.image_prompt} onClick={()=>edit("edit_prompt",{prompt})}>保存提示词</button></details>
     {!!r.prompt_changed && <div>清单提示词已更新<p>{r.source_prompt}</p><button className="btn" onClick={()=>edit("use_source")}>使用清单提示词</button> <button className="btn" onClick={()=>edit("keep_prompt")}>保留手改提示词</button></div>}
     {r.request ? <button className="btn" onClick={()=>ctx.openBatch({id:r.request.batchId})}>查看批次</button> : <>
+      {["prop","product"].includes(r.kind) && <div>
+        <button className="btn" aria-expanded={productPicker} onClick={toggleProducts}>从商品库选主图</button>
+        {productPicker && <div className="worksheet-product-picker">
+          {productError ? <p className="error">{productError}</p> : !products ? <p>正在读取商品库…</p> :
+            !products.length ? <p>当前项目没有商品主图。</p> : products.map((p:{code:string;name:string})=>
+              <button className="btn" key={p.code} disabled={act.busy} aria-label={`采用 ${p.code} ${p.name} 主图`}
+                onClick={()=>act.run(()=>useProduct(p.code))}>
+                <img loading="lazy" alt="" src={`/api/project-product/${ctx.view.episode.project_id}/${p.code}?episode_id=${ctx.eid}`}/>
+                <span>{p.code} {p.name}</span>
+              </button>)}
+        </div>}
+      </div>}
       {state==="待出图" && <label><input type="checkbox" checked={checked} disabled={!!r.missing.length} onChange={toggle}/>加入本次出图</label>}
       {!!r.missing.length && <p>先完成：{r.missing.map((key:string)=>rows.find((n:Need)=>n.need_key===key)?.title||key).join("、")}</p>}
       {r.decision==="text_only" && <p>{r.decision_reason}</p>}

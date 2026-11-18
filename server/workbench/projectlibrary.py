@@ -101,23 +101,26 @@ class ProjectLibraryMixin:
     def use_project_product(self, episode_id, code, command_id):
         with transaction(self.db_path) as db:
             def run():
-                ep = self._episode_in(db, episode_id)
-                root, items = self._project_resources(db, ep["project_id"], episode_id)
-                item = get_item(items["products"], "code", code)
-                prior = db.execute("SELECT version_id FROM episode_product WHERE episode_id=? AND code=?", (episode_id, code)).fetchone()
-                if prior:
-                    return dict(versionId=prior[0], originalSha256=item["sha256"])
-                source = original(root, item["path"], item["sha256"])
-                # Keep the exact WebP. Register a lossless PNG for image generation and delivery.
-                with Image.open(BytesIO(source)) as img:
-                    png = BytesIO()
-                    img.save(png, format="PNG")
-                ref = dict(item, originalSha256=self.store.put_blob(source))
-                asset = self.register_asset(ep["project_id"], item["name"], png.getvalue(), "product_reference",
-                                            episode_id=episode_id, origin="project_library", note=dumps(ref), db=db)
-                db.execute("INSERT INTO episode_product VALUES(?,?,?,?)", (episode_id, code, asset["versionId"], dumps(ref)))
-                return dict(versionId=asset["versionId"], originalSha256=ref["originalSha256"])
+                return self._register_product_reference(db, episode_id, code)
             return self._command(db, command_id, "use_project_product", dict(episode=episode_id, code=code), run)
+
+    def _register_product_reference(self, db, episode_id, code):
+        ep = self._episode_in(db, episode_id)
+        root, items = self._project_resources(db, ep["project_id"], episode_id)
+        item = get_item(items["products"], "code", code)
+        prior = db.execute("SELECT version_id FROM episode_product WHERE episode_id=? AND code=?", (episode_id, code)).fetchone()
+        if prior:
+            return dict(versionId=prior[0], originalSha256=item["sha256"])
+        source = original(root, item["path"], item["sha256"])
+        # Keep the exact WebP. Register a lossless PNG for image generation and delivery.
+        with Image.open(BytesIO(source)) as img:
+            png = BytesIO()
+            img.save(png, format="PNG")
+        ref = dict(item, originalSha256=self.store.put_blob(source))
+        asset = self.register_asset(ep["project_id"], item["name"], png.getvalue(), "product_reference",
+                                    episode_id=episode_id, origin="project_library", note=dumps(ref), db=db)
+        db.execute("INSERT INTO episode_product VALUES(?,?,?,?)", (episode_id, code, asset["versionId"], dumps(ref)))
+        return dict(versionId=asset["versionId"], originalSha256=ref["originalSha256"])
 
     def _product_drawing_source(self,db,eid,board,master,sid):
         """Verify the actual successful generation/edit receipt, including resubmitted requests."""

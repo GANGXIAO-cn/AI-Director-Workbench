@@ -60,22 +60,29 @@ def test_api_errors_do_not_leak_or_repeat(tmp_path,status,state):
     calls=[]
     def handle(req):
         calls.append(req)
-        return httpx.Response(status,json={"error":{"message":"test-secret"}})
+        return httpx.Response(status,json={"error":{"code":"bad_input","message":"invalid value test-secret"}})
     p=provider(tmp_path,handle)
     outcome=p.submit(request())
     assert outcome.state==state and "test-secret" not in outcome.error
+    assert "bad_input" in outcome.error and "invalid value" in outcome.error
+    assert p.inspect("request-1").error == outcome.error
     assert p.submit(request()).state==state and len(calls)==1
 
 
-def test_timeout_is_unknown_without_retry(tmp_path):
+def test_timeout_is_retryable_under_a_new_request(tmp_path):
     calls=[]
     def handle(req):
         calls.append(req)
         raise httpx.ReadTimeout("test-secret")
     p=provider(tmp_path,handle)
-    assert p.submit(request()).state=="unknown"
-    assert p.submit(request()).state=="unknown" and len(calls)==1
+    assert p.submit(request()).state=="failed"
+    assert p.submit(request()).state=="failed" and len(calls)==1
     assert p.settings()["activeRequests"]==0
+    receipt = p.root / "request-1" / "receipt.json"
+    receipt.write_text(json.dumps(dict(state="unknown", error="API 连接中断或超时，请核对原请求")))
+    assert p.inspect("request-1").state == "failed"
+    receipt.write_text(json.dumps(dict(state="unknown")))
+    assert p.inspect("request-1").state == "unknown"
 
 
 def test_settings_persist_and_validate(tmp_path):

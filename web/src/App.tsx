@@ -45,16 +45,17 @@ function restoreTabs(): OpenProject[] {
   } catch { return []; }
 }
 
-function ProjectPanel({ hash }: { hash: string }) {
+function ProjectPanel({ hash, pickTopic }: { hash: string; pickTopic:(topic:any)=>void }) {
   const route = parse(hash);
   if (route.page === "episode") return <Workspace key={route.id} id={route.id} stage={route.stage} />;
   if (route.page !== "project") return null;
   return <Shell>{route.sub
-    ? <ProjectPage id={route.id} sub={route.sub} arg={route.arg} />
+    ? <ProjectPage pickTopic={pickTopic} id={route.id} sub={route.sub} arg={route.arg} />
     : <Project id={route.id} />}</Shell>;
 }
 
 export default function App() {
+  const [homeTopic,setHomeTopic] = useState<any>(null);
   const [excerpt,setExcerpt]=useState<Excerpt|null>(null);
   const [hash, setHash] = useState(location.hash);
   const [tabs, setTabs] = useState(restoreTabs);
@@ -125,11 +126,11 @@ export default function App() {
     <div className="desktop-body"><SideNav active={navActive} projects={projects.data || []} projectId={active}
       owner={resourceOwner(projects.data || [], active, lastProject)} episode={route.page === "episode"} hash={hash}/>
     {tabs.filter(t => t.mounted).map(t => <div className="desktop-page" key={t.id} hidden={active !== t.id}>
-      <ProjectRoute.Provider value={{ hash: t.hash, active: active === t.id, go: next => navigateFrom(t, next) }}><ProjectPanel hash={t.hash} /></ProjectRoute.Provider>
+      <ProjectRoute.Provider value={{ hash: t.hash, active: active === t.id, go: next => navigateFrom(t, next) }}><ProjectPanel hash={t.hash} pickTopic={topic=>{setHomeTopic(topic);setExcerpt(null);rememberProject(topic.project_id);navigateFrom(t,"#/episode");}} /></ProjectRoute.Provider>
     </div>)}
     {!projectPage && <div className="desktop-page">{route.page === "sys" ? <Shell><SystemPage sub={route.sub} /></Shell>
       : route.tab === "knowledge" || route.tab === "palette" ? <Shell><ResourceBrowser storyPicker key={route.tab} kind={route.tab} onChoose={route.tab==="knowledge"?part=>{setExcerpt(part);location.hash="#/idea";}:undefined}/></Shell>
-      : <Home referenceDraft={{value:excerpt,change:setExcerpt}} tab={route.tab} projects={projects} rememberProject={rememberProject} />}</div>}
+      : <Home initialTopic={homeTopic} consumeTopic={()=>setHomeTopic(null)} referenceDraft={{value:excerpt,change:setExcerpt}} tab={route.tab} projects={projects} rememberProject={rememberProject} />}</div>}
     {projectPage && !active && <div className="page">{owner.error || "读取项目中…"} {owner.error && <a href="#/projects">返回项目</a>}</div>}
   </div><ImageViewer/></div>;
 }

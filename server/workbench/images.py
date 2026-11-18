@@ -53,6 +53,7 @@ def image_size(data: bytes):
 
 
 # ---------------------------------------------------------------- providers
+TRANSPORT_FAILURE = "出图连接中断或超时，本次未收到图片（服务端执行情况未知）"
 INTERRUPTED_IMAGE = '服务重启或连接中断，未取得图片，可重出'
 
 @dataclass
@@ -977,7 +978,8 @@ class ImagesMixin:
                 raise Conflict('素材用途已变化，请按当前绑定重新匹配')
             plan = self._adopted_content(db, episode_id, 'plan')
             shots = {s['id']: s['segment'] for s in plan['shots']}
-            release = not shot_ids and source == 'worksheet' and source in (current or {}).get('autoBindings', {})
+            release = (not shot_ids and (source == 'worksheet' or source.startswith('grid:'))
+                       and source in (current or {}).get('autoBindings', {}))
             if (not shot_ids and not release) or len(set(shot_ids)) != len(shot_ids) or set(shot_ids) - shots.keys():
                 raise Rejected('素材用途须指定当前方案中不重复的镜头')
             def apply():

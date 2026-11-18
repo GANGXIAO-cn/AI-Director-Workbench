@@ -8,7 +8,7 @@ from .stressrepairs import adopted
 from .continuous_images import cursor_lock
 
 LIMIT = dict(auth=3, quota=6, transient=3, image_wait=3)
-GAP = dict(auth=60, quota=1800, transient=300, image_wait=30)
+GAP = dict(auth=60, quota=1800, transient=30, image_wait=30)
 INTERRUPTED = ('服务重启时中断', '已收到回包，入库完成前服务中断', '已收到回包，恢复时无法核验')
 ENDED_BATCHES = ('completed', 'failed', 'partially_succeeded', 'cancelled')
 
@@ -113,7 +113,7 @@ class ContinuousRecovery:
         since=b.get('lastTry') if b.get('lastTry') is not None else b['at']
         if kind=='auth':return probes.get('switched',False) or probes.get('identity',{}).get(b.get('provider')) is True
         if kind=='quota':return now>=b['resetsAt'] if b.get('resetsAt') is not None else now-since>=1800
-        if kind=='transient':return now-since>=300
+        if kind=='transient':return now-since>=GAP[kind]
         return bool(b.get('batchIds')) and all(probes.get('batches',{}).get(bid,False) for bid in b['batchIds'])
 
     def _recovery_probes(self, snapshots, now):

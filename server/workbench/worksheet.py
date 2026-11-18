@@ -122,7 +122,7 @@ class WorksheetMixin:
                         complete=bool(rows) and all(r["adopted_version_id"] or r["decision"]=="text_only" for r in rows))
 
     def _open_need_request(self, db, need_id):
-        current = db.execute("""SELECT b.id AS batchId,r.state FROM asset_need_request n
+        current = db.execute("""SELECT b.id AS batchId,b.state AS batchState,r.state FROM asset_need_request n
             JOIN image_request r ON r.id=n.request_id JOIN image_batch b ON b.id=r.batch_id
             WHERE n.need_id=? AND b.state!='cancelled' AND r.state IN ('pending','submitted','unknown')
             ORDER BY r.rowid DESC LIMIT 1""", (need_id,)).fetchone()
@@ -134,7 +134,7 @@ class WorksheetMixin:
         db.execute("""UPDATE asset_need SET asset_id=?,generation_requested=0,revision=revision+1,updated_at=? WHERE id=?""",
                    (result["assetId"], self.clock(), need["id"]))
 
-    def set_asset_need(self, episode_id, need_key, revision, action, command_id, prompt=None, reason="", entry_id=None, version_id=None):
+    def set_asset_need(self, episode_id, need_key, revision, action, command_id, prompt=None, reason="", entry_id=None, version_id=None, product_code=None):
         with transaction(self.db_path) as db:
             def apply():
                 self._require_stress_clearance(db,episode_id)
@@ -159,7 +159,11 @@ class WorksheetMixin:
                     changes.update(decision=action, decision_reason=reason_value, adopted_version_id=None, base_version_id=None,generation_requested=0)
                 elif action in ("reuse","generate"):
                     base = None
-                    if entry_id:
+                    if product_code is not None:
+                        if action != "reuse" or need["kind"] not in ("prop", "product"):
+                            raise Rejected("商品主图可直接用于道具或商品条目")
+                        base = self._register_product_reference(db, episode_id, product_code)["versionId"]
+                    elif entry_id:
                         source = row(db, "SELECT asset_version_id FROM library_entry WHERE id=?", entry_id)
                         image = self.asset_version(source["asset_version_id"], db)
                         expected = CATEGORIES.get(need["kind"], need["kind"])
@@ -196,7 +200,7 @@ class WorksheetMixin:
                 db.execute(f"UPDATE asset_need SET {assignments},revision=revision+1,updated_at=? WHERE id=?",
                            (*changes.values(),self.clock(),need["id"]))
                 return dict(needKey=need_key)
-            return self._command(db, command_id, "set_asset_need", [episode_id,need_key,revision,action,prompt,reason,entry_id,version_id], apply)
+            return self._command(db, command_id, "set_asset_need", [episode_id,need_key,revision,action,prompt,reason,entry_id,version_id] + ([product_code] if product_code is not None else []), apply)
 
     def prepare_asset_batch(self, episode_id, needs, provider, size, command_id, model=None, quality=None, budget_cents=None):
         with transaction(self.db_path) as db:

@@ -95,7 +95,7 @@ COMMANDS = {
     "revise_baseline", "follow_baseline",
     "start_topic_research", "accept_research_topic",
     "add_reply_to_canvas","send_free_chat","stop_free_chat","retry_free_chat",
-    "refresh_cli_models", "save_executor_connection", "set_quota_retry_policy", "save_provider", "read_provider_models", "label_provider_model",
+    "refresh_cli_models", "verify_executor_identity", "save_executor_connection", "set_quota_retry_policy", "save_provider", "read_provider_models", "label_provider_model",
     "start_story_comparison", "preview_acting",
     "add_script_document", "refresh_script_index", "restore_step_revision",
     "use_fixed_role", "import_historical_episode", "episode_contact_sheet", "save_contact_options", "export_episode_contact_sheet", "historical_contact_sheet", "export_historical_contact_sheet", "save_product_placement", "set_project_sections", "use_project_product", "mount_resource", "restore_version", "set_stage_methods", "sync_project_methods", "adopt_project_stage_methods", "set_custom_methods", "save_palettes", "add_palette", "set_episode_palettes", "save_step_config",

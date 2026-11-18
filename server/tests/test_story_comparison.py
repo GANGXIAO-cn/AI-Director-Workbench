@@ -45,7 +45,7 @@ def test_story_candidates_use_identical_frozen_material_and_exact_episode_select
     calls=env.codex.calls[begin:]
     assert len(calls)==2 and [c.effort for c in calls]==["high","low"]
     assert all("两个人最后共用一把伞" in c.prompt and "另一份新要求" not in c.prompt for c in calls)
-    assert calls[0].prompt.split("===== 固定字段")[0] == calls[1].prompt.split("===== 固定字段")[0]
+    assert calls[0].prompt.split("===== 本次回复要求")[0] == calls[1].prompt.split("===== 本次回复要求")[0]
     art=env.art(eid,"story")
     assert [c["side"] for c in art["comparisons"]] == ["A","B"]
     vids=[c["version_id"] for c in art["comparisons"]]

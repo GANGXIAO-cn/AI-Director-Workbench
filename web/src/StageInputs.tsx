@@ -63,7 +63,12 @@ export function StageInputs({versionId,art,records,onSave}:{versionId:string;art
     <InputGroups groups={groups}/>
     {version?.content.supplements?.map((s,i)=><p key={i}>本稿新报制作补充 · {s.subject} · {s.statement} · {s.scenes?.join("、")}</p>)}
     {readError && <p role="alert">{readError}</p>}
-    {decisions.map(d=><p key={d.code}>{d.code} · {d.text} · {version?.content.decisionNotes?.find(n=>n.decision===d.code)?.quote || version?.content.decisionNotes?.find(n=>n.decision===d.code)?.reason || "待填写落点"}</p>)}
+    {decisions.map(d=>{
+      const notes=version?.content.decisionNotes?.filter(n=>n.decision===d.code)??[];
+      return <div key={d.code}><p>{d.code} · {d.text}</p>{notes.length
+        ?notes.map((n,i)=><p key={n.segmentId??i}>{n.segmentId && n.segmentId+" · "}{n.quote||n.reason}</p>)
+        :<p>待填写落点</p>}</div>;
+    })}
     {version && data && <DecisionNotes records={records} art={art} version={version} onSave={onSave} frozen={frozen}/>}
   </details>;
 }

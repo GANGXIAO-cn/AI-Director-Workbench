@@ -15,7 +15,7 @@ SCHEMA = {"type": "object", "additionalProperties": False, "required": ["candida
               "type": "object", "additionalProperties": False, "required": list(FIELDS),
               "properties": {key: {"type": "string"} for key in FIELDS}}}}}
 INSTRUCTIONS = ("按本项目的选题研究方法和导演要求，按本轮指定数量提出可独立选择的备选卡。写明故事前提、"
-                "角色动机、推动事件的机制及相对近期旧题的实质差异。没有旧题时如实说明。"
+                "角色动机、推动事件的机制及相对最相似旧题的实质差异。逐一对照全部候选、已拍及已发布作品和本轮其余选题。即使标题、道具或动机不同，若主要事件推进和收尾仍重合，先换故事再交付。差异说明点名最接近的旧题编号及关键场面，不能只比较最近五条，也不能把候选称为已拍。没有旧题时如实说明。"
                 "每张卡的 reference_id 填一条实际借鉴的 research_source 段号，例如 R1。"
                 "有导演选定的共享知识库片段时，优先借鉴该片段。资料不足时标清缺少的依据。")
 
@@ -24,7 +24,7 @@ _NUMBER = r"(?:[0-9]+|[一二两三四五六七八九十百千零]+)"
 _COUNT_REQUEST = re.compile(
     rf"(?:制作|创作|生成|给我|给出|提供|提出|设计|构思|推荐|想要|需要|要求|再来|补充|再写|写|做|要|来|想)"
     rf"\s*(?:出|共|总共|一共)?\s*({_NUMBER})\s*(?:个|条|张|组|种|款|篇)?"
-    rf"\s*(?:新的|新|不同的|独立的|备选|候选|系列|短剧|故事|短视频)*选题"
+    rf"\s*(?:新的|新|不同的|独立的|备选|候选|系列|长篇|短篇|短剧|故事|短视频)*选题"
 )
 _COUNT_ONLY = re.compile(rf"^\s*({_NUMBER})\s*(?:个|条|张)?\s*(?:选题)?[。！!\s]*$")
 
@@ -76,6 +76,21 @@ def research_inputs(entries):
     return inputs, citations
 
 
+def distinct_cards(cards, history):
+    """Keep one copy of each title and premise; the executor compares story meaning."""
+    titles = set()
+    premises = {"".join(text.split()).casefold() for text in history}
+    kept = []
+    for card in cards:
+        title = "".join(card["title"].split()).casefold()
+        premise = "".join(card["premise"].split()).casefold()
+        if title not in titles and premise not in premises:
+            kept.append(card)
+            titles.add(title)
+            premises.add(premise)
+    return kept
+
+
 def research_reply(body, citations, count):
     if not Draft202012Validator(SCHEMA).is_valid(body):
         raise Rejected("研究结果缺少完整的候选卡字段")
@@ -113,10 +128,10 @@ class TopicResearchMixin:
 
                 if db.execute("SELECT 1 FROM project_archive WHERE project_id=? AND archived",(project_id,)).fetchone():
                     raise Rejected("该项目已归档，恢复后可以研究新题")
-                for t in db.execute("SELECT code,premise,mechanism,motivation,status,id FROM research_topics WHERE project_id=? ORDER BY code",(project_id,)):
+                for t in db.execute("SELECT code,premise,mechanism,motivation,status,id,id IN (SELECT id FROM expert_filmed_topics) AS filmed FROM topic_comparisons WHERE project_id=? ORDER BY code",(project_id,)):
                     published = db.execute("SELECT platform,title,published_at FROM topic_publication WHERE topic_id=? ORDER BY published_at",(t["id"],)).fetchall()
-                    if not published and t["status"]=="已制作":continue
-                    label = "已发布作品" if published else "正式候选"
+                    if not published and not t["filmed"] and t["status"]=="已制作":continue
+                    label = "已发布作品" if published else "已拍作品" if t["filmed"] else "正式候选"
                     source(label + " · " + t["code"], dumps(dict(premise=t["premise"],mechanism=t["mechanism"],motivation=t["motivation"],publication=[dict(r) for r in published])))
                 if reference is not None:
                     if (not isinstance(reference, dict) or not isinstance(reference.get("path"), str)

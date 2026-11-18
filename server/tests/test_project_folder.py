@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,12 @@ def test_portable_project_reopens_outside_store_without_other_project_data(tmp_p
     replica = Workbench(moved,{})
     assert [p["id"] for p in replica.list_projects()] == [project["pid"]]
     assert replica.get_setting("codex_path") is None
+    with env.db() as source_db, sqlite3.connect(replica.db_path) as replica_db:
+        expected = dict(source_db.execute(
+            "SELECT b.version_id,b.segments FROM version_plan_basis b JOIN version v ON v.id=b.version_id "
+            "JOIN artifact a ON a.id=v.artifact_id WHERE a.episode_id=?", (project["eid"],)))
+        assert any("G01" in json.loads(segments) for segments in expected.values())
+        assert dict(replica_db.execute("SELECT version_id,segments FROM version_plan_basis")) == expected
     assert replica.episode_view(project["eid"]) == wb.episode_view(project["eid"])
     assert replica.read_import(manuscript["importId"])["parsed_text"] == "开门。"
     assert not (moved/"projects"/other["pid"]).exists()

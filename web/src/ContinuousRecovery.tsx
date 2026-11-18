@@ -8,7 +8,7 @@ export function recoveryText(block:any, count:number) {
   if(block.kind==='quota')return block.resetsAt
     ?`额度预计 ${new Date(block.resetsAt*1000).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})} 恢复，到时将自动再试（已尝试 ${count} 次）`
     :`额度恢复时间未知，每 30 分钟将自动再试一次（已尝试 ${count} 次）`;
-  if(block.kind==='transient')return `网络或超时问题，5 分钟后将自动再试（已尝试 ${count} 次）`;
+  if(block.kind==='transient')return `网络或超时问题，等待 30 秒后，在下一次检查时自动再试（已尝试 ${count} 次）`;
   return '图片请求处理完后会自动继续';
 }
 

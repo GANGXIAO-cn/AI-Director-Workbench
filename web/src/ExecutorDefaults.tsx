@@ -14,7 +14,7 @@ export function useExecutorPlan(initial?:any) {
 function ConnectionStatus({provider}:{provider:string}) {
   const identity=useQuery<any>('executor_identity',{provider});
   const v=identity.data;
-  return <small>{identity.error || (!v?'正在读取连接状态…':v.unavailable?'不可用':v.simulated?'模拟执行器':v.authenticated===true?'已登录':v.authenticated===false?'未登录':'登录状态待确认')}</small>;
+  return <small>{identity.error || (!v?'正在读取连接状态…':v.unavailable?'不可用':v.simulated?'模拟执行器':v.authenticated===true?'已登录':v.authenticated===false?'未登录':v.lastVerifiedAccount?'上次验证已登录':'尚未验证登录')}</small>;
 }
 export function ExecutorPlanFields({plan,onChange,saveDefault=true}:{plan:any;onChange:(plan:any)=>void;saveDefault?:boolean}) {
   const catalog=useQuery<any>('model_catalog');

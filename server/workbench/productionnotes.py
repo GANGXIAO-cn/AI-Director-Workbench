@@ -12,7 +12,7 @@ def handoff_value(value):
 
 def same_handoff(before,after):
     return all(handoff_value(before.get(k))==handoff_value(after.get(k)) for k in ('productionNotes','supplements'))
-CONTRACT='''productionNoteResponses 为数组。每项 id、reportVersionId、owner、status。引用当前采用的06报告版本与提醒编号。07必须覆盖全部提醒：本阶段落实时 owner=asset_design,status=applied,whereIds=本稿条目编号数组；交给后续阶段则 status=assigned,owner=plan/prompts,reason=非空理由。后续阶段只回应本阶段负责的提醒：落实用 applied 和本稿场次/镜头/段号数组 whereIds，reason 写具体落实说明；不能落实用 reassign，owner只能为更后阶段并写 reason。prompts 仅负责文字表达、素材标签与组装要求，不能接收素材质量、空间制作或动作可行性事项。负责人依实际职责确定，不能为消除缺项不断向后转交。prompts 不可再转交。不得借制作提醒改动已采用剧情。'''
+CONTRACT='''productionNoteResponses 为数组。每项填写提醒编号 id、owner 和 status。报告版本由工作台关联。07必须覆盖全部提醒：本阶段落实时 owner=asset_design,status=applied,whereIds=本稿条目编号数组；交给后续阶段则 status=assigned,owner=plan/prompts,reason=非空理由。后续阶段只回应本阶段负责的提醒：落实用 applied 和本稿场次/镜头/段号数组 whereIds，reason 写具体落实说明；不能落实用 reassign，owner只能为更后阶段并写 reason。prompts 仅负责文字表达、素材标签与组装要求，不能接收素材质量、空间制作或动作可行性事项。负责人依实际职责确定，不能为消除缺项不断向后转交。prompts 不可再转交。不得借制作提醒改动已采用剧情。'''
 
 
 def context(db,eid):
@@ -47,6 +47,36 @@ def normalize_where_ids(item):
     if not values:raise ValueError('whereIds 不能为空')
     if len(set(values))!=len(values):raise ValueError('whereIds 存在重复编号')
     return values
+
+
+def merge_segment_responses(responses):
+    """One applied reminder can be evidenced in several distinct prompt segments."""
+    merged, groups = [], {}
+    for item in responses:
+        if not isinstance(item, dict) or item.get("status") != "applied":
+            merged.append(item)
+            continue
+        key = tuple(item.get(k) for k in ("id", "reportVersionId", "owner", "status"))
+        try:
+            locations = normalize_where_ids(item)
+        except ValueError:
+            merged.append(item)
+            continue
+        if not all(isinstance(k, str) for k in key):
+            merged.append(item)
+            continue
+        if key not in groups:
+            record = dict(item)
+            groups[key] = record
+            merged.append(record)
+            continue
+        record = groups[key]
+        record["whereIds"] = list(dict.fromkeys(normalize_where_ids(record) + locations))
+        record.pop("where", None)
+        reasons = [v for v in (record.get("reason"), item.get("reason")) if isinstance(v, str) and v]
+        if reasons:
+            record["reason"] = "\n".join(dict.fromkeys(reasons))
+    return merged
 
 
 def coverage_status(stage,content,basis,coverage=False):

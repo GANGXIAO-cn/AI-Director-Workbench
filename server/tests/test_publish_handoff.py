@@ -124,3 +124,16 @@ def test_legacy_project_settings_use_the_same_validation_on_save_and_read(tmp_pa
     generic = wb.create_project("_template", "通用项目")["projectId"]
     wb.set_publish_settings(generic, dict(additional_fields=[]))
     assert wb.publish_settings(generic)["additional_fields"] == []
+
+
+def test_instrumental_first_draft_records_tempo_and_inherits_music_state():
+    cfg = publishing.settings(dict(copy_format="instrumental_v1", hook_emoji="🐱"))
+    schema = publishing.instrumental_draft_schema(cfg)
+    draft = dict(title="Midnight", body="A cat arrives.", tags=[], tempoBpm=112, cues=[],
+                 suno_title="Night", suno_style="4/4, banjo", suno_exclude="vocals")
+    for native, expected in [(False, "backup"), (True, "enabled")]:
+        fields = publishing.instrumental_draft_fields(draft, schema, {"segments":[{"nativeBgm":native}]})
+        assert fields["music"] == expected and fields["suno_style"] == "112 BPM, 4/4, banjo"
+        assert "tempoBpm" not in fields
+    with pytest.raises(ValueError, match="tempoBpm"):
+        publishing.instrumental_draft_fields(dict(draft, tempoBpm="fast"), schema, {"segments":[]})

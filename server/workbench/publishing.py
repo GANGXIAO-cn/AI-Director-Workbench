@@ -48,6 +48,35 @@ def settings(raw):
     return cfg
 
 
+def instrumental_draft_schema(cfg):
+    def record(properties):
+        return dict(type="object", properties=properties, required=list(properties), additionalProperties=False)
+
+    string = {"type": "string"}
+    fields = dict(title=string, body=string, tags=dict(type="array", items=string),
+                  tempoBpm=dict(type="integer", minimum=10, maximum=999),
+                  cues=dict(type="array", items=record(dict(segment=string, at=string, action=string))))
+    custom = {}
+    for item in cfg["additional_fields"]:
+        (fields if item["key"] in LEGACY_KEYS else custom)[item["key"]] = string
+    if custom:
+        fields["extraFields"] = record(custom)
+    return record(fields)
+
+
+def instrumental_draft_fields(reply, schema, basis):
+    from jsonschema import Draft202012Validator
+    problem = next(Draft202012Validator(schema).iter_errors(reply), None)
+    if problem:
+        raise ValueError("发布稿 " + ".".join(map(str, problem.absolute_path)) + " " + problem.message)
+    fields = dict(reply)
+    tempo = fields.pop("tempoBpm")
+    style = re.sub(r"\b\d{2,3}\s*BPM\b", "", fields["suno_style"], flags=re.I).strip(" ,，")
+    fields["suno_style"] = f"{tempo} BPM, {style}" if style else f"{tempo} BPM"
+    fields["music"] = "enabled" if any(s["nativeBgm"] for s in basis["segments"]) else "backup"
+    return fields
+
+
 def field_values(content, cfg):
     extra = content.get("extraFields") or {}
     if not isinstance(extra,dict):

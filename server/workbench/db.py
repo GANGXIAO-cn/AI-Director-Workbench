@@ -187,6 +187,11 @@ CREATE TABLE IF NOT EXISTS waiver(
   id TEXT PRIMARY KEY, issue_id TEXT NOT NULL REFERENCES issue(id), version_id TEXT NOT NULL REFERENCES version(id),
   reason TEXT NOT NULL CHECK(length(trim(reason)) > 0), created_at REAL NOT NULL,
   scope_hash TEXT, UNIQUE(issue_id, version_id));
+CREATE TABLE IF NOT EXISTS prompt_segment_progress(
+ run_id TEXT PRIMARY KEY REFERENCES run(id), basis TEXT NOT NULL, current_segment TEXT NOT NULL, total INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS prompt_segment_result(
+ task_id TEXT NOT NULL REFERENCES task(id), basis TEXT NOT NULL, segment TEXT NOT NULL,
+ fields TEXT NOT NULL, PRIMARY KEY(task_id,basis,segment));
 CREATE TABLE IF NOT EXISTS prompt_draft_task(
   task_id TEXT PRIMARY KEY REFERENCES task(id), include_images INTEGER NOT NULL
 );
@@ -427,6 +432,15 @@ CREATE VIEW IF NOT EXISTS research_topics AS SELECT t.* FROM topic t LEFT JOIN t
     WHERE NOT EXISTS(SELECT 1 FROM project_archive a WHERE a.project_id=t.project_id AND a.archived)
     AND (EXISTS(SELECT 1 FROM topic_publication v WHERE v.topic_id=t.id)
          OR ((t.episode_id IS NULL OR EXISTS(SELECT 1 FROM active_episodes e WHERE e.id=t.episode_id)) AND coalesce(i.intent,case when t.origin like '选题池/%' or t.status='弃用' then '待整理' else '想拍' end)='想拍'));
+CREATE VIEW IF NOT EXISTS expert_filmed_topics AS
+    SELECT DISTINCT t.id FROM topic t JOIN continuous_run r ON r.episode_id=t.episode_id
+    JOIN delivery d ON d.id=json_extract(r.cursor,'$.deliveryId') AND d.episode_id=t.episode_id
+    WHERE r.state='done' AND r.target_stage='delivery' AND d.scope='full';
+CREATE VIEW IF NOT EXISTS topic_comparisons AS
+    SELECT * FROM research_topics UNION ALL
+    SELECT t.* FROM topic t JOIN expert_filmed_topics f ON f.id=t.id
+    JOIN active_episodes e ON e.id=t.episode_id
+    WHERE NOT EXISTS (SELECT 1 FROM research_topics existing WHERE existing.id=t.id);
 CREATE TABLE IF NOT EXISTS story_group(
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES project(id), name TEXT NOT NULL,
   shared_limits TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL);

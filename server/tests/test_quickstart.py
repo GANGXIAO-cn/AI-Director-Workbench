@@ -8,12 +8,11 @@ from workbench.db import dumps
 
 IDEA='夜班学徒送错了蛋糕。'
 
-def directions(complete=False):
-    return dict(completeStory=complete,directions=[dict(key=key,title='夜班'+key,premise='学徒寻找蛋糕的主人'+key,
-        story=('学徒提着蛋糕赶到渡口，发现名单上的名字与收件人不符。他沿着票根寻找失主，却把同名的两个人认错了。船即将离岸，他用盒上的店章查到留言，把蛋糕交给守夜的老人。老人把蜡烛点亮，原来这份生日惊喜是学徒自己遗忘的约定。' * 2)[:220]+key,
-        hook='错误不断升级',ending='迟到的生日兑现',difference='用误认推动结尾',mechanisms=[],sources=[],recommended=key=='A',reason='未提供机制库；离线结构夹具') for key in ('A',) if complete] if complete else [dict(key=key,title='夜班'+key,premise='寻找蛋糕的主人'+key,
-        story=('学徒提着蛋糕赶到渡口，发现名单上的名字与收件人不符。他沿着票根寻找失主，却把同名的两个人认错了。船即将离岸，他用盒上的店章查到留言，把蛋糕交给守夜的老人。老人把蜡烛点亮，原来这份生日惊喜是学徒自己遗忘的约定。'*2)[:220]+key,
-        hook='错误不断升级',ending='迟到的生日兑现',difference='与近期故事不同的误认',mechanisms=[],sources=[],recommended=key=='A',reason='未提供机制库；离线结构夹具') for key in ('A','B','C')])
+def directions():
+    return dict(analysis='学徒最怕错过末班船，倒计时是看点。', directions=[
+        dict(key='A',title='追船',story='送错蛋糕的学徒骑车追船，借蜡烛认出真正的寿星。'),
+        dict(key='B',title='误认',story='两位同名乘客都来取货，学徒翻看票根认出收件人。')],
+        recommendation='A',reason='渡轮离岸能让观众看见截止时间。')
 
 def reply(req,value=None):
     return dict(draft(req),kind='discussion',changes=[],directorRequest='',reply=json.dumps(value if value is not None else directions(),ensure_ascii=False))
@@ -23,7 +22,7 @@ def quick_env(tmp_path):
     env.codex.script=[reply]
     return env,pid
 
-def test_E_T1_F_T1_quick_start_number_and_three_directions(tmp_path):
+def test_E_T1_F_T1_quick_start_number_and_writer_directions(tmp_path):
     env,pid=quick_env(tmp_path)
     env.wb.create_episode(pid,'E09');env.wb.create_episode(pid,'特别篇')
     result=env.wb.quick_start(pid,IDEA,'start')
@@ -76,33 +75,46 @@ def test_E_T4_E_T5_conflict_card_before_kickoff_and_adjustment_rechecked(tmp_pat
     assert not any(p['state']=='waiting_choice' for p in run['cursor'].get('pauseHistory',[]))
 
 
-@pytest.mark.parametrize('bad',['count','sources'])
-def test_invalid_direction_output_falls_back_to_topic_then_delivers(tmp_path,bad):
-    env,pid=quick_env(tmp_path);value=directions()
-    if bad=='count':value['directions']=value['directions'][:2]
-    else:value['directions'][0]['sources']=['不存在的编号']
-    env.codex.script=[lambda req:reply(req,value)]*2
-    result=env.wb.quick_start(pid,IDEA,'start');run=env.wb._continuous_record(result['continuousId'])
+def test_expert_settles_unstructured_proposal_without_user(tmp_path):
+    env,pid=quick_env(tmp_path)
+    def prose(req):
+        return dict(reply(req),reply="写稿人推荐追船，也可以从认错人展开。")
+    env.codex.script=[prose]
+    result=env.wb.quick_start(pid,IDEA,'start')
+    run=env.wb._continuous_record(result['continuousId'])
     assert run['state']=='done' and env.wb.verify_delivery(run['cursor']['deliveryId'])['ok']
-    assert IDEA in run['cursor']['storyGoal'] and not run['choice'] and not run['cursor'].get('pauseHistory')
-    assert len([r for r in env.codex.calls if r.purpose=='image_assess'])==1
+    assert '认错人' in run['cursor']['writerProposal'] and '选 B' in run['cursor']['storyGoal']
+    assert not run['choice']
 
 
-def test_recommended_direction_selected_once_without_user(tmp_path):
-    env,pid=quick_env(tmp_path);result=env.wb.quick_start(pid,IDEA,'start');eid=result['episodeId']
-    view=env.wb.continuous_view(eid)
-    assert view['run']['state']=='done'
-    picks=[json.loads(d['detail']) for d in view['decisions'] if d['kind']=='choose_direction']
-    assert [d['key'] for d in picks]==['A']
-    assert directions()['directions'][0]['story'] in view['run']['cursor']['storyGoal']
+def test_expert_can_overrule_writer_without_user(tmp_path):
+    env,pid=quick_env(tmp_path)
+    env.ag.script=[reply]
+    env.codex.script=[]
+    plan=dict(create=dict(provider='antigravity'),expert=dict(provider='codex'))
+    result=env.wb.quick_start_prepare(pid,IDEA,'start',dict(executor_plan=plan))
+    cid=result['continuousId']
+    env.wb._continuous_kickoff(cid)
+    env.wb._continuous_direction(cid)
+    view=env.wb.continuous_view(result['episodeId'])
+    pick,=[json.loads(d['detail']) for d in view['decisions'] if d['kind']=='choose_direction']
+    assert '写稿人推荐 A' in pick['proposal'] and '选 B' in pick['decision']
+    env.wb._continuous_create(cid,'story')
+    assert pick['decision'] in env.ag.calls[-1].prompt
+    assert len(env.art(result['episodeId'],'story')['versions'])==1
+    assert not view['run']['choice']
 
 
-def test_F_T4b_complete_story_bypasses_card_preserves_original_input(tmp_path):
-    env,pid=quick_env(tmp_path);env.codex.script=[lambda req:reply(req,directions(True))]
-    result=env.wb.quick_start(pid,IDEA,'start');eid=result['episodeId'];run=env.wb.continuous_view(eid)['run']
-    assert run['choice'] is None and env.art(eid,'story')['adopted_version_id'],run['reason']
-    assert '用户原话：\n'+IDEA in env.codex.calls[1].prompt
-    assert any(d['kind']=='decide_skip' for d in env.wb.continuous_view(eid)['decisions'])
+def test_fully_described_idea_still_gets_writer_and_expert(tmp_path):
+    env,pid=quick_env(tmp_path)
+    idea='学徒发现蛋糕送错了，追上末班船，在离岸前找到了真正的寿星。'
+    result=env.wb.quick_start_prepare(pid,idea,'start')
+    cid=result['continuousId']
+    env.wb._continuous_kickoff(cid)
+    env.wb._continuous_direction(cid)
+    cur=env.wb._continuous_record(cid)['cursor']
+    assert cur['directionRunId'] != cur['directionDecisionRunId']
+    assert idea in cur['storyGoal'] and '选 B' in cur['storyGoal']
 
 
 def test_F_T6_F_T7_topic_similarity_and_knowledge_citations(tmp_path):
@@ -173,13 +185,8 @@ def test_field_111_failed_kickoff_check_reruns_after_resume(tmp_path,monkeypatch
 
 def test_field_112_direction_may_cite_code_written_in_idea(tmp_path):
     """实测 112：导演粘贴的选题卡里写有“选题编号”，方向引用该编号不应被判为编造来源。"""
-    from workbench.quickstart import validate_directions
-    value=directions(complete=True);value['directions'][0]['sources']=['R20261028-Q25 · v2']
     idea='MILO把洗衣房变成鼓乐队。\n选题编号：R20261028-Q25 · v2\n'
-    assert validate_directions(value,set(),idea)[0]['sources']==['R20261028-Q25 · v2']
-    with pytest.raises(Rejected):validate_directions(value,set(),'没有编号的想法')
     env,pid=quick_env(tmp_path)
-    env.codex.script=[lambda req:reply(req,value)]
     result=env.wb.quick_start(pid,idea,'start')
     run=env.wb.continuous_view(result['episodeId'])['run']
     # 方向通过后连续制作继续往下走；后续阶段不在本用例范围。

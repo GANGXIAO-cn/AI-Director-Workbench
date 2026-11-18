@@ -4,6 +4,10 @@ export ADW_DATA_DIR="$PWD/data" ADW_PORT=8765
 unset ADW_FAKE
 url="http://127.0.0.1:$ADW_PORT"
 export PATH="/Library/Frameworks/Python.framework/Versions/3.11/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+desktop_codex="/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+if [[ -z "${ADW_CODEX_PATH:-}" && -x "$desktop_codex" ]]; then
+  export ADW_CODEX_PATH="$desktop_codex"
+fi
 
 # 只打开使用这个项目数据目录的实例。
 ready() {

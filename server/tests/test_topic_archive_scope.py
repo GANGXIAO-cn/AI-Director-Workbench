@@ -73,3 +73,26 @@ def test_delivered_topic_needs_manual_restore(tmp_path):
     cards={t['id']:t for t in wb.topics(pid)}
     assert cards[new['topicId']]['intent']=='想拍' and cards[new['topicId']]['episode_id'] is None
     assert cards[tid]['episode_id']==eid and cards[tid]['status']=='已制作'
+
+
+def test_expert_delivery_is_filmed_and_blocks_repeat(tmp_path):
+    import json
+    env = Env(tmp_path)
+    wb = env.wb
+    pid, eid = env.new_episode()
+    premise = "钟楼停摆，MILO拉响大钟，最后倒挂。"
+    tid = wb.add_topic(pid, "研003", premise)["topicId"]
+    with env.db() as db:
+        db.execute("UPDATE topic SET episode_id=?,status='已制作' WHERE id=?", (eid, tid))
+        db.execute("INSERT INTO delivery VALUES('full',?,'full','[]','hash','path','deliverable','{}','cmd',1)", (eid,))
+        db.execute("INSERT INTO continuous_run(id,episode_id,target_stage,state,cursor,created_at,updated_at) VALUES ('expert',?,'delivery','done',?,1,2)", (eid,json.dumps(dict(deliveryId="full"))))
+    assert wb.topics(pid)[0]["intent"] == "已拍"
+    def card(title):
+        return dict(title=title,premise=title,mechanism="机关",motivation="寻宝",difference="不同收尾",reference_id="R1")
+    env.codex.script = [lambda req: {"candidates":[card(s) for s in [premise,"甲","乙","丙","丁"]]},
+                        lambda req: {"candidates":[card("戊")]}]
+    turn = wb.start_topic_research(pid,"做5个长篇选题，适合4分钟","codex","long")
+    wb.execute_free_chat(turn["turnId"],turn["attemptId"])
+    assert "已拍作品 · 研003" in env.codex.calls[0].prompt
+    assert env.codex.calls[-1].schema["properties"]["candidates"]["minItems"] == 1
+    assert [c["title"] for c in wb.topic_researches(pid)["runs"][0]["candidates"]] == list("甲乙丙丁戊")

@@ -6,7 +6,7 @@ from helpers import Env
 from workbench.db import transaction, dumps, new_id
 from workbench.continuous import Halt
 from workbench.continuous_images import MaterialWait, generated_count
-from workbench.images import INTERRUPTED_IMAGE, ImageOutcome
+from workbench.images import INTERRUPTED_IMAGE, TRANSPORT_FAILURE, ImageOutcome
 from workbench.executors.base import ExecOutcome
 from workbench.service import Workbench
 from workbench.app import create_app
@@ -50,7 +50,8 @@ def test_restart_resumes_running_but_not_director_pause(tmp_path,monkeypatch):
 
 
 @pytest.mark.parametrize('edit',[False,True])
-def test_interrupted_image_new_batch_and_edit_refund(tmp_path,edit):
+@pytest.mark.parametrize('error',[INTERRUPTED_IMAGE,TRANSPORT_FAILURE])
+def test_interrupted_image_new_batch_and_edit_refund(tmp_path,edit,error):
     env,eid,vid=fixture(tmp_path);wb=env.wb
     cid=run_record(env,eid);wb.initialize_asset_worksheet(eid,env.art(eid,'asset_design')['adopted_version_id'],'worksheet')
     need=wb._need(eid,'bell')
@@ -60,9 +61,9 @@ def test_interrupted_image_new_batch_and_edit_refund(tmp_path,edit):
         with transaction(wb.db_path) as db:db.execute('INSERT INTO asset_need_candidate VALUES(?,?)',(need['id'],vid))
     with pytest.raises(MaterialWait):wb._image_generate(cid,need,edit=dict(prompt='修正门铃',versionId=vid,n=1) if edit else None)
     old=wb._image_state(cid,'bell')['pendingBatch']
-    env.images.inspect=lambda _:ImageOutcome('failed',error=INTERRUPTED_IMAGE)
+    env.images.inspect=lambda _:ImageOutcome('failed',error=error)
     wb.settle_unknown_requests([old])
-    assert wb.batch_view(old)['requests'][0]['error']==INTERRUPTED_IMAGE
+    assert wb.batch_view(old)['requests'][0]['error']==error
     wb._image_generate(cid,wb._need(eid,'bell'))
     state=wb._image_state(cid,'bell')
     assert state['attempts'][-1]['interrupted'] and generated_count(state['attempts'])==0
@@ -293,3 +294,30 @@ def test_unqueryable_submission_never_reissued_even_when_wait_expires(tmp_path):
     req,=wb.batch_view(bid)['requests']
     assert req['id']==original and req['state']=='unknown' and env.images.sent==1
     assert wb._continuous_record(cid)['state']=='failed'
+
+
+def test_transport_retry_only_draws_missing_item(tmp_path,monkeypatch):
+    env,eid,_=fixture(tmp_path)
+    wb=env.wb
+    assets=[dict(id=k,kind='prop',title=k,description=k,imagePrompt=k) for k in ('bell','lamp')]
+    env.save_adopt(eid,'asset_design',dict(assets=assets),'two-props')
+    cid=run_record(env,eid)
+    submit=env.images.submit
+    calls=[]
+    def draw(req):
+        calls.append(req['prompt'])
+        if req['prompt']=='bell' and calls.count('bell')==1:
+            return ImageOutcome('failed',error=TRANSPORT_FAILURE)
+        return submit(req)
+    monkeypatch.setattr(env.images,'submit',draw)
+    monkeypatch.setattr(wb,'_image_fill_records',lambda cid:True)
+    with pytest.raises(Halt):wb._continuous_images(cid)
+    lamp=wb._need(eid,'lamp')['adopted_version_id']
+    bell=wb._need(eid,'bell')
+    assert lamp and not bell['adopted_version_id'] and bell['decision']!='text_only'
+    blocked_at=wb._continuous_record(cid)['cursor']['blocks'][0]['at']
+    assert wb.changed_continuous_runs(blocked_at+29)==[]
+    assert wb.changed_continuous_runs(blocked_at+30)==[cid]
+    assert wb._continuous_images(cid)
+    assert wb._need(eid,'bell')['adopted_version_id'] and wb._need(eid,'lamp')['adopted_version_id']==lamp
+    assert sorted(calls)==['bell','bell','lamp']

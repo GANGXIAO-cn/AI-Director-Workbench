@@ -101,7 +101,12 @@ class ProductionMixin:
                     if not card: raise Rejected("选题池已无可用卡，可改选「想一个新故事」")
                     self._topic_on_kickoff(db,task["episode_id"],card["id"])
                     db.execute("UPDATE kickoff SET source_type='topic',topic_id=?,goal=? WHERE episode_id=?",(card["id"],original["text"],task["episode_id"]))
-                run_id = self._queue_run(db, task_id, "revise" if info.get("baseVersionId") else "create",
+                if info.get("storyProposal"):
+                    request = f"{original['text']}\n写稿人的提案：\n{q['text']}\n导演定案：{answer}。按此选择和补充意见撰写完整故事稿。"
+                if info.get("kickoffChoice"):
+                    run_id = self._queue_story_proposal(db,task_id,task["artifact_id"])
+                else:
+                    run_id = self._queue_run(db, task_id, "revise" if info.get("baseVersionId") else "create",
                                          info.get("baseVersionId"), request, None)
                 mid = self._message(db, thread, "user", answer, selection, None, run_id, kind="answer")
                 return dict(messageId=mid, runId=run_id)
@@ -737,7 +742,8 @@ class ProductionMixin:
             binding = db.execute("SELECT include_images FROM prompt_draft_task WHERE task_id=?", (task["id"],)).fetchone()
             reads_images = task.get("reads_images")
             try:
-                scaffold = self.draft_prompts(task["episode_id"])["segments"]
+                from .promptdraft import draft
+                scaffold = draft(self,task["episode_id"],bindings_only=True)["segments"]
             except Rejected:
                 if binding:
                     raise
@@ -748,6 +754,7 @@ class ProductionMixin:
             inherited={sid:material_context(db,task['episode_id'],[r for r in entry.get('refs',[]) if r.get('kind')=='image']) for sid,entry in scaffold.items()}
             extra.append(dict(role='material_use_conclusions',name='素材既定用途与观察.json',text=dumps(inherited)))
             extra.append(dict(role='request',name='提示词组装职责',text='接收既定剧本、表演、镜头、分段与素材绑定。只翻译、排列图片标签并组装提示词；继承素材用途及接受限制，不重新看图评质量、不要求静态参考证明剧情动作或声音，不重选图片。原始props是观察，不要求全部映射为剧情道具。'))
+            extra.append(dict(role='stage_contract',name='分镜时间标注整理',text='以本段分镜窗口为准。原文重复标注同一动作的全片或段内秒数时，合并为一次动作描述，不在正文内另起时间线；保留镜头顺序、动作、对白和声音节拍。'))
             if scaffold:
                 frozen = {sid: dict(refs=entry["refs"], materialUses=entry.get("materialUses", []),
                                     sound=entry.get("sound", {}), prompt_format="h3_official")
@@ -1540,14 +1547,16 @@ class ProductionMixin:
             path = workdir / f"{k}.png"
             path.write_bytes(self.store.read_blob(frames[k]["sha256"]))
             images.append(path)
-        trailer = f"\n运行号：{qid}\n输入指纹：{digest}\n回包为 kind=cut_explanation，atMs 填 {at_ms}。"
+        trailer = f"\n观察切点（毫秒）：{at_ms}。填写判断、理由及画面证据。"
         connection = self.run_connection(provider)
         outcome = self.executors[provider].start(ExecRequest(
             run_id=qid, purpose="ask", kind="cut_explanation", prompt=text + trailer,
             connection=connection,model=connection["model"],effort=connection["effort"],
-            schema=contracts.branch_schema("cut_explanation"), session_mode="ephemeral", workdir=workdir, images=images,
+            schema=contracts.content_schema("cut_explanation"), session_mode="ephemeral", workdir=workdir, images=images,
             timeout=int(self.get_setting("executor_timeout", 600))))
         res = outcome.structured if outcome.ok else None
+        if isinstance(res, dict):
+            res = {"schemaVersion":1, "kind":"cut_explanation", "runId":qid, "inputFingerprint":digest, "atMs":at_ms, **res}
         problems = contracts.validate(res) if res else [outcome.error_class or "failed"]
         if res and not problems and (res.get("kind") != "cut_explanation" or res["runId"] != qid
                                      or res["inputFingerprint"] != digest or res["atMs"] != at_ms):

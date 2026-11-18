@@ -9,6 +9,7 @@ STATUS = {
     "confirmed_not_executed":"已核实未执行", "awaiting_authorization":"待授权",
 }
 REASONS = {
+    "model_not_found":"当前账号或通道无法使用所选模型，请切换到可用模型",
     "quota":"通道额度不足或达到频率限制", "authentication":"通道认证失败，请核对登录状态或凭证",
     "unavailable":"本机找不到执行器", "schema":"返回内容不符合所需格式", "timeout":"等待通道回执超时",
     "network":"与通道的连接中断", "executor_error":"执行器运行出错", "disconnect":"与通道的连接中断",

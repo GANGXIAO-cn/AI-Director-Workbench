@@ -21,7 +21,7 @@ export function Decisions({eid,stage,records,scenes,refresh,close}:any) {
   function card(d:any) {
     return <article key={d.id}><p><b>{d.code}</b> {d.text}</p>
       <small>{d.origin_kind==="keep"?"本步必须保留":d.origin_kind==="dialogue"?"阶段对话":"手工录入"} · {d.scope_kind==="episode"?"整集":d.scenes.join("、")}</small>
-      {d.placements.map(n=><p key={n.stage}><a href={`#/e/${eid}/${n.stage}?v=${n.versionId}`} onClick={close}>{labels[n.stage]} · {n.where||"不适用"}</a> {n.quote||n.reason}</p>)}
+      {d.placements.map(n=><p key={JSON.stringify([n.stage,n.segmentId])}><a href={`#/e/${eid}/${n.stage}?v=${n.versionId}`} onClick={close}>{labels[n.stage]} · {n.where||"不适用"}</a> {n.quote||n.reason}</p>)}
       {d.state==="active" && <div><button className="btn" onClick={()=>setEdit({id:d.id,text:d.text,origin:d.origin_stage,scopeKind:d.scope_kind,scopeValue:d.scenes})}>修改</button>
         <button className="btn" onClick={()=>act.run(async()=>{await cmd("revoke_decision",{decision_id:d.id});await refresh();})}>撤销</button></div>}
     </article>;
@@ -101,13 +101,19 @@ export function DecisionNotes({records,art,version,eid,onSave,frozen}:any) {
   const [draft,change]=useState<Record<string,any>>({});
   const stageIndex = FILM_STAGES.findIndex(([k])=>k===art.stage);
   const rows=records.filter(d=>d.state==="active"&&FILM_STAGES.findIndex(([k])=>k===d.origin_stage)<=stageIndex);
-  const note=d=>draft[d.code]??version.content.decisionNotes?.find(n=>n.decision===d.code)??{decision:d.code,status:"applied"};
+  const entries=rows.flatMap(d=>{
+    const notes=(version.content.decisionNotes??[]).filter(n=>n.decision===d.code);
+    return (notes.length?notes:[{decision:d.code,status:"applied"}]).map(original=>{
+      const key=JSON.stringify([version.id,d.code,original.segmentId]);
+      return {d,key,note:draft[key]??original};
+    });
+  });
   if(!rows.length) return null;
-  return <section><h4>本稿导演决定落点</h4>{rows.map(d=><div key={d.id}><p>{d.code} · {d.text}</p>
+  return <section><h4>本稿导演决定落点</h4>{entries.map(({d,key,note})=><div key={key}><p>{d.code} · {d.text} {note.segmentId}</p>
     {!frozen.has(d.code)&&<b>本稿生成后新增，尚未读取</b>}
-    <NoteFields note={note(d)} update={patch=>change({...draft,[d.code]:{...note(d),...patch}})}/></div>)}
+    <NoteFields note={note} update={patch=>change({...draft,[key]:{...note,...patch}})}/></div>)}
     <button className="btn" disabled={act.busy} onClick={()=>act.run(async()=>{
-      const r=await cmd("save_manual",{artifact_id:art.id,base_version_id:version.id,content:{...version.content,decisionNotes:rows.map(note)},note:"填写决定落点"});
+      const r=await cmd("save_manual",{artifact_id:art.id,base_version_id:version.id,content:{...version.content,decisionNotes:entries.map(e=>e.note)},note:"填写决定落点"});
       await onSave(r.versionId);
     })}>保存落点为新稿</button><ErrorLine error={act.error}/></section>;
 }

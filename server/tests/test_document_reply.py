@@ -151,8 +151,9 @@ def test_scope_and_unchanged_prompt(tmp_path):
     plan = env.wb.create_task(eid, 'plan', '完成镜头稿')
     env.drain(plan['runId'])
     req = env.codex.calls[-1]
-    assert req.schema is not None and 'changes' in req.prompt and '固定字段（回包原样填写）' in req.prompt
-    for stage in ('story', 'stress', 'publish'):
+    assert req.schema is not None and 'changes' in req.prompt and 'targetId' not in req.prompt
+    assert env.wb._document_mode({'purpose':'create','provider':'antigravity'}, {'stage':'publish'})
+    for stage in ('story', 'stress'):
         assert not env.wb._document_mode({'purpose':'create','provider':'antigravity'}, {'stage':stage})
     for purpose in ('review','cold_read','comparison','parallel'):
         assert not env.wb._document_mode({'purpose':purpose,'provider':'antigravity'}, {'stage':'plan'})
@@ -177,16 +178,25 @@ def test_all_document_stages_preserve_native_field_values(stage, field, value):
     assert normalize(stage, field, result['changes'][0]['value']) == value
 
 
-def test_legacy_prompt_format_is_unchanged():
-    from workbench.stages import WRITABLE
-    trailer = prompts.draft_trailer('r', 'h', 'a', None, 'plan')
-    expected = ('运行号：r\n输入指纹：h\n目标对象：a\n基版：null\n'
-                + '可写字段：' + ', '.join(WRITABLE['plan']) + '\n'
-                + '回包为 kind=draft：changes 中每项 targetId 为目标对象，field 只能是可写字段，value 为该字段完整新文本。'
-                + 'baseVersionId 填基版（为 null 时填 null）。数组和对象字段的 value 使用完整、可解析的 JSON 字符串。')
-    assert trailer == expected
-    head = '你是本次短片制作任务的作者。只依据下列材料写作，不使用任何工具，不读取其他文件。'
-    assert prompts.prompt_from([], trailer, 'create') == head + '\n\n\n\n===== 固定字段（回包原样填写） =====\n' + expected + '\n'
+@pytest.mark.parametrize("dialogue,clarify", [(None,False), (None,True), ({"auto":True},False)])
+def test_writing_contract_omits_tracking_fields(dialogue, clarify):
+    schema = json.dumps(contracts.writing_schema(dialogue, clarify))
+    for key in ("schemaVersion", "inputFingerprint", "runId", "baseVersionId", "targetId"):
+        assert key not in schema
+        assert key not in prompts.draft_trailer("publish")
+
+
+def test_content_only_draft_is_bound_to_request(tmp_path):
+    env, eid = setup_plan(tmp_path)
+    content = env.plan86()
+    env.codex.script = [lambda req: {"changes":[{"field":k, "value":json.dumps(v,ensure_ascii=False)}
+                                                 for k,v in content.items()]}]
+    rid = env.wb.create_task(eid, "plan", "完成镜头稿")["runId"]
+    env.drain(rid)
+    assert run_row(env,rid)["status"] == "succeeded"
+    result = json.loads((env.wb.store.run_dir(rid) / "result.json").read_text())
+    assert result["runId"] == rid and not contracts.validate(result)
+    assert all(change["targetId"] == env.art(eid,"plan")["id"] for change in result["changes"])
 
 
 def test_bare_manuscript_accepted_for_new_draft(tmp_path):

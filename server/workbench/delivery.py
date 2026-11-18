@@ -185,7 +185,17 @@ class DeliveryMixin:
             fields["tags"] = ", ".join(tags)
         labels = dict(publishing.CORE, **{f["key"]:f["label"] for f in cfg["additional_fields"]})
         copy_text = publishing.pack_markdown(fields, labels, cfg)
-        checked = publishing.check_copy_pack(copy_text, cfg) if strict else None
+        problems = []
+        try:
+            checked = publishing.check_copy_pack(copy_text, cfg) if strict else None
+        except Rejected as exc:
+            problems.append(str(exc))
+        try:
+            cues = publishing.cue_rows(content.get("cues") or [], music, basis["segments"], strict, frozen=bool(frozen))
+        except Rejected as exc:
+            problems.append(str(exc))
+        if problems:
+            raise Rejected("；".join(problems))
         platform_description = "\n\n".join(s for s in (fields["body"], hashtags) if s)
         platforms = dict(youtube=dict(title=title, description=platform_description),
                          facebook=dict(title=title, description=platform_description),
@@ -195,7 +205,7 @@ class DeliveryMixin:
             raise Rejected("本集须有英文视频标题")
         return dict(fields=fields, copyText=copy_text, fieldLabels=labels, settings=cfg, platforms=platforms, music="备用" if music == "backup" else "启用",
                     musicState=music, cueBasis=basis, basisFrozen=bool(frozen),
-                    cues=publishing.cue_rows(content.get("cues") or [], music, basis["segments"], strict, frozen=bool(frozen)), englishTitle=english_title, website=cfg.get("website"))
+                    cues=cues, englishTitle=english_title, website=cfg.get("website"))
 
     # ============================================================ delivery checks
     def delivery_problems(self, episode_id, scope="full", segments=None):

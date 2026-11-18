@@ -18,7 +18,7 @@ export function ResearchReference({reference,replace,clear}:{reference:Excerpt;r
         <pre>{reference.text}</pre></details></div>;
 }
 
-export function TopicResearch({projectId,poolChanged,initialBrowse=false,hidePicker=false,onOriginal,onPick,referenceDraft}:{referenceDraft?:ReferenceDraft;projectId:string;poolChanged:()=>Promise<void>;initialBrowse?:boolean;hidePicker?:boolean;onOriginal?:(part:Excerpt)=>Promise<void>;onPick?:(topic:{id:string;code:string;premise:string})=>void}) {
+export function TopicResearch({projectId,poolChanged,initialBrowse=false,hidePicker=false,onOriginal,onPick,referenceDraft}:{referenceDraft?:ReferenceDraft;projectId:string;poolChanged:()=>Promise<void>;initialBrowse?:boolean;hidePicker?:boolean;onOriginal?:(part:Excerpt)=>Promise<void>;onPick?:(topic:{id:string;code:string;title?:string;premise:string})=>void}) {
   const records=useQuery<{providers:string[];runs:Run[]}>("topic_researches",{project_id:projectId});
   const [browsing,setBrowsing]=useState(initialBrowse);
   const [localReference,setLocalReference]=useState<Excerpt|null>(null);
@@ -67,7 +67,7 @@ export function TopicResearch({projectId,poolChanged,initialBrowse=false,hidePic
             <button className="btn" disabled={action.busy} onClick={()=>action.run(async()=>{
               const saved=await send("accept_research_topic",{project_id:projectId,turn_id:run.id,index,code},[]);
               await records.reload();await poolChanged();
-              onPick?.({id:saved.topicId,code:saved.code,premise:card.premise});
+              onPick?.({id:saved.topicId,code:saved.code,title:card.title,premise:card.premise});
             })}>{onPick?"保存并选用":"保存到选题池"}</button></div>}</article>;
       })}</>}
       <ErrorLine error={action.error}/>{records.error && <p className="error">{records.error}</p>}

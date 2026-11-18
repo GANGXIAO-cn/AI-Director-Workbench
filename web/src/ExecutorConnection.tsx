@@ -26,8 +26,9 @@ export function ExecutorConnection({provider,settings,models,reload,probe,pathDi
       if (!probe.executable || !probe.version) {setVerification({text:"无法运行 CLI，请检查可执行文件路径，保存后重新检测。"});return;}
       if (probe.missing_flags?.length) {setVerification({text:"当前 CLI 缺少工作台所需参数："+probe.missing_flags.join("、")});return;}
       if (provider==="antigravity") {
-        await cmd("refresh_cli_models",{provider});
-        setVerification({text:"连接已验证，Google CLI 已返回可用型号。"});
+        const user=await cmd<{authenticated:boolean|null;accountLabel?:string;diagnostic?:string}>("verify_executor_identity",{provider});
+        setVerification({text:user.authenticated===true?"本机登录已验证 · "+(user.accountLabel||"Google 账号"):
+          user.diagnostic||"尚未确认登录，请在终端打开 agy 后重试。",login:user.authenticated===false});
         await reload();
       } else {
         const user=await q<{authenticated:boolean|null;accountLabel?:string;unavailable?:boolean}>("executor_identity",{provider});

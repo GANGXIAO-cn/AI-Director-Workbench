@@ -42,36 +42,80 @@ def _text_fields(value):
 
 
 def decision_errors(db, art, content, plan):
+    decisions = applicable_decisions(db, art["episode_id"], art["stage"])
+    return check_decision_notes(decisions, art["stage"], content, plan)
+
+
+def check_decision_notes(decisions, stage, content, plan):
     errors = []
-    body = [re.sub(r'\s+', '', t) for k,v in content.items() if k not in ("decisionNotes","notes") for t in _text_fields(v)]
     notes = content.get("decisionNotes", [])
     if not isinstance(notes, list) or any(not isinstance(n,dict) for n in notes):
         return ["decisionNotes 须为记录数组"]
-    for d in applicable_decisions(db, art["episode_id"], art["stage"]):
-        code = d["code"]
+    segments = content.get("segments", {}) if stage == "prompts" else {}
+    for d in decisions:
+        code = d.get("code")
         found = [n for n in notes if n.get("decision") == code]
-        if len(found) != 1:
-            errors.append(f"决定 {code} 没有落点说明" if not found else f"决定 {code} 的落点重复")
+        if not found:
+            errors.append(f"决定 {code} 没有落点说明")
             continue
-        n = found[0]
-        def field(key):
-            return n[key].strip() if isinstance(n.get(key), str) else ""
-        if n.get("status") == "not_applicable" and field("reason"):
-            continue
-        if n.get("status") != "applied" or not field("where"):
-            errors.append(f"决定 {code} 须填写落点或不适用理由")
-            continue
-        quote = re.sub(r'\s+', '', field("quote"))
-        if not quote or not any(quote in t for t in body):
-            errors.append(f"决定 {code} 的引文不在本稿中")
-        if d["scope_kind"] == "scenes":
-            ids = set(d["scenes"])
-            for shot in (plan or {}).get("shots", []):
-                if isinstance(shot,dict) and (shot.get("origin") or {}).get("scene") in d["scenes"]:
-                    ids.update([shot.get("id"), shot.get("segment")])
-            if not any(re.search(r"(?<![A-Za-z0-9])"+re.escape(i)+r"(?![A-Za-z0-9])",field("where")) for i in ids if i):
-                errors.append(f"决定 {code} 的落点不在指定场次")
+        seen = set()
+        for n in found:
+            sid = n.get("segmentId") if stage == "prompts" else None
+            if sid is not None and (not isinstance(sid, str) or not isinstance(segments, dict) or not isinstance(segments.get(sid), dict)):
+                errors.append(f"决定 {code} 的段号不在本稿中")
+                continue
+            prefix = f"{sid}：" if sid else ""
+            if sid in seen or (len(found) > 1 and not sid):
+                errors.append(prefix + f"决定 {code} 的落点重复")
+                continue
+            seen.add(sid)
+            values = [segments[sid].get("txt","")] if sid else [
+                t for k,v in content.items() if k not in ("decisionNotes","notes") for t in _text_fields(v)]
+            body = [re.sub(r'\s+', '', t) for t in values if isinstance(t,str)]
+            def field(key):
+                return n[key].strip() if isinstance(n.get(key), str) else ""
+            if n.get("status") == "not_applicable" and field("reason"):
+                continue
+            if n.get("status") != "applied" or not field("where"):
+                errors.append(prefix + f"决定 {code} 须填写落点或不适用理由")
+                continue
+            quote = re.sub(r'\s+', '', field("quote"))
+            if not quote or not any(quote in t for t in body):
+                errors.append(prefix + f"决定 {code} 的引文不在本稿中")
+            if d.get("scope_kind", d.get("scope")) == "scenes":
+                ids = set() if sid else set(d["scenes"])
+                for shot in (plan or {}).get("shots", []):
+                    if not isinstance(shot,dict) or (sid and shot.get("segment") != sid):
+                        continue
+                    scene = (shot.get("origin") or {}).get("scene")
+                    if scene in d["scenes"]:
+                        ids.add(scene)
+                        ids.update([shot.get("id"), shot.get("segment")])
+                if not any(re.search(r"(?<![A-Za-z0-9])"+re.escape(i)+r"(?![A-Za-z0-9])",field("where")) for i in ids if i):
+                    errors.append(prefix + f"决定 {code} 的落点不在指定场次")
     return errors
+
+
+def revised_segment_notes(previous, submitted, changed, current):
+    """Keep the notes attached to unchanged segments when applying a local revision."""
+    if not isinstance(submitted, list) or any(not isinstance(n, dict) for n in submitted):
+        raise ValueError("decisionNotes 须为记录数组")
+    replacements = []
+    for note in submitted:
+        sid = note.get("segmentId")
+        if sid and sid not in changed:
+            continue
+        if not sid and len(changed) == 1:
+            note = dict(note, segmentId=next(iter(changed)))
+        elif not sid and any(n.get("segmentId") and n.get("decision")==note.get("decision") for n in previous):
+            raise ValueError("同时修订多段时，请在每条决定落点填写 segmentId")
+        replacements.append(note)
+    keys = {(n.get("decision"), n.get("segmentId")) for n in replacements}
+    replaced_codes = {code for code, _ in keys}
+    saved = [n for n in previous if (n.get("segmentId") in current and
+             (n.get("decision"), n.get("segmentId")) not in keys) or
+             (not n.get("segmentId") and n.get("decision") not in replaced_codes)]
+    return saved + replacements
 
 
 class DecisionMixin:

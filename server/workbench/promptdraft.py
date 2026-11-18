@@ -6,7 +6,7 @@ from .db import connect
 from .errors import Rejected
 from .delivery import fmt
 
-def draft(wb, eid):
+def draft(wb, eid, *, bindings_only=False):
     with connect(wb.db_path) as db:
         ep = wb._kickoff(db, eid)
         plan = wb._adopted_content(db,eid,"plan")
@@ -65,6 +65,7 @@ def draft(wb, eid):
             if not grid:
                 for fld,use in [("startAssetId","起幅"),("endAssetId","落幅")]:
                     if shot.get(fld): add(shot[fld],s+use,[s],"start_frame" if fld=="startAssetId" else "end_frame")
+            if bindings_only: continue
             marker = "起镜" if not lines else ("同镜延续" if shot.get("continuation") == "same" else "切镜")
             action = "，".join(readable.strip_matching_window_prefix(str(shot[k]),t["seg_start_ms"],t["seg_end_ms"]).strip().rstrip("。，") for k in ("camera","action","performance","gaze","reaction","sound") if shot.get(k))
             for speaker in voices.get(s, []):
@@ -139,6 +140,12 @@ def draft(wb, eid):
             if limits:
                 definition += "用途限制：" + limits
             definitions.append(definition)
+        from .materialcontext import binding_context
+        inherited_uses=[binding_context(ref) for ref in refs.values()]
+        sound=dict(bgm=False,silent=False,ambience=[],dialogue=[cue['text'] for shot in seg['shots'] for cue in spoken.get(shot,[])])
+        if bindings_only:
+            out[sid]=dict(refs=list(refs.values()),materialUses=inherited_uses,sound=sound)
+            continue
         definitions = join(*definitions, fixed("reference_use"))
         visual = join(fixed("visual_style"), fixed("motion"), ep["spec"].get("style"))
         opening = byid[seg["shots"][0]].get("opening") or byid[seg["shots"][0]]["action"]
@@ -161,11 +168,8 @@ def draft(wb, eid):
         freeze('画面文字：' if grid else '【声音与文字】',fixed('frame_text'))
         # Validate the program-owned timeline before sending it as a model example.
         readable.flat_windows(join(*lines),seg['duration_ms'],sid)
-        from .materialcontext import binding_context
-        inherited_uses=[binding_context(ref) for ref in refs.values()]
         out[sid]=dict(materialUses=inherited_uses, refs=list(refs.values()), txt=readable.render(parts), prompt_format="readable_v3", fixedSections=fixed_sections,
-                      blocks=parts, sound=dict(bgm=False,silent=False,ambience=[],
-                                              dialogue=[cue["text"] for shot in seg["shots"] for cue in spoken.get(shot, [])]))
+                      blocks=parts, sound=sound)
     _, missing = imagechoices.check_scope(requirements, plan, "full", out, used)
     if missing:
         raise Rejected("请在素材页确认必用图的目标段：" + "、".join(dict.fromkeys(p["file"] for p in missing)), detail=missing)

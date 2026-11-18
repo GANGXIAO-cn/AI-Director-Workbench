@@ -28,10 +28,10 @@ async function ensureProject(pid: string, name: string, id?:string) {
 function projectName(p:any, list:any[]) {
   return list.some(other=>other.id!==p.id && other.name===p.name) ? p.name+" · "+p.episodes+" 集 · "+p.id.slice(0,4) : p.name;
 }
-export default function Home({ tab, projects, rememberProject, referenceDraft }: { referenceDraft:ReferenceDraft; tab?: string; projects: ReturnType<typeof useProjectList>; rememberProject:(id:string)=>void }) {
+export default function Home({ tab, projects, rememberProject, referenceDraft, initialTopic, consumeTopic }: { initialTopic:any; consumeTopic:()=>void; referenceDraft:ReferenceDraft; tab?: string; projects: ReturnType<typeof useProjectList>; rememberProject:(id:string)=>void }) {
   const [mode, setMode] = useState(TABS.some(([k]) => k === tab) ? tab! : "idea");
   const [text, setText] = useState("");
-  const [projectId, setProjectId] = useState("");
+  const [projectId, setProjectId] = useState<string>(initialTopic?.project_id ?? "");
   const [pop, setPop] = useState<"" | "style" | "topic" | "settings" | "project">(referenceDraft.value?"topic":"");
   const [pictures,setPictures] = useState<File[]>([]);
   const startEpisode=useDirectorCommand();
@@ -44,7 +44,8 @@ export default function Home({ tab, projects, rememberProject, referenceDraft }:
   const [original,setOriginal]=useState<Excerpt|null>(null);
   const storyImport=useStoryImport();
   const [styleNote, setStyleNote] = useState("");
-  const [topic, setTopic] = useState<any>(null);
+  const [topic, setTopic] = useState<any>(initialTopic);
+  useEffect(() => { if (initialTopic) consumeTopic(); }, [initialTopic, consumeTopic]);
   const [previous, setPrevious] = useState("");
   const [ratio, setRatio] = useState("");
   const {plan:executorPlan,setPlan:setExecutorPlan}=useExecutorPlan();
@@ -246,7 +247,7 @@ export default function Home({ tab, projects, rememberProject, referenceDraft }:
             {kickoffMode && <DirectorFiles files={pictures} remove={i=>setPictures(pictures.filter((_,n)=>n!==i))}/>}
             {["idea","episode"].includes(mode) && (original || topic || previous) && <div className="row" style={{padding:"0 14px 10px"}}>
               {original && <button className="chip" onClick={()=>setOriginal(null)}>按原文拍 · 《{original.title}》 · 第 {original.offset+1}–{original.offset+Array.from(original.text).length} 字 ×</button>}
-              {topic && <button className="chip picked-topic" title={topic.premise} onClick={() => setTopic(null)}>选题 {topic.code}<span>{topic.premise}</span> ×</button>}
+              {topic && <button className="chip picked-topic" title={topic.premise} onClick={() => setTopic(null)}>选题 {topic.code}<span>{topic.title || topic.premise}</span> ×</button>}
               {previous && <button className="chip" onClick={() => setPrevious("")}>承接 {opened.find((e: any) => e.id === previous)?.display_code} ×</button>}</div>}
             {mode === "import" && (
               <div className="row" style={{ padding: "0 14px 10px" }}>
@@ -409,7 +410,7 @@ function Popover({ configs, listNotice, topicQuery, projectLabel, kind, close, p
       {topicQuery.error&&<span className="error">{topicQuery.error} <button className="btn" onClick={topicQuery.reload}>重新读取</button></span>}
       <div className="home-topic-list">{topics.filter(isKickoffTopic).map((t: any) =>
         <button key={t.id} className="btn ghost home-topic-option" onClick={() => pickTopic(t)}>
-          <b>{t.code}</b><span>{t.premise}</span><span>选用</span>
+          <b>{t.code}</b><span>{t.title && <strong className="topic-option-title">{t.title}</strong>}<span className="topic-option-summary">{t.premise}</span></span><span>选用</span>
         </button>)}</div>
       {existing&&topicQuery.data&&!topics.some(isKickoffTopic)&&
         <span className="muted small">{topics.length?"本项目目前没有可开工的候选卡。":"本项目还没有选题卡。"}可以填写故事前提新建一张，也可以展开选题研究。</span>}

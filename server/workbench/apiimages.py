@@ -10,9 +10,27 @@ import threading
 import httpx
 
 from .errors import Rejected
-from .images import ImageOutcome, image_size
+from .images import ImageOutcome, TRANSPORT_FAILURE, image_size
 from .storage import canonical, write_atomic
 from .executors.cli import local_proxy_env
+
+
+
+
+def response_error(response, credentials):
+    summary = f"OpenAI 图片 API 返回 HTTP {response.status_code}"
+    try:
+        body = response.json()
+    except ValueError:
+        body = response.text if response.headers.get("content-type", "").startswith("text/plain") else None
+    error = body.get("error", body) if isinstance(body, dict) else body
+    fields = [error.get(key) for key in ("code", "type", "param", "message")] if isinstance(error, dict) else [error]
+    detail = " · ".join(dict.fromkeys(value.strip() for value in fields if isinstance(value, str) and value.strip()))
+    for secret in credentials.values():
+        if secret:
+            detail = detail.replace(secret, "[已隐藏]")
+    detail = re.sub(r"sk-[A-Za-z0-9_-]+", "[已隐藏]", detail)
+    return f"{summary} · {detail[:2000]}" if detail else summary
 
 
 class SlotTimeout(TimeoutError):
@@ -28,7 +46,8 @@ class OpenAIImageAPIProvider:
     capabilities = dict(label="OpenAI 图片 API（直连）", operations=["generate", "edit"],
                         sizes=["1024x1024", "1024x1536", "1536x1024", "864x1536", "1536x864"],
                         quality=["low", "medium", "high", "auto"],
-                        models=["gpt-image-2.5-sunburst", "gpt-image-2.5-flare"])
+                        models=["gpt-image-2.5-sunburst", "gpt-image-2.5-flare",
+                                "gpt-image-2.6-sunburst", "gpt-image-2.6-flare"])
 
     def __init__(self, root, credential_path=None, transport=None):
         self.root = Path(root)
@@ -91,6 +110,8 @@ class OpenAIImageAPIProvider:
         receipt = json.loads((job / "receipt.json").read_text())
         if (job / "result.png").is_file():
             return ImageOutcome("succeeded", (job / "result.png").read_bytes(), receipt.get("providerRequestId"))
+        if receipt["state"] == "unknown" and receipt.get("error") == "API 连接中断或超时，请核对原请求":
+            return ImageOutcome("failed", provider_request_id=receipt.get("providerRequestId"), error=TRANSPORT_FAILURE)
         return ImageOutcome(receipt["state"], provider_request_id=receipt.get("providerRequestId"),
                             error=receipt.get("error", "请求结果待核对"))
 
@@ -138,7 +159,7 @@ class OpenAIImageAPIProvider:
             if response.is_error:
                 state = "unknown" if response.status_code >= 500 else "failed"
                 outcome = ImageOutcome(state, provider_request_id=request_id,
-                                       error=f"OpenAI 图片 API 返回 HTTP {response.status_code}")
+                                       error=response_error(response, config))
             else:
                 data = base64.b64decode(response.json()["data"][0]["b64_json"], validate=True)
                 if not image_size(data):
@@ -146,7 +167,7 @@ class OpenAIImageAPIProvider:
                 write_atomic(job / "result.png", data)
                 outcome = ImageOutcome("succeeded", data, request_id)
         except httpx.TransportError:
-            outcome = ImageOutcome("unknown", provider_request_id=request_id, error="API 连接中断或超时，请核对原请求")
+            outcome = ImageOutcome("failed", provider_request_id=request_id, error=TRANSPORT_FAILURE)
         except (OSError, ValueError, KeyError, IndexError, TypeError):
             outcome = ImageOutcome("unknown" if sent else "failed", provider_request_id=request_id,
                                    error="API 返回结果无法读取" if sent else "图片输入无法读取，未发送请求")

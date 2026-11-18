@@ -15,6 +15,27 @@ def expert_provisional(req):
 from test_image_assess import fixture,assessment,reply
 
 
+def test_state_missing_observation_reads_adopted_image_once(tmp_path,monkeypatch):
+    from helpers import Env
+    wb=Env(tmp_path).wb
+    need=dict(kind='state',role_id='milo',state_id='hat',adopted_version_id='hat-image',need_key='hat')
+    state=dict(role='milo',stateId='hat',designHash='hat-design',confirmed=False)
+    reads=[]
+    monkeypatch.setattr(wb,'_continuous_record',lambda cid:dict(episode_id='episode'))
+    monkeypatch.setattr(wb,'asset_worksheet',lambda eid:dict(rows=[need]))
+    monkeypatch.setattr(wb,'cast_matrix',lambda eid:dict(roleStates=[state]))
+    monkeypatch.setattr(wb,'image_assessments',lambda *args:[dict(version_id='hat-image',body=dict(observation=' '))])
+    monkeypatch.setattr(wb,'assess_images',lambda eid,ids,*args,**kwargs:reads.extend(ids) or [dict(observation='帽檐遮住左耳')])
+    def confirm(eid,role,sid,digest,vid,observation,command_id):
+        assert observation=='帽檐遮住左耳'
+        state.update(confirmed=True,imageId=vid)
+    monkeypatch.setattr(wb,'confirm_role_state',confirm)
+    monkeypatch.setattr(wb,'space_locks',lambda eid:[])
+    monkeypatch.setattr(wb,'_continuous_log',lambda *args:None)
+    assert wb._image_fill_records('current') and wb._image_fill_records('current')
+    assert reads==['hat-image']
+
+
 def library_pick(take=True):
     """实测 135：库图先按名称与用途挑选；take=False 表示图库里没有适用图。"""
     def answer(req):

@@ -136,3 +136,19 @@ def test_adopted_identity_automatically_follows_visible_roles(tmp_path):
     draft = env.wb.draft_prompts(eid)
     assert identity in [ref["assetVersionId"] for ref in draft["segments"]["G01"]["refs"]]
     assert identity not in [ref["assetVersionId"] for ref in draft["segments"]["G02"]["refs"]]
+
+
+def test_choose_product_master_replaces_worksheet_image_without_generation(tmp_path):
+    env, eid, _, _ = prepare(tmp_path)
+    wb = env.wb
+    item = dict(id="bag", kind="prop", title="托特包", description="入景商品", imagePrompt="木屋里的托特包")
+    env.save_adopt(eid, "asset_design", dict(strategy="lightweight", assets=[item]), "bag-list")
+    for code in ("15", "03"):
+        current, = wb.asset_worksheet(eid)["rows"]
+        wb.set_asset_need(eid, "bag", current["revision"], "reuse", "pick-"+code, product_code=code)
+        master = wb.use_project_product(eid, code, "lookup-"+code)["versionId"]
+        updated, = wb.asset_worksheet(eid)["rows"]
+        assert updated["adopted_version_id"] == master and master in updated["candidates"]
+        assert updated["decision"] == "reuse" and not updated["generation_requested"]
+    with env.db() as db:
+        assert not db.execute("SELECT 1 FROM image_batch WHERE episode_id=?", (eid,)).fetchone()

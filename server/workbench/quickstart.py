@@ -10,40 +10,48 @@ from .methodpack import load_pack, method_entries
 from .executors.base import ExecRequest
 from . import workflow
 
-DIRECTION_CONTRACT = '''先构思事件，再用机制复核。判断用户是否已经给出了完整的起因、变化和结局，不按字数判断。
-reply 必须为 JSON 对象：completeStory（布尔）、directions（数组）。完整故事只整理成一个 recommended=true 的方向，保留原话事件和走向；否则提出三个主要事件或结尾明显不同的方向。
-每项：key（A/B/C）、title（10字内）、premise（一句前提）、story（150–300字完整起因变化兑现）、hook、ending、difference（与最近几集不同）、mechanisms（编号数组，可空）、sources（仅输入中的选题编号或知识标题，可空）、recommended（布尔，恰一项true）、reason。各文本非空。不编造来源。未提供机制库时明确注明“未提供机制库”。'''
+DIRECTION_CONTRACT = """你是本集写稿人。先读懂创意、选题卡和导演要求。分析本集最值得看的是什么，
+主角主动做什么、哪一处因果最薄弱。提出两到三种实质不同的讲法，说明人物选择、事件怎样升级、
+开场的看点如何在结尾兑现。保留导演明确指定的走向，仍可从叙事重心、信息揭示或表现方式提出不同讲法。
+选题卡写得完整也要提案。推荐一种并解释取舍。此轮只交创作提案，先不写正文。
+discussion 的 reply 填一个 JSON 对象：{"analysis":"本集具体创作判断","directions":[
+{"key":"A","title":"讲法名","story":"具体起因、关键选择及结尾"}],"recommendation":"A","reason":"为什么更适合本集"}。
+每个选项使用不同的 A/B/C 编号。"""
+
+EXPERT_DIRECTION = """你是本集定案专家。阅读原始创意、项目约束和写稿人的完整提案。
+判断何种讲法最能兑现看点，检查关键因果和角色动机。你可以采纳推荐、另选或组合。
+直接向写稿人给出明确的定案：选哪种、理由、保留哪些事件、具体怎么解决薄弱处。
+若提案有缺漏，你负责补足并定案。不要向用户提问。discussion 的 reply 用自然语言写最终写作指令。"""
 
 
-def validate_directions(value, sources, idea=''):
-    if not isinstance(value, dict) or type(value.get('completeStory')) is not bool:
-        raise Rejected('方向回复缺少 completeStory 布尔值')
-    items=value.get('directions')
-    if not isinstance(items,list) or len(items)!=(1 if value['completeStory'] else 3):
-        raise Rejected('完整故事须有一个方向，否则须有三个方向')
-    keys=[]
+def read_proposal(reply):
+    value = json.loads(reply)
+    if not isinstance(value, dict):
+        raise ValueError("创作提案须为对象")
+    for key in ("analysis", "reason", "recommendation"):
+        if not isinstance(value.get(key), str) or not value[key].strip():
+            raise ValueError("提案须包含本集分析、推荐方向和理由")
+    items = value.get("directions")
+    if not isinstance(items, list) or len(items) not in (2, 3):
+        raise ValueError("请提出两到三种不同讲法")
+    keys = []
     for item in items:
-        if not isinstance(item,dict): raise Rejected('方向须为对象')
-        if any(not isinstance(item.get(k),str) or not item[k].strip() for k in ('key','title','premise','story','hook','ending','difference','reason')):
-            raise Rejected('方向文字字段不能为空')
-        keys.append(item['key'])
-        if item['key'] not in ('A','B','C') or len(item['title'])>10 or not 150<=len(item['story'])<=300:
-            raise Rejected('方向编号、标题或故事长度不合格')
-        if type(item.get('recommended')) is not bool: raise Rejected('recommended 须为布尔值')
-        for field in ('sources','mechanisms'):
-            if not isinstance(item.get(field),list) or any(not isinstance(v,str) for v in item[field]):
-                raise Rejected(field+' 须为字符串数组')
-        # 实测 112：想法原文里写明的编号（如粘贴选题卡中的“选题编号”）也是输入中的来源。
-        if any(v not in sources and not (v.strip() and v.strip() in idea) for v in item['sources']): raise Rejected('方向引用了输入中不存在的来源')
-    if len(set(keys))!=len(keys) or sum(v['recommended'] for v in items)!=1:
-        raise Rejected('方向编号不可重复，且恰有一个推荐')
-    return items
+        if not isinstance(item, dict) or any(not isinstance(item.get(k), str) or not item[k].strip()
+                                             for k in ("key", "title", "story")):
+            raise ValueError("每个讲法须有编号、标题、具体事件和结尾")
+        keys.append(item["key"])
+    if len(set(keys)) != len(keys) or value["recommendation"] not in keys:
+        raise ValueError("讲法编号须唯一且推荐其中一种")
+    options = [i["key"] + " · " + i["title"] for i in items]
+    text = "\n\n".join([value["analysis"], *[f"**{o}**\n{i['story']}" for o,i in zip(options,items)],
+                        f"**写稿人推荐 {value['recommendation']}**　{value['reason']}"])
+    return text, options
 
 
 class QuickStartMixin:
     def similar_topics(self, project_id, text, limit=5):
         with connect(self.db_path) as db:
-            candidates = [dict(code=t['code'],title=t['code'],premise=t['premise'],mechanisms=[t['mechanism']] if t['mechanism'] else []) for t in db.execute('SELECT * FROM research_topics WHERE project_id=?',(project_id,))]
+            candidates = [dict(code=t['code'],title=t['code'],premise=t['premise'],mechanisms=[t['mechanism']] if t['mechanism'] else []) for t in db.execute('SELECT * FROM topic_comparisons WHERE project_id=?',(project_id,))]
         query=bigrams(text); result={}
         for item in candidates:
             terms=bigrams(item['premise']);score=len(query & terms)/max(1,len(query | terms))
@@ -168,17 +176,25 @@ class QuickStartMixin:
         return dict(idea=idea,recent=recent or '无',series='无',seriesOrdering='按已核实的首次发布时间',
                     topics=self.similar_topics(pid,idea),knowledge=[r for r in self.similar(pid,idea,10) if r['kind']=='knowledge' and r['id'] in allowed_knowledge][:5],mechanisms=mechanism[1].decode() if mechanism else '未提供机制库')
 
-    def _direction_run(self,cid,context,instruction):
+    def _direction_run(self,cid,context,instruction,expert=False):
         value=self._continuous_checkpoint(cid);eid=value['episode_id'];cursor=value['cursor']
-        if cursor.get('directionRunId'):
-            rid=cursor['directionRunId'];self._continuous_execute(cid,rid)
+        run_key = 'directionDecisionRunId' if expert else 'directionRunId'
+        if cursor.get(run_key):
+            with connect(self.db_path) as db:
+                latest = db.execute("SELECT id,status FROM run WHERE task_id=(SELECT task_id FROM run WHERE id=?) "
+                                    "ORDER BY created_at DESC,rowid DESC LIMIT 1",(cursor[run_key],)).fetchone()
+            if latest['status']=='succeeded':
+                return json.loads((self.store.run_dir(latest['id'])/'result.json').read_text())['reply']
+            self._continuous_execute(cid,latest['id'])
             return json.loads((self.store.run_dir(self._continuous_record(cid)['cursor']['runId'])/'result.json').read_text())['reply']
         with transaction(self.db_path) as db:
             ep=self._episode_in(db,eid);art=row(db,"SELECT * FROM artifact WHERE episode_id=? AND stage='story'",eid)
             kickoff=self._kickoff(db,eid);plan={**kickoff['executor_plan'],**self._stage_executors(db,eid,'story')}
-            plan['create']=self.episode_expert(eid)
-            tid,thread=self._draft_thread(db,ep['project_id'],eid,art['id'],'story',instruction,plan)
-        for hit in context['knowledge']:
+            if expert:
+                plan['create']=self.episode_expert(eid)
+            label = '专家定案并交给写稿人' if expert else '写稿人分析创意并提出讲法'
+            tid,thread=self._draft_thread(db,ep['project_id'],eid,art['id'],'story',label,plan)
+        for hit in ([] if expert else context['knowledge']):
             self.cite(tid,hit['id'],'AI 自动检索：与想法相似',cid+':cite:'+tid+':'+hit['id'])
         with transaction(self.db_path) as db:
             pack,profile=self._episode_method(db,eid)
@@ -186,8 +202,8 @@ class QuickStartMixin:
             from .attachments import prepare
             attachments,_=prepare([(f['name'],self.store.read_blob(f['sha256'])) for f in cursor.get('feedbackFiles',[])])
             entries.extend(attachments)
-            rid=self._queue_run(db,tid,'create',None,instruction,message_entries=entries,workspace_revision=art['revision'],discussion_only=True,extra_header=dict(direction=True))
-        self._continuous_cursor(cid,directionTaskId=tid,directionRunId=rid)
+            rid=self._queue_run(db,tid,'create',None,instruction,message_entries=entries,workspace_revision=art['revision'],discussion_only=True,extra_header=dict(direction=True, writerProposal=not expert))
+            db.execute('UPDATE continuous_run SET cursor=json_set(cursor,?,?) WHERE id=?',('$.'+run_key,rid,cid))
         self._continuous_execute(cid,rid)
         return json.loads((self.store.run_dir(self._continuous_record(cid)['cursor']['runId'])/'result.json').read_text())['reply']
 
@@ -202,25 +218,19 @@ class QuickStartMixin:
         context=self._direction_inputs(eid)
         if cursor.get('directionFeedback'):
             context.update(feedback=cursor['directionFeedback'],previousDirections=cursor.get('previousDirections',[]))
-        for attempt in range(2):
+        proposal = cursor.get("writerProposal")
+        if not proposal:
+            proposal = self._direction_run(cid,context,DIRECTION_CONTRACT)
             try:
-                reply=self._direction_run(cid,context,DIRECTION_CONTRACT+('\n上次格式问题：'+error if attempt else ''))
-                answer=json.loads(reply);items=validate_directions(answer,{t['code'] for t in context['topics']}|{k['title'] for k in context['knowledge']},context['idea'] if isinstance(context['idea'],str) else '')
-                break
-            except (ValueError,Rejected) as exc:
-                error=str(exc)
-                self._continuous_cursor(cid,directionRunId=None)
-                if attempt:
-                    self._continuous_cursor(cid,directionDone=True,storyGoal=workflow.STANDARD_GOALS['story']+'\n直接按已给选题及开工要求起草：'+context['idea'])
-                    self._continuous_log(cid,'story','decide_skip',eid,'方向候选格式无效，沿用原选题起草',dict(reason=error))
-                    return True
-        if answer['completeStory']:
-            self._continuous_cursor(cid,directionDone=True,storyGoal=workflow.STANDARD_GOALS['story']+'\n按用户完整故事走向起草，不改事件：\n'+items[0]['story']+'\n用户原话：\n'+context['idea'])
-            self._continuous_log(cid,'story','decide_skip',eid,'想法已有完整故事走向，直接起草',dict(direction=items[0]))
-            return True
-        item=next(i for i in items if i['recommended'])
-        self._continuous_log(cid,'story','choose_direction',item['key'],item['reason'],item)
-        self._continuous_cursor(cid,directionDone=True,storyGoal=workflow.STANDARD_GOALS['story']+'\n按专家选定的方向写：\n'+item['story'])
+                proposal, _ = read_proposal(proposal)
+            except ValueError:
+                # A prose proposal is still usable by the expert.
+                pass
+            self._continuous_cursor(cid,writerProposal=proposal)
+        decision = self._direction_run(cid,dict(context,writerProposal=proposal),EXPERT_DIRECTION,expert=True)
+        goal = workflow.STANDARD_GOALS['story'] + '\n用户原话：\n' + context['idea'] + "\n依照以下专家定案写正文：\n" + decision + "\n写稿人原提案：\n" + proposal
+        self._continuous_log(cid,'story','choose_direction',eid,decision,dict(proposal=proposal,decision=decision))
+        self._continuous_cursor(cid,directionDone=True,storyGoal=goal)
         return True
 
     def _adjust_kickoff(self,cid,args,cursor,check,conflicts):

@@ -54,6 +54,11 @@ class PromptRepairs:
             self._set_prompt_candidate(cid,vid)
             content=self._continuous_version(vid)
             with connect(self.db_path) as db:basis=pn.context(db,eid)
+            responses = content.get('productionNoteResponses', [])
+            merged = pn.merge_segment_responses(responses) if isinstance(responses, list) else responses
+            if merged != responses:
+                vid = self._patch_prompt_notes(cid, vid, merged, basis)
+                content = self._continuous_version(vid)
             state=pn.coverage_status('prompts',content,basis,coverage=False)
             proof=note_proof(content,basis)
             if not state['problems']:return vid

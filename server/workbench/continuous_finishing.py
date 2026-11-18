@@ -152,7 +152,7 @@ class ContinuousFinishing(ContinuousJudgments, PromptRepairs):
             sid=segment['id'];entry=old['segments'].get(sid)
             if not entry or stages.check_segment_prompt(sid,entry,segment['duration_ms'],segment['strategy'],segment['shots']):affected.add(sid)
         resegmented=set(old['segments'])!={s['id'] for s in plan['segments']}
-        self._continuous_create(cid,'prompts',instruction+' 只修受影响段 '+dumps(sorted(affected))+'。segments只返回这些段的完整内容，其他仍在当前方案中的段由系统从基版继承。照已采用分镜逐窗撰写自然正文，不能机械拼接字段；保留未变化窗口文字。',base=vid,prompt_images=True)
+        self._continuous_create(cid,'prompts',instruction+' 只修受影响段 '+dumps(sorted(affected))+'。segments只返回这些段的完整内容，其他仍在当前方案中的段由系统从基版继承。decisionNotes 按所修段填写 segmentId。照已采用分镜逐窗撰写自然正文，不能机械拼接字段；保留未变化窗口文字。',base=vid,prompt_images=True)
         new=self._continuous_art(eid,'prompts')['versions'][-1];content=new['content']
         plan=self._continuous_version(self._continuous_art(eid,'plan')['adopted_version_id'])
         current_ids={s['id'] for s in plan['segments']}
@@ -163,6 +163,9 @@ class ContinuousFinishing(ContinuousJudgments, PromptRepairs):
             if sid not in affected and sid in current_ids:merged[sid]=entry
         if set(merged)!=current_ids:self._continuous_problem(cid,'分段修订未覆盖当前方案全部段号')
         preserved=dict(old,segments=merged)
+        if 'decisionNotes' in content:
+            from .decisions import revised_segment_notes
+            preserved['decisionNotes']=revised_segment_notes(old.get('decisionNotes',[]),content['decisionNotes'],affected,current_ids)
         if resegmented or preserved!=content:
             content=preserved
             with transaction(self.db_path) as db:
@@ -247,6 +250,7 @@ class ContinuousFinishing(ContinuousJudgments, PromptRepairs):
         plan_id=plan_art['adopted_version_id']
         gate=self.adoption_gate(plan_id)
         if gate['review'] is None:
+            self._continuous_cursor(cid,stage='plan',phase='plan_review')
             self._continuous_execute(cid,self.submit_review(plan_id,f'{cid}:plan-review:{plan_id}')["runId"])
             gate=self.adoption_gate(plan_id)
         if gate['blocking']:
@@ -264,6 +268,7 @@ class ContinuousFinishing(ContinuousJudgments, PromptRepairs):
             plan_id=self._continuous_art(eid,'plan')['adopted_version_id']
             gate=self.adoption_gate(plan_id)
         if gate['review'] is None:
+            self._continuous_cursor(cid,stage='plan',phase='plan_review')
             self._continuous_execute(cid,self.submit_review(plan_id,f'{cid}:plan-review:{plan_id}')['runId'])
             gate=self.adoption_gate(plan_id)
         if gate['blocking']:

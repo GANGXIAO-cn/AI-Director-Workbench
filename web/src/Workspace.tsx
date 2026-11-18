@@ -1619,6 +1619,10 @@ function PromptsView({ ctx }: { ctx: Ctx }) {
   const [sound, setSound] = useState<any>(null);
   const act = useAction();
   const [includeImages, setIncludeImages] = useState(true);
+  const latest = art?.tasks.flatMap((t:any)=>t.runs).filter((r:any)=>r.purpose==="create").at(-1);
+  const progress = latest?.segmentProgress;
+  const writing = !!progress && ["running","queued"].includes(latest.status);
+  const savedCount = Object.keys(progress?.saved ?? {}).length;
   const entry = current?.content.segments?.[seg];
   const palette=useQuery<any>(entry?"segment_palette_trace":null,{version_id:current?.id,segment:seg});
   useEffect(() => { if (!seg && lay.segments[0]) setSeg(lay.segments[0].id); }, [lay.segments.length]);
@@ -1634,7 +1638,7 @@ function PromptsView({ ctx }: { ctx: Ctx }) {
     setSeg(next);
   };
   useEffect(() => {
-    if (requestedSegment && current?.content.segments?.[requestedSegment]) chooseSegment(requestedSegment);
+    if (requestedSegment && lay.segments.some((s:any)=>s.id===requestedSegment)) chooseSegment(requestedSegment);
   }, [requestedSegment,current?.id]);
   useLayoutEffect(() => {
     const draft = drafts.current.get(current?.id + "/" + seg);
@@ -1661,7 +1665,7 @@ function PromptsView({ ctx }: { ctx: Ctx }) {
   const create = art?.executorSettings?.create ?? ctx.view.kickoff.executor_plan.create;
   const modelDraft = () => act.run(async () => {
     await cmd("create_task", {episode_id:ctx.eid, stage:"prompts", prompt_images:includeImages,
-      goal:"从采用的方案起草所有生成段的完整提示词。沿用所给逐段输入编号、固定块与时间窗口，写清起幅、表演、机位、反应、交接和声音。"});
+      goal:FIRST_DRAFT.prompts.goal});
     ctx.setFocus(null); ctx.reload();
   });
   const segInfo = lay.segments.find((s: any) => s.id === seg);
@@ -1695,7 +1699,8 @@ function PromptsView({ ctx }: { ctx: Ctx }) {
         const params=new URLSearchParams(hash.split("?")[1]);
         params.set("segment",s.id);
         go(hash.split("?")[0]+"?"+params.toString());
-      }}>{s.id} · {s.duration / 1000}s</button>)}</div>
+      }}>{s.id} · {s.duration / 1000}s{progress?.saved[s.id] ? " · 已完成" : writing && progress.current===s.id ? " · 正在写" : ""}</button>)}</div>
+      {progress && !current && <p role="status">已完成 {savedCount}/{progress.total} 段 · {writing ? (savedCount===progress.total ? "正在汇总" : "正在写 "+progress.current) : latest.status==="stopped" ? "已停止" : "停在 "+progress.current}</p>}
         {(trial?.segments?.[seg] || trialRequested) && <section aria-label="官方 H3 技能对照稿">
           <h2>MiniMax 官方 H3 提示词 · {seg}</h2>
           {trial?.segments?.[seg] ? <textarea className="prompt-main-text" readOnly
@@ -1778,8 +1783,10 @@ function PromptsView({ ctx }: { ctx: Ctx }) {
         {sound && <div className="card amber" style={{ marginTop: 10 }}><b>全静音会与以下内容冲突</b>{sound.conflicts.map((c: any) => <div key={c.item} className="small">{c.item}：{Array.isArray(c.detail) ? c.detail.join("、") : c.detail}</div>)}
           {typeof sound.retainedNotes==="string" && <label>静音后保留的画面文字及固定说明<textarea value={sound.retainedNotes} onChange={e=>setSound({...sound,retainedNotes:e.target.value})}/></label>}
           <div className="row" style={{ marginTop: 6 }}><button className="btn danger" disabled={act.busy || ctx.locked} onClick={() => applySound({silent:true,retained_notes:sound.retainedNotes??undefined},true)}>仍然全静音</button><button className="btn" onClick={() => setSound(null)}>保留</button></div></div>}
-      </> : <div style={{ marginTop: 14 }}><p className="muted">该段还没有提示词。创作执行器为 {PROVIDER_LABEL[create.provider] ?? create.provider} · {create.model ?? "默认型号"}。</p>
-        <div className="row"><button className="btn primary" disabled={act.busy || ctx.locked} onClick={modelDraft}>从分镜起草官方 H3 提示词</button>
+      </> : progress?.saved[seg] ? <section><h2>{seg} 提示词</h2><textarea className="prompt-main-text" readOnly value={progress.saved[seg]} /></section>
+      : writing ? <p className="muted">{progress.current===seg ? "本段正在起草，完成后将在这里显示。" : "本段等待起草。"}</p>
+      : <div style={{ marginTop: 14 }}><p className="muted">该段还没有提示词。创作执行器为 {PROVIDER_LABEL[create.provider] ?? create.provider} · {create.model ?? "默认型号"}。</p>
+        <div className="row"><button className="btn primary" disabled={act.busy || ctx.locked} onClick={modelDraft}>{FIRST_DRAFT.prompts.label}</button>
           <label><input type="checkbox" checked={includeImages} onChange={e => setIncludeImages(e.target.checked)}/>同时发送已绑定参考原图</label></div></div>}
       <ErrorLine error={act.error} />
       {current && <AdoptBar ctx={ctx} art={art} version={current} next="delivery" hint="完成提示词本步检查并采用后，进入交付" />}

@@ -24,7 +24,7 @@ import { ErrorLine, Modal, PROVIDER_LABEL, pickable, Pills, Tag, fmtMs, useActio
 const settingTitles:Record<string,string>={"cat-no-dialogue":"两只猫没有对白","biped-paws":"两只猫怎样走路和拿东西","milo-active":"MILO 主动推动故事","leo-own-goal":"LEO 和主人的行动","owner-relationship":"主人和猫的关系","tone-not-cruel":"喜剧的语气","complete-light-continuity":"每集怎样联系前集","recent-difference":"与近期已拍作品的差异"};
 const CATS: Record<string, string> = { character: "角色", relationship: "关系", space: "常用场景", rule: "世界规则", signature: "角色的习惯动作", prop: "道具" };
 
-export function ProjectPage({ id, sub, arg }: { id: string; sub: string; arg?: string }) {
+export function ProjectPage({ id, sub, arg, pickTopic }: { pickTopic:(topic:any)=>void; id: string; sub: string; arg?: string }) {
   const route=useProjectRoute();
   const p = useQuery<any>("project_view", { project_id: id }, [sub, arg]);   // re-read on every page switch
   useEffect(() => { if (sub === "expert") { const episode=new URLSearchParams(route.hash.split("?")[1]).get("episode"); route.go(episode ? `#/e/${encodeURIComponent(episode)}/story` : `#/p/${id}`); } }, [sub, id, route.hash]);
@@ -37,7 +37,7 @@ export function ProjectPage({ id, sub, arg }: { id: string; sub: string; arg?: s
       case "baseline": return <ProjectBaselines pid={id} />;
       case "library": return <Library key={id} id={id} p={p.data} />;
       case "knowledge": return <Knowledge key={id} id={id} />;
-      case "topics": return <Topics key={id} id={id} />;
+      case "topics": return <Topics key={id} id={id} pickTopic={pickTopic} />;
       case "groups": return <Groups id={id} p={p.data} />;
       case "closure": return <Closure id={id} cid={arg!} />;
       case "closure-start": return <ClosureStart id={id} did={arg!} />;
@@ -54,18 +54,16 @@ function Settings({ id, p, reload }: any) {
   const reasonDefault=new URLSearchParams(location.hash.split("?")[1] || "").get("reason_default") || undefined;
   const [cat, setCat] = useState("all");
   const [edit, setEdit] = useState<any>(null);
-  const [impact, setImpact] = useState<any>(null);
-  const [chosen, setChosen] = useState<Record<string, string>>({});
   const act = useAction();
   if (!p) return null;
   const list = p.settings.filter((s: any) => cat === "all" || s.category === cat);
   return (
     <div>
-      <div className="spread"><div><h1>项目设定</h1><div className="muted small">{p.settings.length} 条 · 修订 {p.settings_revision} · 新开的分集使用最新设定。在做的分集可以选择是否跟随修改。</div></div></div>
+      <div className="spread"><div><h1>项目设定</h1><div className="muted small">{p.settings.length} 条 · 修订 {p.settings_revision} · 新分集开工时使用最新设定。</div></div><button className="btn primary" onClick={()=>setEdit({isNew:true,key:commandId(),category:cat==="all"?"rule":cat,content:"",strength:"required",reason:""})}>新增设定</button></div>
       <div className="row" style={{ margin: "14px 0" }}><button className={`pill ${cat === "all" ? "on" : ""}`} onClick={() => setCat("all")}>全部</button>
         {Object.entries(CATS).map(([k, l]) => <button key={k} className={`pill ${cat === k ? "on" : ""}`} onClick={() => setCat(k)}>{l}</button>)}</div>
       <ProjectMethodSync key={id} pid={id}/>
-      {!list.length && <p>{p.settings.length?"这个分类还没有设定。":"这个项目还没有设定。完成一集后，可以从该集整理设定。"}</p>}
+      {!list.length && <p>{p.settings.length?"这个分类还没有设定。":"这个项目还没有设定。"}</p>}
       {list.map((s: any) => (
         <div key={s.key} className="card line" style={{ marginBottom: 8 }}>
           <div className="spread"><div className="row"><Tag tone={s.strength === "required" ? "red" : "blue"}>{s.strength === "required" ? "每集必须遵守" : "默认遵守，可按剧情调整"}</Tag><Tag>{CATS[s.category] ?? s.category}</Tag><code className="mono">{settingTitles[s.key]??s.content.slice(0,16)}</code></div>
@@ -74,24 +72,21 @@ function Settings({ id, p, reload }: any) {
           <div className="muted tiny">出处：{s.source_ref}{s.user_reason ? ` · 补充说明：${s.user_reason}` : ""}</div>
         </div>))}
       {edit && (
-        <div className="card cyan" style={{ marginTop: 12 }}>
-          <b>编辑 {settingTitles[edit.key]??"项目设定"}</b>
-          <textarea value={edit.content} onChange={(e) => setEdit({ ...edit, content: e.target.value })} />
+        <Modal onClose={()=>setEdit(null)}>
+          <h2>{edit.isNew?"新增项目设定":"编辑 "+(settingTitles[edit.key]??"项目设定")}</h2>
+          {edit.isNew && <label>分类 <select aria-label="分类" value={edit.category} onChange={e=>setEdit({...edit,category:e.target.value})}>{Object.entries(CATS).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>}
+          <label>设定内容
+          <textarea value={edit.content} onChange={(e) => setEdit({ ...edit, content: e.target.value })} /></label>
           <label>这条设定每集都要遵守吗？</label><div className="row"><Pills value={edit.strength} onChange={(v: string) => setEdit({ ...edit, strength: v })} options={[["required", "每集必须遵守"], ["variable", "默认遵守，可按剧情调整"]]} />
             <input style={{ flex: 1 }} placeholder="补充说明（选填）" value={edit.reason} onChange={(e) => setEdit({ ...edit, reason: e.target.value })} /></div>
           <div className="row" style={{ marginTop: 8 }}><button className="btn" onClick={() => setEdit(null)}>取消</button>
-            <button className="btn primary" onClick={() => act.run(async () => { setImpact(await cmd("propose_setting_change", { project_id: id, key: edit.key, content: edit.content, strength: edit.strength, reason: edit.reason, reason_default:reasonDefault })); setEdit(null); reload(); })}>保存修改</button></div>
-        </div>)}
-      {impact && (
-        <div className="card amber" style={{ marginTop: 12 }}>
-          <b>哪些分集用到了这条设定？（修订 {impact.settingsRevision}）</b>
-          {impact.affected.length === 0 && <div className="small">没有在制集引用此设定。</div>}
-          {impact.affected.map((a: any) => (
-            <div key={a.episodeId} className="spread small" style={{ margin: "6px 0" }}><span>{a.code} · {a.scope}</span>
-              {chosen[a.episodeId] ? <span className="ok">已选择：{chosen[a.episodeId]}</span> :
-              <div className="row"><button className="btn" onClick={() => act.run(async () => { await cmd("choose_episode_settings", { episode_id: a.episodeId, follow_new: true }); setChosen({ ...chosen, [a.episodeId]: "本集使用新设定（故事独审列为待复核）" }); })}>本集使用新设定</button>
-                <button className="btn" onClick={() => act.run(async () => { await cmd("choose_episode_settings", { episode_id: a.episodeId, follow_new: false }); setChosen({ ...chosen, [a.episodeId]: "本集继续使用原设定" }); })}>本集继续使用原设定</button></div>}</div>))}
-        </div>)}
+            <button className="btn primary" disabled={act.busy || !edit.content.trim()} onClick={() => act.run(async () => {
+              await cmd("propose_setting_change", {project_id:id,key:edit.key,category:edit.category,content:edit.content.trim(),strength:edit.strength,reason:edit.reason,reason_default:reasonDefault});
+              if(edit.isNew && cat!=="all") setCat(edit.category);
+              setEdit(null); await reload();
+            })}>{edit.isNew?"保存设定":"保存修改"}</button></div>
+          <ErrorLine error={act.error}/>
+        </Modal>)}
       <ErrorLine error={act.error} />
     </div>
   );
@@ -257,10 +252,9 @@ function ProjectStageMethods({ id, stage }: { id: string; stage: "topic" | "grou
   </details>;
 }
 
-function Topics({ id }: { id: string }) {
+function Topics({ id, pickTopic }: { id: string; pickTopic:(topic:any)=>void }) {
   const storyImport=useStoryImport();
   const { go } = useProjectRoute();
-  const overview=useQuery<any>("project_view",{project_id:id});
   const t=useQuery<any[]>("topics",{project_id:id});
   const [form,setForm]=useState({code:"",premise:"",mechanism:"",motivation:""});
   const [status,setStatus]=useState("想拍");
@@ -268,9 +262,9 @@ function Topics({ id }: { id: string }) {
   const [search,setSearch]=useState("");
   const [pair,setPair]=useState(["",""]);
   const act=useAction();
-  const cards=(t.data??[]).map(x=>({...x,key:x.id,group:x.publication?"已拍":x.status==="已制作"?"已交付":x.intent,difference:x.similar.map((h:any)=>h.title).join("、")}));
+  const cards=(t.data??[]).map(x=>({...x,key:x.id,group:x.intent,difference:x.similar.map((h:any)=>h.title).join("、")}));
   const stage=(x:any)=>x.publication?"已登记发布":({候选:"尚未开集",开发中:"已开集",待审稿:"故事待审核",已成稿:"故事稿已采用",已制作:"图文已交付"} as Record<string,string>)[x.status]??"尚未开集";
-  const list=cards.filter(x=>(status==="全部"||x.group===status)&&(progress==="全部"||stage(x)===progress)&&[x.code,x.premise,x.mechanism,x.publication].join(" ").toLowerCase().includes(search.trim().toLowerCase()));
+  const list=cards.filter(x=>(status==="全部"||x.group===status)&&(progress==="全部"||stage(x)===progress)&&[x.code,x.title,x.premise,x.mechanism,x.publication].join(" ").toLowerCase().includes(search.trim().toLowerCase()));
   const change=(topic_id:string,intent:string)=>act.run(async()=>{await cmd("set_topic_intent",{topic_id,intent});await t.reload();});
   return (
     <div>
@@ -292,17 +286,17 @@ function Topics({ id }: { id: string }) {
           return <div key={i}><select aria-label={i===0 ? "第一张选题卡" : "第二张选题卡"} value={key}
             onChange={e=>setPair(pair.map((old,j)=>j===i?e.target.value:old))}>
             <option value="">选择一张选题卡</option>{cards.filter(c=>c.key!==pair[1-i]).map(c=>
-              <option key={c.key} value={c.key}>{c.code} · {c.group} · {c.premise}</option>)}</select>
+              <option key={c.key} value={c.key}>{c.code} · {c.group} · {c.title || c.premise}</option>)}</select>
             {card && <><p>{card.premise}</p><p>事情怎样一步步变化 · {card.mechanism || "尚未记录"}</p>
               <p>相似选题 · {card.difference || "尚未记录"}</p></>}</div>;
         })}</div></details>}
       <div className="row"><label>选题意向 <select value={status} onChange={e=>setStatus(e.target.value)}>{["想拍","搁置","弃用","待整理","已交付","已拍","全部"].map(v=><option key={v}>{v}</option>)}</select></label>
         <label>制作进度 <select value={progress} onChange={e=>setProgress(e.target.value)}>{["全部","尚未开集","已开集","故事待审核","故事稿已采用","图文已交付","已登记发布"].map(v=><option key={v}>{v}</option>)}</select></label></div>
-      <div className="grid2">{list.map(x=><div className="card" key={x.id}><div className="spread"><b>{x.code}</b><span>{x.group==="已交付"?stage(x):x.group+" · "+stage(x)}</span></div><p>{x.premise}</p>
+      <div className="grid2">{list.map(x=><div className="card" key={x.id}><div className="spread"><b>{x.code} {x.title}</b><span>{x.group==="已交付"?stage(x):x.group+" · "+stage(x)}</span></div><p>{x.premise}</p>
         {x.publication&&<details><summary>查看发布记录</summary>{x.publications.map((r:any)=><p key={r.platform+r.platform_id}>{r.platform} · {r.published_at} · {r.title} {r.evidence.startsWith("https://")&&<a href={r.evidence} target="_blank" rel="noreferrer">查看发布作品</a>}</p>)}</details>}
         {x.mechanism&&<p>事情怎样一步步变化 · {x.mechanism}</p>}{x.motivation&&x.motivation!=="MILO"&&<p>主角为什么这样做 · {x.motivation}</p>}
         {x.episode_id&&<a href={"#/e/"+x.episode_id+"/story"}>打开 {x.display_code}</a>}
-        <div className="row">{isKickoffTopic(x)&&overview.data&&<button className="btn" onClick={()=>{const codes:string[]=overview.data.reservedEpisodeCodes;const displayCode=(codes[0]?.replace(/\d+/g,"")||"E")+String(Math.max(0,...codes.map(c=>Number(c.replace(/\D/g,""))||0))+1).padStart(2,"0");sessionStorage.setItem("kickoff-prefill:"+id,JSON.stringify({projectId:id,displayCode,topicId:x.id}));go("#/p/"+id);}}>用这个题开一集</button>}
+        <div className="row">{isKickoffTopic(x)&&<button className="btn" onClick={()=>pickTopic(x)}>用这个题开一集</button>}
         {(x.group==="已交付"||x.group==="已拍") ? <button className="btn" disabled={act.busy} onClick={()=>act.run(async()=>{
           if(!cards.some(c=>c.origin==="restore:"+x.id&&isKickoffTopic(c)))
             await cmd("add_topic",{project_id:id,code:"",premise:x.premise,mechanism:x.mechanism,motivation:x.motivation,origin:"restore:"+x.id});
@@ -652,11 +646,11 @@ function Tasks() {
   const label = (value:string)=>labels[value] ?? value;
   return (
     <div>
-      <h1>任务记录与详情</h1><div className="muted small" style={{ margin: "6px 0 16px" }}>后台视图：输入快照、运行事件、执行器、型号、技能版本、产物和轮数。</div>
+      <h1>任务记录与详情</h1><div className="muted small" style={{ margin: "6px 0 16px" }}>后台视图：输入快照、运行事件、执行器、型号、技能版本、产物和自动返修记录。</div>
       <div className="row">{["", ...FILM_STAGES.map(([key])=>key), "publish"].map((s) => <button key={s} className={`pill ${stage === s ? "on" : ""}`} onClick={() => setStage(s)}>{label(s) || "全部"}</button>)}</div>
-      {t.error && <p className="error">{t.error}</p>}<table className="table" style={{ marginTop: 12 }}><thead><tr><th>集</th><th>阶段</th><th>任务</th><th>状态</th><th>轮数</th><th>运行</th></tr></thead>
+      {t.error && <p className="error">{t.error}</p>}<table className="table" style={{ marginTop: 12 }}><thead><tr><th>集</th><th>阶段</th><th>任务</th><th>状态</th><th>自动返修</th><th>运行次数</th></tr></thead>
         <tbody>{(t.data ?? []).map((x) => <Fragment key={x.id}>
-          <tr key={x.id} onClick={() => setOpen(open === x.id ? null : x.id)} style={{ cursor: "pointer" }}><td>{x.display_code}</td><td>{label(x.stage)}</td><td>{x.goal.slice(0, 30)}</td><td><Tag>{label(x.state)}</Tag></td><td>{x.used_rounds}/{x.max_rounds}</td><td>{x.runs.length}</td></tr>
+          <tr key={x.id} onClick={() => setOpen(open === x.id ? null : x.id)} style={{ cursor: "pointer" }}><td>{x.display_code}</td><td>{label(x.stage)}</td><td>{x.goal.slice(0, 30)}</td><td><Tag>{label(x.state)}</Tag></td><td>{x.auto_revise ? `已用 ${x.used_rounds} 轮（上限 ${x.max_rounds} 轮）` : "未启用"}</td><td>{x.runs.length}</td></tr>
           {open === x.id && <tr key={x.id + "d"}><td colSpan={6}>{x.runs.map((r: any) => (
             <div key={r.id} className="small" style={{ margin: "4px 0" }}>{label(r.purpose)} · {PROVIDER_LABEL[r.provider] ?? r.provider} · 请求型号 {r.requested_model ?? "默认"} / 强度 {r.requested_effort ?? "默认"} · 报告 {r.reported_model ?? "未报告"} · {label(r.status)} · 会话 {label(r.session_mode)}{r.isolation_level ? "（会话隔离）" : ""} · 技能 {r.methodPack} · 指纹 <span className="mono">{r.input_hash.slice(0, 12)}</span>{r.events.length ? ` · ${r.events.length} 个事件` : ""}{r.reason && <p>{r.reason}</p>}{r.diagnostic && <p>{r.diagnostic}</p>}{r.manifestError ? <p className="error">{r.manifestError}</p> : <><div>本次读取的方法 · {r.methods.join("、") || "无"}</div><FrozenMethods runId={r.id}/></>}</div>))}</td></tr>}</Fragment>)}</tbody></table>
     </div>
@@ -670,7 +664,7 @@ function Storage() {
   const act = useAction();
   return (
     <div>
-      <h1>服务与存储 · 备份恢复</h1><div className="muted small" style={{ margin: "6px 0 16px" }}>检测、隔离、备份恢复（先留快照）。凭证只显示配置状态。</div>
+      <h1>服务与存储 · 备份恢复</h1><div className="muted small" style={{ margin: "6px 0 16px" }}>检测、隔离、手动备份与恢复。凭证只显示配置状态。</div>
       {s.data && <div className="card line"><div>资料目录 <span className="mono">{s.data.dataDir}</span> · {s.data.writable ? <Tag tone="green">可写</Tag> : <Tag tone="red">不可写</Tag>}</div>
         <div className="small" style={{ marginTop: 6 }}>最近备份：{s.data.lastBackup ? `${new Date(s.data.lastBackup.created_at * 1000).toLocaleString()} · ${s.data.lastBackup.files} 个文件` : "无"}</div></div>}
       <div className="row" style={{ marginTop: 12 }}><button className="btn primary" onClick={() => act.run(async () => { setOut(await cmd("backup", {})); s.reload(); })}>立即备份</button></div>
@@ -679,7 +673,7 @@ function Storage() {
       <h2 style={{ marginTop: 20 }}>恢复到单独位置</h2>
       <div className="row"><input style={{ flex: 1 }} placeholder="恢复目录（绝对路径，须不存在）" value={target} onChange={(e) => setTarget(e.target.value)} />
         <button className="btn" disabled={!out?.backupId && !s.data?.lastBackup} onClick={() => act.run(async () => setOut({ ...out, restored: await cmd("restore", { backup_id: out?.backupId ?? s.data.lastBackup.id, target_dir: target }) }))}>验证并恢复</button></div>
-      {out?.restored && <div className="ok small" style={{ marginTop: 8 }}>已恢复到 {out.restored.restoredTo}（{out.restored.files} 个文件校验通过）；恢复前快照 {out.restored.preRestoreBackup.slice(0, 8)}。结果未知的付费请求不会被重发。</div>}
+      {out?.restored && <div className="ok small" style={{ marginTop: 8 }}>已恢复到 {out.restored.restoredTo}（{out.restored.files} 个文件校验通过）。结果未知的付费请求不会被重发。</div>}
       {out?.restored?.notes?.map((note:string)=><p className="small" key={note}>{note}</p>)}
       <ErrorLine error={act.error} />
     </div>

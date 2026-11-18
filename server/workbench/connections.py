@@ -76,7 +76,33 @@ class ConnectionsMixin:
         binary = executor.binary()
         if not binary:
             return dict(authenticated=None,accountLabel=None,unavailable=True)
+        if provider == 'antigravity':
+            saved = self.get_setting('identity:antigravity', {})
+            if (saved.get('executable') == str(binary)
+                    and saved.get('connectionRevision') == self.executor_connection(provider)['revision']):
+                if 0 <= self.clock() - saved.get('checkedAt', 0) < 300:
+                    return saved['identity']
+                if saved.get('identity', {}).get('authenticated'):
+                    return dict(authenticated=None, accountLabel=None,
+                                lastVerifiedAccount=saved['identity']['accountLabel'], checkedAt=saved['checkedAt'])
         return executor.native_identity(binary,launch_env(provider,self.executor_connection(provider)))
+
+    def verify_executor_identity(self, provider, command_id=None):
+        if provider != 'antigravity':
+            return self.executor_identity(provider)
+        from .executors.agy_identity import verify
+        from .executors.cli import CliExecutor
+        executor = self.executors.get(provider)
+        if not isinstance(executor, CliExecutor):
+            return self.executor_identity(provider)
+        binary = executor.binary()
+        if not binary:
+            return dict(authenticated=None, accountLabel=None, unavailable=True)
+        connection = self.executor_connection(provider)
+        identity = verify(binary, launch_env(provider, connection))
+        self.put_setting('identity:antigravity', dict(executable=str(binary),
+                         connectionRevision=connection['revision'], checkedAt=self.clock(), identity=identity))
+        return identity
 
     def checked_connection(self, slot):
         if slot.get('provider')=='claude':

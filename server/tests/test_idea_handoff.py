@@ -18,6 +18,13 @@ def test_one_submit_then_discuss_without_revision(tmp_path):
     eid = result["episodeId"]
     env.drain(result["runId"])
     art = env.art(eid,"story")
+    assert not art["versions"] and art["tasks"][0]["state"] == "clarifying"
+    question = art["tasks"][0]["messages"][-1]
+    assert "写稿人推荐 A" in question["text"]
+    choice = env.wb.answer_clarification(result["taskId"], "B · 认错人，保留追船的紧迫感", "choose")
+    env.drain(choice["runId"])
+    assert "导演定案：B · 认错人，保留追船的紧迫感" in env.codex.calls[-1].prompt
+    art = env.art(eid,"story")
     assert len(art["tasks"]) == len(art["versions"]) == 1,art
     assert art["tasks"][0]["messages"][0]["text"] == idea
     assert not art["adopted_version_id"]

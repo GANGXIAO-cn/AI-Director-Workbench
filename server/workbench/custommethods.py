@@ -117,9 +117,6 @@ class CustomMethodsMixin:
         return dict(files=imported)
 
     def sync_project_methods(self, project_id, command_id):
-        with connect(self.db_path) as db:
-            row(db, "SELECT id FROM project WHERE id=?", project_id)
-        self.backup("同步项目方法前")
         with transaction(self.db_path) as db:
             config_id = row(db, "SELECT config_id FROM project WHERE id=?", project_id)["config_id"]
             return self._command(db, command_id, "sync_project_methods", [project_id],
@@ -155,10 +152,8 @@ class CustomMethodsMixin:
     def adopt_project_stage_methods(self, project_id, episode_id, stage, expected, project_expected, command_id):
         if stage not in STAGES:
             raise Rejected("请选择可写作的阶段")
-        with connect(self.db_path) as db:
-            self._episode_in(db, episode_id, project_id)
-        self.backup("本集采用项目当前方法前")
         with transaction(self.db_path) as db:
+            self._episode_in(db, episode_id, project_id)
             def apply():
                 self._kickoff(db, episode_id)
                 chosen = selection(db, project_id, stage)

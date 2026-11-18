@@ -110,14 +110,13 @@ class ProjectOpsMixin(HistoryMixin):
             run = row(db, "SELECT * FROM run WHERE id=?", run_id)
         manifest, digest = self.store.load_manifest(run["manifest_relpath"])
         entries = self.store.manifest_texts(manifest)
-        trailer = (f"运行号：{run_id}\n输入指纹：{digest}\n回包为 kind=proposal：items 中每项写类别、内容、真实出处（source 的 "
-                   "objectId/versionId 填采用稿版本）、建议强度（required/variable）和提议依据。只提可以长期复用的设定。")
+        trailer = ("items 中每项写类别、内容、真实出处（source.objectId 选择本次提供的 story 或 script）、建议强度（required/variable）和提议依据。只提可以长期复用的设定。")
         from .executors.base import ExecRequest, ExecOutcome
         workdir = self.store.run_dir(run_id) / "work"
         workdir.mkdir(parents=True, exist_ok=True)
         request = ExecRequest(
             run_id=run_id, purpose="proposal", kind="proposal", prompt=prompts.prompt_from(entries, trailer, "proposal"),
-            schema=contracts.branch_schema("proposal"), session_mode="new", workdir=workdir,
+            schema=contracts.content_schema("proposal"), session_mode="new", workdir=workdir,
             model=run["requested_model"], effort=run["requested_effort"],connection=manifest.get("executorConnection",{}))
         if digest != run["input_hash"]:
             outcome = ExecOutcome(ok=False, error_class="输入清单指纹不符")
@@ -127,6 +126,17 @@ class ProjectOpsMixin(HistoryMixin):
             except Exception as exc:
                 outcome = ExecOutcome(ok=False, error_class="executor_error", diagnostic=str(exc)[:500])
         result = outcome.structured if outcome.ok else None
+        if isinstance(result, dict):
+            result = dict(result, schemaVersion=1, kind="proposal", runId=run_id, inputFingerprint=digest)
+            with connect(self.db_path) as db:
+                versions = json.loads(row(db, "SELECT versions FROM delivery WHERE id=?", manifest["deliveryId"])["versions"])
+            if isinstance(result.get("items"), list):
+                for item in result["items"]:
+                    source = item.get("source") if isinstance(item, dict) else None
+                    if isinstance(source, dict):
+                        stage = source.get("objectId")
+                        version = versions.get(stage) if stage in ("story", "script") else None
+                        source.update(objectId=version, versionId=version)
         problems = contracts.validate(result) if result else [outcome.error_class or "failed"]
         if result and not problems and (result.get("kind") != "proposal" or result["runId"] != run_id
                                         or result["inputFingerprint"] != digest):
@@ -461,10 +471,21 @@ class ProjectOpsMixin(HistoryMixin):
 
     def topics(self, project_id, status=None):
         with connect(self.db_path) as db:
-            out = [dict(r) for r in db.execute("SELECT t.*,case when exists(select 1 from topic_publication v where v.topic_id=t.id) then '已拍' when t.status='已制作' then '已交付' else coalesce(i.intent,case when t.status='弃用' then '弃用' when t.origin like '选题池/%' then '待整理' else '想拍' end) end intent, (SELECT group_concat(title,' / ') FROM topic_publication v WHERE v.topic_id=t.id) publication, e.display_code, e.state AS episode_state FROM topic t LEFT JOIN topic_intent i ON i.topic_id=t.id LEFT JOIN "
+            out = [dict(r) for r in db.execute("SELECT t.*,case when exists(select 1 from topic_publication v where v.topic_id=t.id) or t.id in (select id from expert_filmed_topics) then '已拍' when t.status='已制作' then '已交付' else coalesce(i.intent,case when t.status='弃用' then '弃用' when t.origin like '选题池/%' then '待整理' else '想拍' end) end intent, (SELECT group_concat(title,' / ') FROM topic_publication v WHERE v.topic_id=t.id) publication, e.display_code, e.state AS episode_state FROM topic t LEFT JOIN topic_intent i ON i.topic_id=t.id LEFT JOIN "
                                                "episode e ON e.id=t.episode_id WHERE t.project_id=? ORDER BY t.code",
                                                (project_id,)) if not status or r["status"] == status]
+            catalog_titles = {}
+            sources = db.execute("SELECT t.id,t.code,s.sha256 FROM topic t JOIN topic_source s ON s.topic_id=t.id WHERE t.project_id=?", (project_id,))
+            titles = {}
+            for source in sources:
+                digest = source["sha256"]
+                if digest not in catalog_titles:
+                    cards = json.loads(self.store.read_blob(digest))["candidates"]
+                    catalog_titles[digest] = {card["id"]:card.get("title","") for card in cards}
+                titles[source["id"]] = catalog_titles[digest].get(source["code"], "")
             for t in out:
+                origin_id = t["origin"].removeprefix("restore:")
+                t["title"] = titles.get(t["id"]) or titles.get(origin_id, "")
                 t["publications"] = [dict(v) for v in db.execute("SELECT platform,platform_id,title,published_at,evidence FROM topic_publication WHERE topic_id=? ORDER BY published_at",(t["id"],))]
         for t in out:
             t["similar"] = [dict(title=h["code"],body=h["premise"],score=h["score"]) for h in self.similar_topics(project_id,t["premise"],4) if h["code"]!=t["code"]][:3]
@@ -770,7 +791,6 @@ class ProjectOpsMixin(HistoryMixin):
         target = Path(target_dir).expanduser().resolve()
         if target.is_relative_to(self.store.root):
             raise Rejected("请在当前工作台数据目录以外选择新的恢复目录")
-        pre = self.backup(note=f"恢复 {backup_id} 前的快照")
         files = [(src/"files"/rel, Path(rel), digest) for rel,digest in manifest["files"].items()]
         # Install the database last, after the restored resources have passed read-back checks.
         files.append((src/"workbench.sqlite", Path("workbench.sqlite"), manifest["db"]))
@@ -778,11 +798,11 @@ class ProjectOpsMixin(HistoryMixin):
             if relative.is_absolute() or ".." in relative.parts or not source.resolve().is_relative_to(src):
                 raise Rejected("备份文件超出登记目录")
             if not source.is_file() or file_sha256(source) != digest:
-                raise Rejected("备份原件校验失败：" + str(relative), detail=dict(preRestoreBackup=pre["backupId"]))
+                raise Rejected("备份原件校验失败：" + str(relative))
         try:
             target.mkdir(parents=True, exist_ok=False)
         except OSError as exc:
-            raise Rejected(f"恢复目录不可写：{target}（{exc.strerror or exc}）", detail=dict(preRestoreBackup=pre["backupId"])) from exc
+            raise Rejected(f"恢复目录不可写：{target}（{exc.strerror or exc}）") from exc
         for source, relative, digest in files:
             dest = target / relative
             try:
@@ -792,10 +812,9 @@ class ProjectOpsMixin(HistoryMixin):
                 if file_sha256(dest) != digest:
                     raise ValueError("副本与登记指纹不一致")
             except (OSError, ValueError) as exc:
-                raise Rejected(f"恢复未完成，已复制的文件保留在 {target}：{relative}（{exc}）",
-                               detail=dict(preRestoreBackup=pre["backupId"])) from exc
+                raise Rejected(f"恢复未完成，已复制的文件保留在 {target}：{relative}（{exc}）") from exc
         notes = [] if "resourceDirs" in manifest else ["旧版备份只收录数据库、原文与素材副本、项目和运行记录。如需自定义色卡原文件或导出的 H3 ZIP，请从原数据目录取回。"]
-        return dict(restoredTo=str(target), files=len(manifest["files"]), preRestoreBackup=pre["backupId"], notes=notes)
+        return dict(restoredTo=str(target), files=len(manifest["files"]), notes=notes)
 
     def storage_status(self):
         root = self.store.root

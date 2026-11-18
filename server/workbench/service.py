@@ -17,7 +17,7 @@ from .custommethods import CustomMethodsMixin, pin_at_kickoff
 from .finecut import group_records
 from .methodpack import load_config, load_pack, method_entries
 from .storage import Store, canonical, sha256_bytes
-from .replyformat import document_to_internal
+from .replyformat import bind_review_reply, bind_writing_reply, document_to_internal
 from .stages import DOCUMENT_STAGES, NEXT, WRITABLE, check_content, normalize, render as render_stage
 from .specs import validate_spec, grid_dimensions, check_generation_aspect
 from .story_skill import historical_method
@@ -511,9 +511,18 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                                       payload=dict(kickoffChoice=True,options=(["从选题池挑"] if count else [])+["想一个新故事"],relatedIds=[]))
                         db.execute("UPDATE task SET state='clarifying' WHERE id=?",(tid,))
                     else:
-                        result["runId"] = self._queue_run(db,tid,"create",None,first,initial_idea=True)
+                        if source_type in ("idea","topic"):
+                            result["runId"] = self._queue_story_proposal(db,tid,aid)
+                        else:
+                            result["runId"] = self._queue_run(db,tid,"create",None,first,initial_idea=True)
                 return result
             return self._command(db, command_id, "start_episode", payload, run)
+
+    def _queue_story_proposal(self, db, tid, aid):
+        from .quickstart import DIRECTION_CONTRACT
+        revision = _row(db,"SELECT revision FROM artifact WHERE id=?",aid)["revision"]
+        return self._queue_run(db,tid,"create",None,DIRECTION_CONTRACT,discussion_only=True,
+                               workspace_revision=revision,extra_header={"manualStoryProposal":True})
 
     def _cooperation_mode(self, db, episode_id):
         result = db.execute("SELECT mode FROM episode_cooperation WHERE episode_id=?", (episode_id,)).fetchone()
@@ -714,8 +723,9 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
 
     # ------------------------------------------------------------------ tasks, threads, runs
     def create_task(self, episode_id, stage, goal, auto_revise=False, executor=None, command_id=None, selection=None,
-                    prompt_images=None, files=(), trial_turn_id=None, workspace_revision=None, base_version_id=None, discussion_only=False, auto_dialogue=False, discussion_id=None, keep_instruction=False, bounded_judgment=None, rebuild=False):
+                    prompt_images=None, files=(), trial_turn_id=None, workspace_revision=None, base_version_id=None, discussion_only=False, auto_dialogue=False, discussion_id=None, keep_instruction=False, bounded_judgment=None, rebuild=False, propose_story=False):
         payload = dict(episode_id=episode_id, stage=stage, goal=goal, auto=auto_revise, ex=executor, sel=selection)
+        if propose_story:payload["proposeStory"]=True
         if rebuild:payload["rebuild"]=True
         if bounded_judgment is not None:
             if not discussion_only or auto_dialogue:
@@ -788,8 +798,11 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                 if rebuild:base=None
                 if base_version_id:
                     base = self._version_of(db, base_version_id, aid)["id"]
-                run_id = self._queue_run(db, tid, "revise" if base else "create", base, goal, selection,
-                                         message_entries=extra, workspace_revision=workspace_revision, discussion_only=discussion_only, auto_dialogue=auto_dialogue, discussion_id=discussion_id, bounded_judgment=bounded_judgment)
+                if propose_story and stage=="story" and not base and kickoff["source_type"] in ("idea","topic"):
+                    run_id = self._queue_story_proposal(db,tid,aid)
+                else:
+                    run_id = self._queue_run(db, tid, "revise" if base else "create", base, goal, selection,
+                                             message_entries=extra, workspace_revision=workspace_revision, discussion_only=discussion_only, auto_dialogue=auto_dialogue, discussion_id=discussion_id, bounded_judgment=bounded_judgment)
                 if trial_turn_id:
                     art = _row(db,"SELECT * FROM artifact WHERE id=?",aid)
                     if self._edit_state(db,art,self._cooperation_mode(db,episode_id)) == "protected":
@@ -1044,6 +1057,10 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                 raise Conflict("阶段状态已经变化，请刷新后再发送")
             if auto_dialogue or discussion_only or self._edit_state(db, art, mode) == "protected":
                 header["stageDialogue"] = dict(revision=workspace_revision, request=request, readOnly=discussion_only)
+                if header.get("writerProposal"):
+                    header["stageDialogue"]["writerProposal"] = True
+                if header.get("manualStoryProposal"):
+                    header["stageDialogue"]["manualStoryProposal"] = True
                 if auto_dialogue:
                     header["stageDialogue"].update(auto=True, forceDraft=bool(discussion_id))
                 if bounded_judgment is not None:
@@ -1117,7 +1134,8 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                 if run_id not in retryable_attempts(attempts):
                     raise Conflict("本次请求已有后续执行，请刷新后查看最新结果")
                 header, entries = self._snapshot_parts(old)
-                if header.get('methodPack',{}).get('id')==workflow.METHOD_REF and ((old['purpose'] in ('create','revise','parallel') and header.get('stage') in ('asset_design','acting','plan','prompts')) or old['purpose'] in ('cold_read','comparison')) and not header.get('contextProfile')=='bounded_judgment':
+                segmented = db.execute("SELECT 1 FROM prompt_segment_progress WHERE run_id=?", (run_id,)).fetchone()
+                if not segmented and header.get('methodPack',{}).get('id')==workflow.METHOD_REF and ((old['purpose'] in ('create','revise','parallel') and header.get('stage') in ('asset_design','acting','plan','prompts')) or old['purpose'] in ('cold_read','comparison')) and not header.get('contextProfile')=='bounded_judgment':
                     # A retry is a new frozen run, never edit the old receipt.
                     pack,profile=self._episode_method(db,header['episodeId'])
                     stage=old['purpose'] if old['purpose'] in ('cold_read','comparison') else header['stage']
@@ -1225,6 +1243,10 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
         if digest != run["input_hash"]:
             return self._finish(run_id, "failed", reason="输入清单指纹不符")
         entries = self.store.manifest_texts(manifest)
+        if (task["stage"] == "prompts" and run["purpose"] == "create" and not run["base_version_id"]
+                and not manifest.get("stageDialogue") and any(e["role"] == "prompt_scaffold" for e in entries)):
+            from .segmentwriting import write_segments
+            return write_segments(self, run, task, manifest, entries)
         document = self._document_mode(run, task)
         if document:
             entries = prompts.document_entries(entries)
@@ -1233,16 +1255,17 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
         clarify = not document and task["stage"] != "stress" and not dialogue and bool(manifest.get("allowClarify")) and kind == "draft" \
             and getattr(self.executors[run["provider"]], "union_schema", True)
         if kind == "review":
+            review_pass = "plan" if run["purpose"] == "review" and task["stage"] == "plan" else REVIEW_PASSES[run["purpose"]]
             required = [s["key"] for s in self._review_settings(task, manifest) if s["strength"] == "required"]
             if run["purpose"] == "review":
-                trailer = prompts.review_trailer(run_id, digest, run["target_version_id"], required, stage=task["stage"])
+                trailer = prompts.review_trailer(required, stage=task["stage"])
             else:
-                trailer = prompts.segment_review_trailer(run_id, digest, run["target_version_id"], run["purpose"],
+                trailer = prompts.segment_review_trailer(run["purpose"],
                                                          manifest.get("scope"), required)
         elif manifest.get("contextProfile") == "bounded_judgment":
-            trailer = prompts.judgment_trailer(run_id, digest, task["artifact_id"], run["base_version_id"], document)
+            trailer = prompts.judgment_trailer(document)
         else:
-            trailer = prompts.draft_trailer(run_id, digest, task["artifact_id"], run["base_version_id"], task["stage"], entries,
+            trailer = prompts.draft_trailer(task["stage"], entries,
                                             mode="document" if document else "changes", dialogue=bool(dialogue))
             if task["stage"] == "prompts":
                 trailer += ("\n官方 H3 的 txt 使用英文。项目方法中的 video_zh、同框和制作固定段落是内容依据，"
@@ -1270,7 +1293,20 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                 trailer += "\n以本轮核对事项和指定回包格式为准：" + dialogue["request"]
             if clarify:
                 trailer += ("\n回包放在 result 字段里。若要求含义不明、无法确定修改范围，先返回 kind=clarification："
-                            "question 写一个问题，options 给可点选的答案，relatedIds 写相关对象编号；否则返回 draft。")
+                            "question 写一个问题，options 给可点选的答案，relatedIds 写相关对象编号；否则返回 kind=draft 和 changes。")
+        publish_schema = None
+        if task["stage"] == "publish" and run["purpose"] == "create" and not (run["base_version_id"] or dialogue or clarify):
+            from . import publishing
+            inputs = {e["role"]: e for e in entries if e["role"] in ("publish_settings", "publish_basis")}
+            if len(inputs) == 2:
+                cfg = publishing.settings(json.loads(inputs["publish_settings"]["text"]))
+                if cfg.get("copy_format") == "instrumental_v1":
+                    publish_schema = publishing.instrumental_draft_schema(cfg)
+                    publish_basis = json.loads(inputs["publish_basis"]["text"])
+                    entries = [e for e in entries if e["role"] != "stage_contract" or e["name"] != "publish.txt"]
+                    trailer = ("按输出格式直接交发布文案。title 写英文标题，body 只写正文第一行，tags 只写本集新增标签。"
+                               "tempoBpm 选择适合本集的整数速度，suno_style 写拍号、乐器和情绪变化，suno_exclude 排除 vocals。"
+                               "配乐是否启用由程序继承。cues 按发布依据的全片时窗写各段的配乐动作。")
         prompt = prompts.prompt_from(entries, trailer, "bounded_judgment" if manifest.get("contextProfile")=="bounded_judgment" else run["purpose"], document=document)
         workdir = self.store.run_dir(run_id) / "work"
         workdir.mkdir(parents=True, exist_ok=True)
@@ -1281,8 +1317,7 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
             images.append(path)
         executor = self.executors[run["provider"]]
         request = ExecRequest(run_id=run_id, purpose=run["purpose"], kind=kind, prompt=prompt,
-                              schema=(None if document else contracts.stage_dialogue_schema(dialogue.get("auto"), read_only=bool(dialogue.get("internalJudgment"))) if dialogue else
-                                      contracts.wrapped_schema() if clarify else contracts.branch_schema(kind)),
+                              schema=(publish_schema or (None if document else contracts.writing_schema(dialogue, clarify) if kind == "draft" else contracts.review_content_schema(review_pass))),
                               session_mode=run["session_mode"],
                               workdir=workdir, model=run["requested_model"], effort=run["requested_effort"],
                               timeout=int(self.get_setting("executor_timeout", 600)), images=images, connection=manifest.get("executorConnection",{}))
@@ -1351,7 +1386,13 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
         while outcome.ok:
             problems = []
             envelope_error = False
-            if document:
+            if publish_schema:
+                try:
+                    fields = publishing.instrumental_draft_fields(outcome.structured, publish_schema, publish_basis)
+                    outcome.structured = document_to_internal(run, task, {"fields":fields})
+                except ValueError as exc:
+                    problems = [str(exc)]
+            elif document:
                 try:
                     outcome.structured = document_to_internal(run, task, outcome.structured, dialogue, WRITABLE[task['stage']])
                 except ValueError as exc:
@@ -1359,12 +1400,10 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                     problems = [str(exc)]
             if clarify and isinstance(outcome.structured, dict) and "result" in outcome.structured:
                 outcome.structured = outcome.structured["result"]
-            if not dialogue and getattr(executor,'binds_request_context',False) and isinstance(outcome.structured,dict):
-                # The native process was launched for this frozen request. Keep
-                # its raw reply above, but bind machine-owned IDs here rather than
-                # spending another generation asking the model to copy a hash.
-                if outcome.structured.get('kind') in ('draft','review','clarification'):
-                    outcome.structured=dict(outcome.structured,runId=run_id,inputFingerprint=run['input_hash'])
+            if run["purpose"] not in REVIEW_PASSES and not document:
+                outcome.structured = bind_writing_reply(run, task, outcome.structured, selectable_kind=bool(clarify or dialogue))
+            elif run["purpose"] in REVIEW_PASSES:
+                outcome.structured = bind_review_reply(run, outcome.structured, review_pass, manifest.get("scope"))
             kind = "review" if run["purpose"] in REVIEW_PASSES else "draft"
             if clarify and isinstance(outcome.structured, dict) and outcome.structured.get("kind") == "clarification":
                 kind = "clarification"
@@ -1446,6 +1485,12 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
             if dialogue.get("forceDraft"): return kind, ["导演已确认转稿，请提交完整新稿"]
             if result.get("removedIds") or result["changes"] or result["directorRequest"] or not result["reply"].strip():
                 return kind, ["讨论只填写回复正文"]
+            if dialogue.get("manualStoryProposal"):
+                from .quickstart import read_proposal
+                try:
+                    read_proposal(result["reply"])
+                except ValueError as exc:
+                    return kind, [str(exc)]
             return kind, self._repair_reply_errors(dialogue["repair"],result) if dialogue.get("repair") else []
         if dialogue.get("readOnly"):
             return kind, ["本条消息是只读对话，不能创建版本"]
@@ -1532,6 +1577,14 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
         base = self._version_of(db, run["base_version_id"], task["artifact_id"]) if run["base_version_id"] else None
         content = json.loads(base["content"]) if base else {}
         updates = {c["field"]: normalize(task["stage"], c["field"], c["value"]) for c in changes}
+        responses = updates.get("productionNoteResponses")
+        if isinstance(responses, list) and responses:
+            manifest, _ = self.store.load_manifest(run["manifest_relpath"])
+            source = next((e for e in manifest["inputs"] if e["role"] == "production_note_assignments"), None)
+            if source:
+                report = json.loads(self.store.read_blob(source["sha256"]))["reportVersionId"]
+                updates["productionNoteResponses"] = [
+                    dict(item, reportVersionId=report) if isinstance(item, dict) else item for item in responses]
         if task["stage"] in supplements.STAGES:
             known = {r["subject"]: r for r in supplements.active(db, task["episode_id"])}
             if "supplements" in updates and isinstance(updates["supplements"], list):
@@ -1556,6 +1609,9 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
             plan=db.execute("SELECT v.content FROM artifact a JOIN version v ON v.id=a.adopted_version_id WHERE a.episode_id=? AND a.stage='plan'",(task['episode_id'],)).fetchone()
             plan_ids={s['id'] for s in json.loads(plan[0]).get('segments',[])} if plan else set()
             if plan_ids and set(updates['segments']) < plan_ids:
+                if 'decisionNotes' in updates:
+                    from .decisions import revised_segment_notes
+                    updates['decisionNotes']=revised_segment_notes(content.get('decisionNotes',[]),updates['decisionNotes'],set(updates['segments']),plan_ids)
                 updates['segments']={**{sid:entry for sid,entry in previous.items() if sid in plan_ids},**updates['segments']}
         content.update(updates)
         return content
@@ -1738,6 +1794,20 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
             task = _row(db, "SELECT * FROM task WHERE id=?", run["task_id"])
             if kind == "discussion":
                 thread = _row(db, "SELECT id FROM thread WHERE task_id=?", task["id"])
+                if dialogue and dialogue.get("manualStoryProposal"):
+                    from .quickstart import read_proposal
+                    text, options = read_proposal(result["reply"])
+                    self._message(db,thread["id"],"assistant",text,None,None,run_id,kind="clarify",
+                                  payload=dict(storyProposal=True,options=options))
+                    self._finish(run_id,"succeeded",outcome=outcome,attempts=attempts,result_hash=sha256_bytes(body),db=db)
+                    db.execute("UPDATE task SET state='clarifying' WHERE id=?",(task["id"],))
+                    return []
+                if dialogue and dialogue.get("writerProposal"):
+                    from .quickstart import read_proposal
+                    try:
+                        result = dict(result, reply=read_proposal(result["reply"])[0])
+                    except ValueError:
+                        pass
                 self._message(db,thread["id"],"assistant",result["reply"],None,None,run_id,payload={"stageDiscussion": True, "internalJudgment": dialogue.get("internalJudgment")} if dialogue and not dialogue.get("repair") else None)
                 self._finish(run_id,"succeeded",outcome=outcome,attempts=attempts,result_hash=sha256_bytes(body),db=db)
                 follow.extend(self._repair_result(db,run,kind,result))
@@ -2444,6 +2514,13 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
         available = retryable_attempts(task["runs"])
         for run in task["runs"]:
             run["canRetry"] = run["id"] in available
+            if task["stage"] == "prompts":
+                progress = db.execute("SELECT * FROM prompt_segment_progress WHERE run_id=?", (run["id"],)).fetchone()
+                if progress:
+                    results = db.execute("SELECT segment,fields FROM prompt_segment_result WHERE task_id=? AND basis=?",
+                                         (task["id"], progress["basis"]))
+                    saved = {r["segment"]:json.loads(r["fields"])["segments"][r["segment"]]["txt"] for r in results}
+                    run["segmentProgress"] = dict(current=progress["current_segment"], total=progress["total"], saved=saved)
         return task
 
     def run_manifest(self, run_id):

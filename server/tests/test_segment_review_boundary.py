@@ -12,7 +12,7 @@ def check(result, purpose='comparison'):
         _review_settings=lambda t,m:[dict(key='cat-no-dialogue',strength='required')],
         _review_decisions=lambda m:{})
     run=dict(id='run',input_hash='a'*64,target_version_id='version',purpose=purpose,manifest_relpath='unused')
-    return Workbench._precheck(wb,run,{},'review',result)
+    return Workbench._precheck(wb,run,{'stage':'story'},'review',result)
 
 
 def result():
@@ -44,7 +44,20 @@ def test_story_still_requires_global_setting_review():
 
 
 def test_trailer_does_not_require_unproduced_video_to_pass():
-    text=segment_review_trailer('r','h','v','comparison','seg-02',['cat-no-dialogue'])
+    text=segment_review_trailer('comparison','seg-02',['cat-no-dialogue'])
     assert '不要求每段把全部设定各填一条' in text
     assert '只在 observations 说明未测' in text
     assert '缺少图像或视频证据，记 continuity、uncertain' not in text
+
+
+def test_review_receipt_gets_version_and_segment_from_request():
+    from workbench import contracts
+    from workbench.replyformat import bind_review_reply
+    schema = contracts.review_content_schema("cold_read")
+    content = dict(decision="pass", issues=[], observations=[dict(unit="segment", anchor="00:02", evidence="猫推开门")])
+    contracts.Draft202012Validator(schema).validate(content)
+    run = dict(id="run",input_hash="a"*64,target_version_id="version")
+    result = bind_review_reply(run, content, "cold_read", "seg-02")
+    assert not contracts.validate(result)
+    assert result["observations"][0]["objectId"] == "seg-02"
+    assert result["observations"][0]["versionId"] == "version"

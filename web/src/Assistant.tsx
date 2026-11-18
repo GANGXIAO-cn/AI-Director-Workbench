@@ -78,7 +78,9 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
     requestAnimationFrame(()=>input.current?.focus());
   },[text]);
   const open = task && !["closed", "abandoned"].includes(task.state);
-  const plan = {...((open ? task.executor_plan : null) ?? view.kickoff?.executor_plan), ...art?.executorSettings};
+  // The composer selects the writer for the next message. An expert's temporary
+  // task executor belongs to its run receipt, not to the episode's writer choice.
+  const plan = {...(view.kickoff?.executor_plan ?? task?.executor_plan), ...art?.executorSettings};
   const expert=useQuery<any>("episode_expert",{episode_id:view.episode.id},[view]);
   const catalog = useQuery<any>("model_catalog", {}, [active]);
   const stream=useRef<HTMLDivElement>(null), follow=useRef(true);
@@ -147,6 +149,7 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
     setText("请基于 "+rno(version.display_no)+" 修订所选的 "+items.length+" 条审查意见，逐条核对定位和依据，提交一份完整新稿。");
     requestAnimationFrame(()=>input.current?.focus());
   };
+  const expertRuns = new Set<string>(continuous.data?.run?.cursor?.ownedRuns ?? []);
   const deliveryFinished = continuous.data?.run?.state === "done" && continuous.data.run.target_stage === "delivery";
   const continuousStatus = <ContinuousStatus data={continuous.data?{...continuous.data,episodeId:view.episode.id,projectId:view.episode.project_id}:null} error={continuous.error} reload={async()=>{await continuous.reload();await reload();}}/>;
   return (
@@ -180,7 +183,7 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
               await reload();
             })}>根据故事稿起草角色小传</button>
           </div>}
-        {!tasks.length && art?.stage==="story" && view.kickoff && <div className="mcard" data-chat-kind="action"><b>本集来源已保存</b><button className="btn" disabled={!standardGoals.data || act.busy} onClick={()=>act.run(async()=>{await submit("create_task",{episode_id:view.episode.id,stage:"story",goal:standardGoals.data?.story},[]);await reload();})}>按开工资料起草</button></div>}
+        {!tasks.length && art?.stage==="story" && view.kickoff && <div className="mcard" data-chat-kind="action"><b>本集来源已保存</b><button className="btn" disabled={!standardGoals.data || act.busy} onClick={()=>act.run(async()=>{await submit("create_task",{episode_id:view.episode.id,stage:"story",propose_story:true,goal:standardGoals.data?.story},[]);await reload();})}>{view.kickoff.source_type==="import"?"按开工资料起草":"请写稿人提出讲法"}</button></div>}
         {stage==="treatment" && art?.adopted_version_id && <button className="btn" disabled={act.busy} onClick={()=>act.run(async()=>{
           await cmd("start_repair_plan",{episode_id:view.episode.id,mode:"early"});await reload();go(`#/e/${view.episode.id}/stress`);
         })}>先做一次结构体检（可选）</button>}
@@ -192,11 +195,11 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
           <div key={r.id} className="mcard" data-chat-kind="progress">
             <ModelReply provider={r.provider} model={r.reported_model} requestedModel={r.requested_model} effort={r.reported_effort || r.requested_effort}><span className="tiny muted">任务进度</span></ModelReply>
             {/* 实测 118：进度卡固定为三行（说明+状态 / 计时 / 停止与提示），计时位数变化不再引起换行跳动。 */}
-            <div className="small run-progress-line"><span className="run-progress-text">{PROVIDER_LABEL[r.provider] ?? r.provider} {r.status==="queued"?"等待执行：":"正在"}{r.purpose === "review" ? "独立审查（另开会话）" : r.purpose === "cold_read" ? "冷读" : r.purpose === "comparison" ? "对照审查" : "处理你的消息"}…</span> <Tag tone="blue">{r.status==="queued"?"已排队":"执行中"}</Tag></div>
+            <div className="small run-progress-line"><span className="run-progress-text">{r.segmentProgress ? `已完成 ${Object.keys(r.segmentProgress.saved).length}/${r.segmentProgress.total} 段 · ${Object.keys(r.segmentProgress.saved).length===r.segmentProgress.total ? "正在汇总" : "正在写 "+r.segmentProgress.current}` : <>{PROVIDER_LABEL[r.provider] ?? r.provider} {r.status==="queued"?"等待执行：":"正在"}{r.purpose === "review" ? "独立审查（另开会话）" : r.purpose === "cold_read" ? "冷读" : r.purpose === "comparison" ? "对照审查" : "处理你的消息"}…</>}</span> <Tag tone="blue">{r.status==="queued"?"已排队":"执行中"}</Tag></div>
             <div className="small run-progress-timer"><RunTimer run={r}/></div>
             <div className="run-progress-stop"><button className="btn" onClick={() => act.run(async () => { await cmd("stop_run", { run_id: r.id }); reload(); })}>停止</button><span className="muted tiny">停止后保留已保存的部分；未返回的请求按任务状态恢复</span></div>
           </div>))}
-        {runs.filter((r: any) => r.canRetry && r.status === "waiting_quota").map((r: any) => (
+        {runs.filter((r: any) => r.canRetry && !expertRuns.has(r.id) && r.status === "waiting_quota").map((r: any) => (
           <div key={r.id} className="mcard focus" data-chat-kind="action">
             <div className="small"><Tag tone="amber">等待额度</Tag> {PROVIDER_LABEL[r.provider]} 额度用尽{r.quota_resets_at ? `，预计 ${r.quota_resets_at} 恢复` : ""}。不会自动切换。</div>
             <div className="row" style={{ marginTop: 8 }}>
@@ -205,11 +208,11 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
                 <button key={p} className="btn" disabled={act.busy} onClick={() => act.run(async () => { await cmd("retry_run", { run_id: r.id, provider: p }); reload(); })}>换 {PROVIDER_LABEL[p]}</button>))}
             </div>
           </div>))}
-        {runs.at(-1)?.canRetry && runs.at(-1)?.status==="stopped" && <div className="mcard" data-chat-kind="action">
+        {runs.at(-1)?.canRetry && !expertRuns.has(runs.at(-1)?.id) && runs.at(-1)?.status==="stopped" && <div className="mcard" data-chat-kind="action">
           <div className="small">本轮已停止</div>
           <button className="btn" disabled={act.busy} onClick={()=>act.run(async()=>{await cmd("retry_run",{run_id:runs.at(-1).id});await reload();})}>用原输入重试</button>
         </div>}
-        {runs.filter((r: any) => r.canRetry && r.status === "failed").slice(-1).map((r: any) => (
+        {runs.filter((r: any) => r.canRetry && !expertRuns.has(r.id) && r.status === "failed").slice(-1).map((r: any) => (
           <div key={r.id} className="mcard" data-chat-kind="action"><div className="small error">{runFailureText(r)}</div>
             {/* 实测 143：失败说人话，原始信息收进技术详情；可换执行器重试 */}
             <div className="row" style={{ marginTop: 8, flexWrap: "wrap", gap: 6 }}>
@@ -391,7 +394,7 @@ function Message({ view, scenes, m, task, reload, art, closeHistory, revise }: {
   const needsAnswer=m.kind==="clarify" && !closeHistory && task.state==="clarifying" && (task.latestClarifyId ?? task.messages.filter((x:any)=>x.kind==="clarify").at(-1)?.id)===m.id;
   if (m.kind === "clarify") return (
     <div className="mcard" data-chat-kind={needsAnswer?"choice":"status"}>
-      {needsAnswer && <strong className="chat-choice-title">请选择</strong>}
+      {needsAnswer && <strong className="chat-choice-title">{payload?.storyProposal ? "选择本集讲法" : "请选择"}</strong>}
       <ModelReply {...author}><ChatMarkdown text={m.text}/></ModelReply>
       {needsAnswer && <div className="row" style={{ marginTop: 8 }}>{payload.options.map((o: string) => (
         <button key={o} className="btn" onClick={() => act.run(async () => { await cmd("answer_clarification", { task_id: task.id, answer: o }); reload(); })}>{o}</button>))}</div>}
@@ -485,7 +488,7 @@ function StageExecutor({role,slot,catalog,refreshCatalog,busy,onChange}: {
     {needsCatalog && <small role="status">{modelError || "正在读取 Claude Code 型号…"}</small>}
     {efforts.some(Boolean) && <select aria-label={label+"推理强度"} value={slot.effort??""} onChange={e=>onChange({...slot,effort:e.target.value||null})}>
       {efforts.map((v:any)=><option key={v??"default"} value={v??""}>{v??"默认强度"}</option>)}</select>}
-    <span className="tiny">{identity.error || (!status?"正在读取登录状态…":status.unavailable?"CLI 未找到":status.simulated?"模拟执行器":status.authenticated===false?"CLI 未登录":status.authenticated===true?(status.accountLabel??"本机账号")+" · 已登录":"登录状态待确认")}</span>
+    <span className="tiny">{identity.error || (!status?"正在读取登录状态…":status.unavailable?"CLI 未找到":status.simulated?"模拟执行器":status.authenticated===false?"CLI 未登录":status.authenticated===true?(status.accountLabel??"本机账号")+" · 已登录":status.lastVerifiedAccount?status.lastVerifiedAccount+" · 上次验证已登录":"尚未验证登录")}</span>
     {(modelError || identity.error || status?.unavailable || status?.authenticated===false) && <a className="link" href="#/sys/executors">打开连接设置</a>}
   </fieldset>;
 }

@@ -1026,5 +1026,11 @@ button.link:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--acc); bor
 .home-topic-list:empty { display: none; }
 .btn.home-topic-option { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: start;
   gap: 10px; width: 100%; padding: 8px; text-align: left; white-space: normal; line-height: 1.5; overflow-wrap: anywhere; }
+.topic-option-title { display: block; }
+.topic-option-summary { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .picked-topic.chip { display: inline-flex; max-width: 100%; min-width: 0; }
 .picked-topic > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+.worksheet-product-picker {display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;max-height:320px;overflow:auto;margin-top:8px}
+.worksheet-product-picker .btn {display:flex;flex-direction:column;white-space:normal}
+.worksheet-product-picker img {width:100%;height:88px;object-fit:contain}

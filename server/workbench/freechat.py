@@ -1,4 +1,5 @@
 """Project conversations with explicitly selected, versioned inputs."""
+import json
 from dataclasses import replace
 from io import BytesIO
 
@@ -188,7 +189,6 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
                 if digest != turn["input_hash"]:
                     raise Rejected("无法核对原研究资料")
                 note = next((e for e in self.store.manifest_texts(manifest) if e["role"]=="reference_note"),None)
-                import json
                 reference = json.loads(note["text"]) if note else None
                 return self.start_topic_research(project_id,turn["text"],turn["provider"],command_id,reference)
         with transaction(self.db_path) as db:
@@ -251,6 +251,8 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
                 count = manifest.get("candidateCount") or topicresearch.requested_count(t["text"])
                 schema = topicresearch.result_schema(count)
                 guidance += f"本次必须恰好生成 {count} 张新选题卡，参考故事不计入数量。"
+                history = [json.loads(e["text"])["premise"] for e in entries
+                           if e["role"] == "research_source" and e["name"].startswith(("已发布作品 · ", "已拍作品 · ", "正式候选 · "))]
                 entries, citations = topicresearch.research_inputs(entries)
             prompt = prompt_from(entries, guidance, purpose)
             choice = manifest.get("executorConnection",manifest.get("creator",{}))
@@ -260,8 +262,10 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
             out = self.executors[t["provider"]].start(request)
             if research and out.ok and isinstance(out.structured,dict):
                 cards = out.structured.get("candidates")
-                if isinstance(cards,list) and 0 < len(cards) < count:
+                if isinstance(cards,list) and len(cards) <= count:
                     topicresearch.research_reply(out.structured, citations, len(cards))
+                    cards = topicresearch.distinct_cards(cards, history)
+                if isinstance(cards,list) and len(cards) < count:
                     missing = count - len(cards)
                     with connect(self.db_path) as db:
                         active=db.execute("SELECT 1 FROM free_turn WHERE id=? AND attempt=? AND status='running'",(turn_id,attempt)).fetchone()
@@ -273,8 +277,8 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
                     if out.ok:
                         topicresearch.research_reply(out.structured, citations, missing)
                         combined = cards + out.structured["candidates"]
-                        if len({card["title"].strip().casefold() for card in combined}) != count:
-                            raise ValueError("补充的选题标题重复")
+                        if len(topicresearch.distinct_cards(combined, history)) != count:
+                            raise ValueError("补充的选题仍与旧题或本轮其他卡重复")
                         out = replace(out, structured={"candidates":combined})
             if research and out.ok:
                 reply, status = topicresearch.research_reply(out.structured, citations, count), "succeeded"
