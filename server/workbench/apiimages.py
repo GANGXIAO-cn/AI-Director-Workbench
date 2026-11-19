@@ -110,6 +110,16 @@ class OpenAIImageAPIProvider:
         receipt = json.loads((job / "receipt.json").read_text())
         if (job / "result.png").is_file():
             return ImageOutcome("succeeded", (job / "result.png").read_bytes(), receipt.get("providerRequestId"))
+        stored = job / "stored-result.json"
+        if receipt["state"] == "succeeded" and stored.is_file():
+            from .storage import Store
+            digest = json.loads(stored.read_text())["sha256"]
+            try:
+                data = Store(self.root.parent).read_blob(digest)
+            except FileNotFoundError:
+                return ImageOutcome("succeeded", provider_request_id=receipt.get("providerRequestId"),
+                                    error="中间图片已按保留规则清理，原请求已完成")
+            return ImageOutcome("succeeded", data, receipt.get("providerRequestId"))
         if receipt["state"] == "unknown" and receipt.get("error") == "API 连接中断或超时，请核对原请求":
             return ImageOutcome("failed", provider_request_id=receipt.get("providerRequestId"), error=TRANSPORT_FAILURE)
         return ImageOutcome(receipt["state"], provider_request_id=receipt.get("providerRequestId"),

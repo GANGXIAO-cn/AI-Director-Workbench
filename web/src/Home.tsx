@@ -6,6 +6,7 @@ import { ResourceBrowser, type Excerpt, type PaletteChoice } from "./Resources";
 import { ResearchReference, TopicResearch, type ReferenceDraft } from "./TopicResearch";
 import { Kickoff } from "./Project";
 import { addDirectorFiles, clipboardFiles, DirectorFiles, useDirectorCommand, isPicture } from "./DirectorFiles";
+import { TopicRuntimeTag, runtimeLabel, useManualRuntime, type TopicRuntime } from "./TopicRuntime";
 import { isKickoffTopic } from "./topics";
 import { FileInput, PencilLine, Plus, PackageOpen, Film, Palette, NotebookPen, Ratio, ChevronDown, ArrowUp, type LucideIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -84,7 +85,7 @@ export default function Home({ tab, projects, rememberProject, referenceDraft, i
   const opened = episodes.filter((e: any) => e.kickoff_id);
   const destination = opened.find((e: any) => e.id === targetEpisode) ?? opened[opened.length - 1];
   const kickoffMode = ["idea","episode","import"].includes(mode);
-  const topicFor = async(pid:string) => topic && !topic.id ? (await cmd("add_topic",{project_id:pid,code:topic.code,premise:topic.premise,command_id:topic.pending})).topicId : topic?.id;
+  const topicFor = async(pid:string) => topic && !topic.id ? (await cmd("add_topic",{project_id:pid,code:topic.code,premise:topic.premise,runtime:topic.runtime,command_id:topic.pending})).topicId : topic?.id;
   const prefill = { style: styleNote, paletteCards, ratio, creator, reviewer, executorPlan, mode: "manual", predecessorId: previous };
   const selectProject = (pid: string) => {
     if(pid===projectId)return;
@@ -247,7 +248,7 @@ export default function Home({ tab, projects, rememberProject, referenceDraft, i
             {kickoffMode && <DirectorFiles files={pictures} remove={i=>setPictures(pictures.filter((_,n)=>n!==i))}/>}
             {["idea","episode"].includes(mode) && (original || topic || previous) && <div className="row" style={{padding:"0 14px 10px"}}>
               {original && <button className="chip" onClick={()=>setOriginal(null)}>按原文拍 · 《{original.title}》 · 第 {original.offset+1}–{original.offset+Array.from(original.text).length} 字 ×</button>}
-              {topic && <button className="chip picked-topic" title={topic.premise} onClick={() => setTopic(null)}>选题 {topic.code}<span>{topic.title || topic.premise}</span> ×</button>}
+              {topic && <button className="chip picked-topic" title={topic.premise} onClick={() => setTopic(null)}>选题 {topic.code} {topic.runtime && runtimeLabel(topic.runtime)}<span>{topic.title || topic.premise}</span> ×</button>}
               {previous && <button className="chip" onClick={() => setPrevious("")}>承接 {opened.find((e: any) => e.id === previous)?.display_code} ×</button>}</div>}
             {mode === "import" && (
               <div className="row" style={{ padding: "0 14px 10px" }}>
@@ -272,12 +273,12 @@ export default function Home({ tab, projects, rememberProject, referenceDraft, i
               topicQuery={topics} projectLabel={projectLabel} configs={configs} listNotice={listNotice}
               key={pop + projectId} project={project.data} topics={(topics.data ?? []).filter(t => t.project_id === projectId)} pickTopic={(t: any) => { if (t.episode_id) { go(`#/e/${t.episode_id}/story`); return; } referenceDraft.change(null);setOriginal(null);setTopic(t); setPop(""); }}
               referenceDraft={referenceDraft} onOriginal={(part:Excerpt)=>{setOriginal(part);setTopic(null);referenceDraft.change(null);setPop("");}} researchOnOpen={choosingResearchOwner} chooseOwner={()=>{setChoosingResearchOwner(true);setPop("project");}}
-              addTopic={async (code: string, premise: string) => {
-                if(creating){referenceDraft.change(null);setOriginal(null);setTopic({code,premise,pending:commandId()});setPop("");return;}
+              addTopic={async (code: string, premise: string, runtime:TopicRuntime) => {
+                if(creating){referenceDraft.change(null);setOriginal(null);setTopic({code,premise,runtime,pending:commandId()});setPop("");return;}
                 const pid = projectId;
                 if (pid !== projectId) setProjectId(pid);
-                const r = await cmd("add_topic",{project_id:pid,code,premise});
-                referenceDraft.change(null);setOriginal(null);setTopic({id:r.topicId,code:r.code || code,premise}); if (pid === projectId) await topics.reload(); setPop("");
+                const r = await cmd("add_topic",{project_id:pid,code,premise,runtime});
+                referenceDraft.change(null);setOriginal(null);setTopic({id:r.topicId,code:r.code || code,premise,runtime}); if (pid === projectId) await topics.reload(); setPop("");
               }} styleNote={styleNote} paletteCards={paletteCards} saveStyle={(v: string,cards:PaletteChoice[]) => {setStyleNote(v); setPaletteCards(cards); setPop("");}}
               settings={{ratio,executorPlan,setExecutorPlan,runMode,setRatio,setRunMode,quick:["idea","episode"].includes(mode),
                 advanced:["idea","episode"].includes(mode)?()=>act.run(async()=>{
@@ -384,6 +385,7 @@ function Popover({ configs, listNotice, topicQuery, projectLabel, kind, close, p
 
   const [browseDraft,setBrowseDraft]=useState(false);
   const existing=!!projectId&&!projectId.startsWith("__new");
+  const manualRuntime=useManualRuntime();
   const [topicCode, setTopicCode] = useState("");
   const [premise, setPremise] = useState("");
   const act = useAction();
@@ -410,7 +412,7 @@ function Popover({ configs, listNotice, topicQuery, projectLabel, kind, close, p
       {topicQuery.error&&<span className="error">{topicQuery.error} <button className="btn" onClick={topicQuery.reload}>重新读取</button></span>}
       <div className="home-topic-list">{topics.filter(isKickoffTopic).map((t: any) =>
         <button key={t.id} className="btn ghost home-topic-option" onClick={() => pickTopic(t)}>
-          <b>{t.code}</b><span>{t.title && <strong className="topic-option-title">{t.title}</strong>}<span className="topic-option-summary">{t.premise}</span></span><span>选用</span>
+          <b>{t.code}</b><span>{t.title && <strong className="topic-option-title">{t.title}</strong>}<TopicRuntimeTag target={t.runtime}/><span className="topic-option-summary">{t.premise}</span></span><span>选用</span>
         </button>)}</div>
       {existing&&topicQuery.data&&!topics.some(isKickoffTopic)&&
         <span className="muted small">{topics.length?"本项目目前没有可开工的候选卡。":"本项目还没有选题卡。"}可以填写故事前提新建一张，也可以展开选题研究。</span>}
@@ -418,9 +420,10 @@ function Popover({ configs, listNotice, topicQuery, projectLabel, kind, close, p
       {referenceDraft.value&&<div className="row"><button className="btn primary" onClick={()=>onOriginal(referenceDraft.value)}>按原文改编</button>
         <button className="btn" onClick={()=>existing?setResearch(!research):chooseOwner()}>{existing?"参考这段内容想新题":"选择已有项目研究备选题"}</button></div>}
       <div className="row"><input placeholder="编号（自动生成）" value={topicCode} onChange={e => setTopicCode(e.target.value)} /><input placeholder="故事想法" value={premise} onChange={e => setPremise(e.target.value)} /></div>
+      {premise.trim() && manualRuntime.fields}
       <div className="row"><button className="btn primary" disabled={!projectId || !premise.trim() || act.busy} onClick={() => act.run(() => {
         if (topics.some((t: any) => t.code === topicCode.trim())) throw new Error("该选题编号已存在，请选择原卡或换一个编号");
-        return addTopic(topicCode.trim(),premise.trim());
+        return addTopic(topicCode.trim(),premise.trim(),manualRuntime.read());
       })}>保存并选用</button>{projectId && !projectId.startsWith("__new") && <a className="btn" href={`#/p/${projectId}/topics`}>查看全部选题</a>}{!referenceDraft.value&&<button className="btn" onClick={()=>{setBrowseDraft(true);}}>从知识库选参考</button>}
         {existing&&!referenceDraft.value&&<button className="btn" aria-expanded={research} onClick={()=>setResearch(!research)}>{research?"收起选题研究":"让 AI 想选题"}</button>}</div>
       {existing&&research&&<TopicResearch projectId={projectId} poolChanged={topicQuery.reload} hidePicker referenceDraft={referenceDraft} onPick={pickTopic}/>}

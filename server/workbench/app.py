@@ -87,7 +87,7 @@ def default_image_providers():
 
 
 COMMANDS = {
-    "save_executor_defaults", "save_episode_expert", "save_episode_image_channel", "accept_material_issue",
+    "storage_scan", "set_storage_cleanup", "save_executor_defaults", "save_episode_expert", "save_episode_image_channel", "accept_material_issue",
     "quick_start", "start_continuous", "pause_continuous", "resume_continuous", "cancel_continuous",
     "carry_stress_issue", "start_repair_plan", "advance_repair_plan", "initialize_asset_worksheet", "set_asset_need", "prepare_asset_batch", "adopt_asset_needs",
     "decide_supplement", "confirm_role_state", "add_decision", "revoke_decision", "replace_decision", "record_decisions", "record_message_decision",
@@ -146,15 +146,25 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
             while not stopped.wait(30):
                 try:worker.continue_changed()
                 except Exception:logging.exception('Continuous recovery check failed')
+        def storage_monitor():
+            from .storage_maintenance import maintain
+            while not stopped.is_set():
+                try: maintain(wb)
+                except Exception: logging.exception('Storage maintenance check failed')
+                stopped.wait(86400)
+        storage_thread=None
         monitor_thread=None
         if not inline_worker and not external:
             monitor_thread=threading.Thread(target=monitor,name='continuous-recovery',daemon=True)
             monitor_thread.start()
+            storage_thread=threading.Thread(target=storage_monitor,name='storage-maintenance',daemon=True)
+            storage_thread.start()
         try:
             yield
         finally:
             stopped.set()
             if monitor_thread:monitor_thread.join()
+            if storage_thread:storage_thread.join()
             if worker.continuous_pool:worker.continuous_pool.shutdown(wait=True)
             if folders:
                 folders.shutdown()

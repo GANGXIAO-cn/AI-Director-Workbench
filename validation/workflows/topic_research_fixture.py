@@ -1,26 +1,21 @@
-import json
 import re
 
-from workbench.db import transaction
 
 def prepare(env):
-    pid,eid=env.new_episode(name="站台选题", code="旧01")
-    root=env.wb.store.root.parent
-    catalog=dict(candidates=[dict(id="原01",title="夜班旧卡",cn="把遗失钥匙送回柜台",mechanisms=["误认"],
-                                  status="候选",oldref="夹具旧题对照",payoff="钥匙归还")])
-    (root/"选题.json").write_text(json.dumps(catalog,ensure_ascii=False))
-    with transaction(env.wb.db_path) as db:
-        db.execute("UPDATE project SET production=? WHERE id=?",(json.dumps(dict(assetRoot=str(root),topicCatalog="选题.json")),pid))
-        db.execute("INSERT INTO ledger VALUES(?,?,?,?,?,?,?,?,?)",
-                   ("台账01",pid,eid,None,"旧集","旧集以归还钥匙收尾","确认交付","旧01",1))
-    env.wb.import_knowledge(pid,[dict(name="交接规定",kind="case",data="交班单有两联，请核对编号。".encode())])
+    project = env.wb.create_project("_template", "站台选题")["projectId"]
+    env.wb.add_topic(project, "原01", "把遗失钥匙送回柜台")
+
     def research(req):
-        assert req.kind=="topic_research"
-        for text in ["把遗失钥匙送回柜台","旧集以归还钥匙收尾","交班单有两联","找一个能拍出夜班交接动作的新故事"]:
-            assert text in req.prompt, text
-        assert re.search(r"^===== method · ",req.prompt,re.M)
-        ref=re.search(r"^===== research_source · (R\d+) · 知识库 · 交接规定.*? =====$",req.prompt,re.M).group(1)
-        card=dict(title="交班的编号",premise="站务员按交班单的编号寻找第二联。",motivation="在发车前交班",
-                  mechanism="两联编号相同",difference="旧集归还钥匙，这次补签第二联。",reference_id=ref)
-        return dict(candidates=[dict(card,title="提前交班",premise="接班人早到了一站。"),card])
+        assert req.kind == "topic_research"
+        for text in ["把遗失钥匙送回柜台", "做两个长篇选题，每条4分钟", "不得为填满时长硬凑剧情"]:
+            assert text in req.prompt
+        ref = re.search(r"^===== research_source · (R\d+) · 导演的研究方向", req.prompt, re.M).group(1)
+        card = dict(title="交班的编号", premise="站务员按交班单的编号寻找第二联。", motivation="在发车前交班",
+                    mechanism="两联编号相同", difference="旧题归还钥匙，这次补签第二联。", reference_id=ref,
+                    runtime=dict(form="长篇", minSeconds=240, maxSeconds=240))
+        assert req.schema["properties"]["candidates"]["minItems"] == 5
+        cards = [dict(card, title="提前交班", premise="接班人早到了一站。"), card]
+        cards.extend(dict(card, title=f"夜班 {i}", premise=f"第 {i} 班车临时换站。") for i in range(3))
+        return dict(candidates=cards)
+
     env.codex.script.append(research)

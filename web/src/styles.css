@@ -134,6 +134,8 @@ del.d { color: var(--red); text-decoration: line-through; } ins.d { color: var(-
 /* assistant */
 .assistant { background: var(--panel); border-radius: 12px 0 0 12px; display: flex; flex-direction: column; min-height: 0; }
 .assistant .head { padding: 14px 16px; display: flex; align-items: center; gap: 8px; font-weight: 700; }
+.assistant > .continuous-status { max-height: 32%; min-height: 0; overflow-y: auto; }
+.assistant > .composer { flex: none; }
 .avatars { display: inline-flex; } .avatars b { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center;
   font-size: 0.69rem; color: #111; margin-left: -4px; border: 1px solid var(--panel); }
 .msgs { flex: 1; overflow: auto; padding: 0 14px 14px; display: flex; flex-direction: column; gap: 12px; }

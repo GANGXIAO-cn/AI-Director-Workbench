@@ -12,6 +12,7 @@ from .db import connect, dumps, new_id, transaction
 from .history import HistoryMixin
 from .errors import Conflict, NotFound, Rejected, loads, row
 from .specs import validate_spec
+from .topicruntime import read_runtime, save_runtime
 from .methodpack import available_packs, load_pack, method_entries, pack_changes
 from .stages import render
 from .storage import canonical, file_sha256, sha256_bytes, write_atomic
@@ -443,7 +444,7 @@ class ProjectOpsMixin(HistoryMixin):
                 return dict(ok=True)
             return self._command(db, command_id, "cite", dict(t=task_id, k=knowledge_id), run)
 
-    def add_topic(self, project_id, code, premise, mechanism="", motivation="", command_id=None, origin="user"):
+    def add_topic(self, project_id, code, premise, mechanism="", motivation="", command_id=None, origin="user", runtime=None):
         with transaction(self.db_path) as db:
             def run():
                 if not premise.strip():
@@ -466,12 +467,15 @@ class ProjectOpsMixin(HistoryMixin):
                 tid = new_id()
                 db.execute("INSERT INTO topic VALUES(?,?,?,?,?,?,?,?,?,?)",
                            (tid, project_id, chosen, premise, mechanism, motivation, "候选", None, origin, self.clock()))
+                target = read_runtime(db, source["id"]) if origin.startswith("restore:") else runtime
+                if target is not None:
+                    save_runtime(db, tid, target)
                 return dict(topicId=tid, code=chosen, status="候选")
-            return self._command(db, command_id, "topic", dict(p=project_id, c=code, pr=premise, **({"origin":origin} if origin.startswith("restore:") else {})), run)
+            return self._command(db, command_id, "topic", dict(p=project_id, c=code, pr=premise, **({"runtime":runtime} if runtime is not None else {}), **({"origin":origin} if origin.startswith("restore:") else {})), run)
 
     def topics(self, project_id, status=None):
         with connect(self.db_path) as db:
-            out = [dict(r) for r in db.execute("SELECT t.*,case when exists(select 1 from topic_publication v where v.topic_id=t.id) or t.id in (select id from expert_filmed_topics) then '已拍' when t.status='已制作' then '已交付' else coalesce(i.intent,case when t.status='弃用' then '弃用' when t.origin like '选题池/%' then '待整理' else '想拍' end) end intent, (SELECT group_concat(title,' / ') FROM topic_publication v WHERE v.topic_id=t.id) publication, e.display_code, e.state AS episode_state FROM topic t LEFT JOIN topic_intent i ON i.topic_id=t.id LEFT JOIN "
+            out = [dict(r) for r in db.execute("SELECT t.*,rt.runtime,case when exists(select 1 from topic_publication v where v.topic_id=t.id) or t.id in (select id from expert_filmed_topics) then '已拍' when t.status='已制作' then '已交付' else coalesce(i.intent,case when t.status='弃用' then '弃用' when t.origin like '选题池/%' then '待整理' else '想拍' end) end intent, (SELECT group_concat(title,' / ') FROM topic_publication v WHERE v.topic_id=t.id) publication, e.display_code, e.state AS episode_state FROM topic t LEFT JOIN topic_runtime rt ON rt.topic_id=t.id LEFT JOIN topic_intent i ON i.topic_id=t.id LEFT JOIN "
                                                "episode e ON e.id=t.episode_id WHERE t.project_id=? ORDER BY t.code",
                                                (project_id,)) if not status or r["status"] == status]
             catalog_titles = {}
@@ -484,6 +488,7 @@ class ProjectOpsMixin(HistoryMixin):
                     catalog_titles[digest] = {card["id"]:card.get("title","") for card in cards}
                 titles[source["id"]] = catalog_titles[digest].get(source["code"], "")
             for t in out:
+                t["runtime"] = json.loads(t["runtime"]) if t["runtime"] else None
                 origin_id = t["origin"].removeprefix("restore:")
                 t["title"] = titles.get(t["id"]) or titles.get(origin_id, "")
                 t["publications"] = [dict(v) for v in db.execute("SELECT platform,platform_id,title,published_at,evidence FROM topic_publication WHERE topic_id=? ORDER BY published_at",(t["id"],))]
@@ -747,10 +752,18 @@ class ProjectOpsMixin(HistoryMixin):
         bid = new_id()
         target = self.store.root / "backups" / bid
         target.mkdir(parents=True)
+        from .storage_maintenance import scan
+        from .storage import clone_file
+        excluded = {c['path']:c for c in scan(self)['candidates'] if c['kind'] != 'backup'}
         src = sqlite3.connect(self.db_path)
         dst = sqlite3.connect(target / "workbench.sqlite")
         src.backup(dst)          # consistent snapshot
         src.close()
+        # These files are omitted only in the backup; the live files are untouched.
+        for c in excluded.values():
+            dst.execute('INSERT OR REPLACE INTO storage_removed VALUES(?,?,?,?,?,?)',
+                        (c['path'],c['kind'],c['owner'],c['sha256'],c['bytes'],self.clock()))
+        dst.commit()
         dst.close()
         files = {}
         roots = ("blobs", "projects", "runs", "director-palettes", "packages")
@@ -765,15 +778,20 @@ class ProjectOpsMixin(HistoryMixin):
                     raise Rejected("备份资料包含符号链接，请核对原文件：" + p.relative_to(self.store.root).as_posix())
                 if p.is_file():
                     rel = p.relative_to(self.store.root).as_posix()
+                    if rel in excluded:
+                        continue
                     dest = target / "files" / rel
                     dest.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(p, dest)
+                    clone_file(p, dest)
                     files[rel] = file_sha256(dest)
         manifest = dict(backupId=bid, db=file_sha256(target/"workbench.sqlite"), files=files, resourceDirs=roots)
         write_atomic(target / "manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2).encode())
         with transaction(self.db_path) as db:
             db.execute("INSERT INTO backup VALUES(?,?,?,?,?,?)", (bid, f"backups/{bid}", sha256_bytes(canonical(manifest)),
                                                                  len(files), note, self.clock()))
+            db.execute('INSERT INTO storage_backup VALUES(?,?)', (bid,self.clock()))
+        from .storage_maintenance import maintain
+        maintain(self, force=True)
         return dict(backupId=bid, files=len(files))
 
     def restore(self, backup_id, target_dir):
@@ -782,6 +800,8 @@ class ProjectOpsMixin(HistoryMixin):
         with connect(self.db_path) as db:
             record = row(db, "SELECT relpath,manifest_hash FROM backup WHERE id=?", backup_id, missing="备份未登记")
         src = self.store._inside(self.store.root / record["relpath"])
+        if not (src/'workbench.sqlite').is_file():
+            raise Rejected("这份旧备份已轮换清理，请选择最近的成功备份")
         try:
             manifest = json.loads((src / "manifest.json").read_bytes())
         except (OSError, ValueError) as exc:
@@ -816,12 +836,35 @@ class ProjectOpsMixin(HistoryMixin):
         notes = [] if "resourceDirs" in manifest else ["旧版备份只收录数据库、原文与素材副本、项目和运行记录。如需自定义色卡原文件或导出的 H3 ZIP，请从原数据目录取回。"]
         return dict(restoredTo=str(target), files=len(manifest["files"]), notes=notes)
 
+    def storage_scan(self):
+        from .storage_maintenance import scan, put
+        result = scan(self)
+        result.update(at=self.clock(),mode='preview',cleaned=0)
+        with transaction(self.db_path) as db:
+            put(db, 'storage:preview', {k:v for k,v in result.items() if k != 'candidates'})
+        return result
+
+    def set_storage_cleanup(self, enabled):
+        from .storage_maintenance import setting, put
+        if type(enabled) is not bool:
+            raise Rejected("请选择是否启用自动清理")
+        with transaction(self.db_path) as db:
+            policy = setting(db, 'storage:policy')
+            policy['enabled'] = enabled
+            put(db, 'storage:policy', policy)
+        return policy
+
     def storage_status(self):
         root = self.store.root
         writable = os.access(root, os.W_OK)
         with connect(self.db_path) as db:
             last = db.execute("SELECT * FROM backup ORDER BY created_at DESC LIMIT 1").fetchone()
-        return dict(dataDir=str(root), writable=writable, lastBackup=dict(last) if last else None)
+            from .storage_maintenance import status
+            maintenance = status(self, db)
+            available = [dict(r) for r in db.execute("SELECT * FROM backup ORDER BY created_at DESC")
+                         if (self.store.root / r['relpath'] / 'workbench.sqlite').is_file()]
+        return dict(dataDir=str(root), writable=writable, lastBackup=available[0] if available else None,
+                    maintenance=maintenance)
 
     # ============================================================ todos and task records
     def project_todos(self, project_id):

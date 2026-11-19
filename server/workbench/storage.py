@@ -65,6 +65,17 @@ class Store:
             raise ValueError("copy verification failed")
         return rel.as_posix()
 
+    def materialize_blob(self, digest: str, target: Path):
+        """Independent writable view: APFS copy-on-write when available, copy elsewhere."""
+        source = self.blob_path(digest)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            if target.is_file() and file_sha256(target) == digest:
+                return target
+            raise ValueError("任务图片与输入原件不一致：" + target.name)
+        clone_file(source, target)
+        return target
+
     def run_dir(self, run_id: str) -> Path:
         return self._inside(self.root / "runs" / run_id)
 
@@ -120,3 +131,20 @@ def copy_tree_to_staging(src: Path, parent: Path) -> Path:
     staging = Path(tempfile.mkdtemp(dir=parent, prefix=".staging-"))
     shutil.copytree(src, staging, dirs_exist_ok=True)
     return staging
+
+
+def clone_file(source: Path, target: Path):
+    """Do not hardlink writable workspaces or export folders to immutable blobs."""
+    import sys
+    if sys.platform == "darwin":
+        import ctypes
+        clone = ctypes.CDLL(None, use_errno=True).clonefile
+        clone.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+        clone.restype = ctypes.c_int
+        if clone(os.fsencode(source), os.fsencode(target), 0) == 0:
+            return
+        if target.exists():
+            raise FileExistsError(target)
+    # Exclusive creation also prevents accidental modification of an old hardlink.
+    with source.open("rb") as src, target.open("xb") as dst:
+        shutil.copyfileobj(src, dst)

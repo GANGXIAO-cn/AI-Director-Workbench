@@ -230,6 +230,9 @@ class ProductionMixin:
                        (iid, art["project_id"], art["episode_id"], kind, source_ref, item["target"], item["reason"],
                         "pending", self.clock()))
             out.append(dict(item, id=iid))
+        if out:
+            db.execute('UPDATE episode_completion SET completed_at=NULL WHERE episode_id=?',(art['episode_id'],))
+            db.execute("UPDATE episode SET state='in_production' WHERE id=? AND state='delivered'",(art['episode_id'],))
         return out
 
     def _story_dependents(self, db, episode_id, old, new):

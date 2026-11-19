@@ -1,3 +1,4 @@
+import {TopicRuntimeTag} from "./TopicRuntime";
 import {PreKickoffWorkspace} from "./Directions";
 import { RepairProgress } from "./RepairProgress";
 import { AssetWorksheet } from "./AssetWorksheet";
@@ -122,7 +123,7 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
   const busy = view.data?.artifacts.some((a: any) => a.tasks.some((t: any) => t.runs.some((r: any) => ["queued", "running"].includes(r.status))));
   const reload = async () => { await Promise.all([view.reload(), assets.reload(), batches.reload(), decisions.reload()]); };
   const imagesRunning=batches.data?.some(b=>["authorized","running"].includes(b.state));
-  usePoll(!!busy || !!imagesRunning, reload);
+  usePoll(!!busy || !!imagesRunning || !!view.data?.deliveryInProgress, reload);
   if (!view.data) return <div className="page">{view.error ?? "读取中…"}</div>;
   const v = view.data;
   if (!v.kickoff) return <PreKickoffWorkspace eid={id} pid={v.episode.project_id} episode={v.episode} reload={view.reload}/>;
@@ -144,7 +145,7 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
   const status = (s: string) => {
     const map: Record<string, boolean> = { story: adopted("story"), script: adopted("script"), plan: adopted("plan"),
       ...v.productionStatus, prompts: adopted("prompts"),
-      publish: adopted("publish"), delivery: v.episode.state === "delivered" };
+      publish: adopted("publish"), delivery: !!v.productionStatus?.delivery };
     return (map[s] || adopted(s)) ? "done" : s === stage ? "now" : "";
   };
   return (
@@ -581,7 +582,7 @@ function StoryResult({ctx}:{ctx:Ctx}) {
     if(hit) hit.scrollIntoView({block:"nearest",inline:"nearest"});
   },[ctx.location]);
   const preview=ctx.focus || new URLSearchParams(hash.split("?")[1]).get("run");
-  return <><h1>{FILM_STAGES[0][1]}</h1>{final?<article ref={body} className="story-result"><small className={final.id===adopted?.id?"ok":"muted"}>{rno(final.display_no)} · {final.id===adopted?.id?"已采用":"草稿 · 待采用"}</small>
+  return <><h1>{FILM_STAGES[0][1]}</h1><TopicRuntimeTag target={ctx.view.topicRuntime}/>{final?<article ref={body} className="story-result"><small className={final.id===adopted?.id?"ok":"muted"}>{rno(final.display_no)} · {final.id===adopted?.id?"已采用":"草稿 · 待采用"}</small>
     <div className="story-reading">{storyText(final.content.synopsis).split(/\n\s*\n/).map((para,i)=><p key={i}>{para.split("\n").map((line,j)=><span key={j}>{j>0 && <br/>}<MarkPassage text={line} passage={passages.find(p=>p.field==="synopsis" && p.text===line)}/></span>)}</p>)}
       {passages.filter(p=>p.field!=="synopsis").map((p,i)=><p key={"source"+i}><small>{p.label}</small><br/><MarkPassage text={p.text} passage={p}/></p>)}</div>
     <a href={`#/e/${ctx.eid}/story?v=${final.id}`}>查看稿件与版本</a> · <a href={"/api/story/"+final.id+"/markdown"} download="故事梗概.md">下载故事梗概</a>
@@ -631,7 +632,7 @@ function StoryView({ ctx }: { ctx: Ctx }) {
   const k = ctx.view.kickoff;
   const manuscript = ctx.view.storyManuscript;
   const pictures = ctx.assets.filter(a=>a.origin==="kickoff_reference" && a.version_no===1);
-  const sourcePanel = <>{pictures.length>0 && <details className="card"><summary>本集开工参考图 · {pictures.length} 张</summary>
+  const sourcePanel = <><TopicRuntimeTag target={ctx.view.topicRuntime}/>{pictures.length>0 && <details className="card"><summary>本集开工参考图 · {pictures.length} 张</summary>
     <div className="row">{pictures.map(a=><figure key={a.id}><img src={blob(a.sha256)} alt={a.name} width={96}/>
       <figcaption>{a.name}</figcaption></figure>)}</div></details>}{manuscript && <details className="card"><summary>本集补充稿件 · {manuscript.original_name}</summary>
     <div className="muted tiny">用于下一次故事任务 · 文件指纹 {manuscript.sha256.slice(0,12)}</div>
@@ -1211,7 +1212,8 @@ function AssetsView({ ctx }: { ctx: Ctx }) {
   const providers = useQuery<any>("image_providers");
   const channel = useQuery<any>("episode_image_channel",{episode_id:ctx.eid});
   const act = useAction();
-  const images = ctx.assets.filter((a) => a.kind === "image").sort((a, b) => (b.grid ? 1 : 0) - (a.grid ? 1 : 0));
+  const cleanedImages = ctx.assets.filter((a) => a.kind === "image" && a.cleanedAt);
+  const images = ctx.assets.filter((a) => a.kind === "image" && !a.cleanedAt).sort((a, b) => (b.grid ? 1 : 0) - (a.grid ? 1 : 0));
   const params = new URLSearchParams(hash.split("?")[1]);
   const editVersion = params.get("editImage");
   const libraryEntry = params.get("libraryEntry");
@@ -1245,6 +1247,7 @@ function AssetsView({ ctx }: { ctx: Ctx }) {
   const imgStyle = mode === "并排" ? {height:"min(32vh, 260px)",objectFit:"contain" as const} : mode === "灰度" ? { filter: "grayscale(1)" } : mode === "手机尺寸" ? {width:180,aspectRatio:"9/16",objectFit:"contain" as const,background:"#08090b",margin:"auto",border:"3px solid #494b54",borderRadius:16} : {};
   return (
     <div className="asset-stage">
+      {!!cleanedImages.length && <details className="small"><summary>已清理的中间图片 · {cleanedImages.length} 张</summary>{cleanedImages.map(a=><p key={a.id}>{a.name} v{a.version_no} · {new Date(a.cleanedAt*1000).toLocaleString()} · 制作记录保留</p>)}</details>}
       <div className="stagehead">
         <div><h1>素材与选图</h1><div className="muted small">{images.length} 张 · 提示词已引用 {cited.size} 张 · 手动已采用 {images.filter((a) => marked(a, "adopted")).length} · 本集图像批次 {ctx.batches.length}</div></div>
         <div className="row"><div className="tabs">{[["needs", "需求"], ["round", "本轮出图"], ["backup", "补选区"], ["canvas", "画布"]].filter(([t])=>t!=="needs" || artifactFor(ctx.view,"plan")?.adopted_version_id).map(([t, l]) => (
@@ -1844,7 +1847,8 @@ function PublishView({ ctx }: { ctx: Ctx }) {
   const f = composed.data?.fields;
   return (
     <div>
-      <div className="stagehead"><div><h1>发布包</h1><div className="muted small">发布文案按项目字段分别复制；保存版本时记录当时的发布设置</div></div>
+      {ctx.view.completion?.completed && <div className="ok small">本集项目已完成 · 中间文件按完成后 10 天规则管理</div>}
+      <div className="stagehead"><div><h1>发布文案</h1><div className="muted small">最后一步：完成并采用发布文案后，本集项目制作完成</div></div>
         {current && <VersionTabs ctx={ctx} art={art} current={current} />}</div>
       <div className="grid2">
         <fieldset disabled={ctx.locked} className="col edit-fields">
@@ -1881,14 +1885,14 @@ function DeliveryRecord({d,eid,projectId}:{d:any;eid:string;projectId:string}) {
   const act = useAction();
   return (
     <div className="card line" style={{ marginBottom: 10 }}>
-      <div className="spread"><span><Tag tone={d.scope === "full" ? "green" : "blue"}>{d.scope === "full" ? "整集" : "试验"}</Tag> {d.state==="needs_recheck" && <Tag tone="amber">待复核</Tag>} 交付号 <span className="mono">{d.id.slice(0, 8)}</span> · {d.segments.join("、")} · {Object.keys(d.files).length} 个文件</span>
-        <div className="row"><a className="btn" target="_blank" href={deliveryFile(d.id, "00_图文对照.html")}>打开图文页</a>
+      <div className="spread"><span><Tag tone={d.scope === "full" ? "green" : "blue"}>{d.scope === "full" ? (d.versions?.publish ? "整集" : "交接 · 待发布文案") : "试验"}</Tag> {d.state==="needs_recheck" && <Tag tone="amber">待复核</Tag>} 交付号 <span className="mono">{d.id.slice(0, 8)}</span> · {d.segments.join("、")} · {Object.keys(d.files).length} 个文件</span>
+        <div className="row">{d.cleanedAt ? <span className="muted">中间交付文件已清理，制作记录保留</span> : <><a className="btn" target="_blank" href={deliveryFile(d.id, "00_图文对照.html")}>打开图文页</a>
           <button className="btn" onClick={() => navigator.clipboard.writeText(d.html)}>复制 HTML 绝对路径</button>
           <button className="btn" onClick={() => act.run(async () => setVerify(await q("verify_delivery", { delivery_id: d.id })))}>离线验包</button>
-          {d.scope === "full" && <a className="btn primary" href={`#/p/${projectId}/closure-start/${d.id}`}>整理本集设定</a>}</div></div>
+          {d.scope === "full" && <a className="btn primary" href={`#/p/${projectId}/closure-start/${d.id}`}>整理本集设定</a>}</>}</div></div>
       <div className="muted tiny mono" style={{ marginTop: 6 }}>{d.html}</div>
       <p className="small">图文包记录计划时长。实际生成视频后，在制作和剪辑工具中核对片长、画幅、动作与声音。</p>
-      <a className="btn" href={`#/e/${eid}/package?delivery=${encodeURIComponent(d.id)}`}>将这次交付打包给 H3</a>
+      {!d.cleanedAt && <a className="btn" href={`#/e/${eid}/package?delivery=${encodeURIComponent(d.id)}`}>将这次交付打包给 H3</a>}
       {verify && <div className={verify.ok ? "ok small" : "error small"}>{verify.ok ? "验包通过：文件与指纹一致" : verify.errors.map((e: any) => `${e.file} ${e.problem}`).join("；")}</div>}
       <ErrorLine error={act.error}/>
     </div>
@@ -1916,7 +1920,7 @@ function DeliveryView({ ctx }: { ctx: Ctx }) {
     params.delete("segment");values.forEach(id=>params.append("segment",id));go(hash.split("?")[0]+"?"+params);
   }
   const choosingSegments = scope === "trial" && segs.length === 0;
-  const problems = useQuery<any>(choosingSegments ? null : "delivery_problems", { episode_id: ctx.eid, scope, segments: scope === "trial" ? segs : null }, [scope, segs.join()]);
+  const problems = useQuery<any>(choosingSegments ? null : "delivery_problems", { episode_id: ctx.eid, scope, segments: scope === "trial" ? segs : null, require_publish: false }, [scope, segs.join()]);
   const [deliveries, setDeliveries] = useState<any[]>([]);
   const act = useAction();
   const plan = artifactFor(ctx.view, "plan");
@@ -1954,7 +1958,7 @@ function DeliveryView({ ctx }: { ctx: Ctx }) {
             <div key={stg} style={{ marginTop: 10 }}><div className="row"><Tag tone="red">{stg}</Tag><a className="btn ghost" href={`#/e/${ctx.eid}/${stg === "recheck" || stg === "review" ? "prompts" : stg === "assets" ? "assets" : stg === "space" ? "space" : stg}`}>去修复</a></div>
               {ps.slice(0, 8).map((p: any, i: number) => <div key={i} className="small" style={{ margin: "3px 0" }}>{p.segment ?? ""} {p.file ? `· ${p.file}` : ""} · {p.problem}</div>)}</div>))}
         </div>) : problems.data && <div className="card" style={{ marginTop: 14, background: "#13261f" }}><Tag tone="green">核验通过</Tag> <span className="small">可以写入交付目录（先写临时目录，校验后改名）。</span></div>}
-      <button className="btn primary" style={{ marginTop: 12 }} disabled={!problems.data || !!problems.error || list.length > 0 || act.busy} onClick={() => act.run(async () => { await cmd("deliver", { episode_id: ctx.eid, scope, segments: scope === "trial" ? segs : null }); await load(); ctx.reload(); problems.reload(); })}>生成图文交付</button>
+      <button className="btn primary" style={{ marginTop: 12 }} disabled={!problems.data || !!problems.error || list.length > 0 || act.busy} onClick={() => act.run(async () => { await cmd("deliver", { episode_id: ctx.eid, scope, segments: scope === "trial" ? segs : null, pre_publication: true }); await load(); ctx.reload(); problems.reload(); })}>生成图文交付</button>
       <h2 style={{ marginTop: 24 }}>已登记的交付</h2>
       {deliveries.length === 0 && <div className="muted">尚无。</div>}
       {deliveries.map((d) => (
@@ -2045,12 +2049,12 @@ function PackageView({ ctx,panel }: { ctx: Ctx; panel?:HTMLElement|null }) {
   return (
     <div>
       <div className="stagehead"><div><h1>H3 出包</h1><div className="muted small">交给本地打包器离线导出 ZIP；更换清单、素材或范围后重新验包</div></div></div>
-      {!d ? <div className="muted">{requestedDelivery ? "未找到指定交付，请从本集交付记录重新选择。" : "先完成图文交付。"}</div> : <>
+      {!d ? <div className="muted">{requestedDelivery ? "未找到指定交付，请从本集交付记录重新选择。" : "先完成图文交付。"}</div> : d.cleanedAt ? <div className="muted">这份中间交付文件已清理，请返回交付记录选择最终版本。</div> : <>
         <div className="row"><select aria-label="选择交付版本" value={did} onChange={e=>go(`#/e/${ctx.eid}/package?delivery=${encodeURIComponent(e.target.value)}`)}>{deliveries.map((x) => <option key={x.id} value={x.id}>{x.scope === "full" ? "整集" : "试验"} {x.id.slice(0, 8)}</option>)}</select>
           <button className="btn" onClick={()=>act.run(()=>navigator.clipboard.writeText(d.html))}>复制图文页路径</button>
           <details className="small"><summary>图文页位置</summary><code>{d.html}</code></details></div>
-        <p>{d.state==="needs_recheck"?"待复核":d.scope==="full"?"整集图文已交付":"试验图文已交付"} · {d.segments.length} 段</p>
-        {!!d.packages?.length && <section aria-label="已生成的 H3 包"><h3>已生成的 H3 包</h3>{d.packages.map((p:any)=><p key={p.id}><a download href={"/api/package-download/"+encodeURIComponent(p.id)}>下载 {p.filename}</a></p>)}</section>}
+        <p>{d.state==="needs_recheck"?"待复核":d.scope==="full"?(d.versions?.publish ? "整集图文已交付" : "H3 交接已就绪 · 待完成发布文案"):"试验图文已交付"} · {d.segments.length} 段</p>
+        {!!d.packages?.length && <section aria-label="已生成的 H3 包"><h3>已生成的 H3 包</h3>{d.packages.map((p:any)=><p key={p.id}>{p.cleanedAt ? <span className="muted">{p.filename} · 旧包已清理</span> : <a download href={"/api/package-download/"+encodeURIComponent(p.id)}>下载 {p.filename}</a>}</p>)}</section>}
         {panel && wide ? createPortal(controls,panel):controls}
         <div className="row package-links">{["00_图文对照.html","01_发布包.md","03_精剪交接.md","episode.json"].filter(file=>d.files[file]).map(file=>
           <a key={file} href={deliveryFile(did,encodeURIComponent(file))} target="_blank" rel="noreferrer">{file}</a>)}</div>

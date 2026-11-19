@@ -58,11 +58,15 @@ class DeliveryMixin:
             if reviewed and (versions.get("prompts") != reviewed or segment not in json.loads(d["segments"])):
                 continue
             db.execute("UPDATE delivery SET state='needs_recheck' WHERE id=?", (d["id"],))
+            db.execute('UPDATE episode_completion SET completed_at=NULL WHERE episode_id=?',(episode_id,))
+            db.execute("UPDATE episode SET state='in_production' WHERE id=? AND state='delivered'",(episode_id,))
             db.execute("INSERT INTO ledger VALUES(?,?,?,?,?,?,?,?,?)",
                        (new_id(), self._episode_in(db, episode_id)["project_id"], episode_id, d["id"],
                         "needs_recheck", reason, "", d["id"], self.clock()))
 
     def _require_current_delivery(self, db, delivery_id):
+        if db.execute("SELECT 1 FROM storage_removed WHERE kind='delivery' AND owner=? AND removed_at>0 LIMIT 1", (delivery_id,)).fetchone():
+            raise Rejected("这份中间交付文件已清理，请选择最终交付版本")
         if row(db, "SELECT state FROM delivery WHERE id=?", delivery_id)["state"] == "needs_recheck":
             raise Rejected("这份交付之后有上游改动或新的审查意见，请重新核验后再出包")
 
@@ -208,7 +212,7 @@ class DeliveryMixin:
                     cues=cues, englishTitle=english_title, website=cfg.get("website"))
 
     # ============================================================ delivery checks
-    def delivery_problems(self, episode_id, scope="full", segments=None):
+    def delivery_problems(self, episode_id, scope="full", segments=None, require_publish=True):
         from .workflow import ORDER, OPTIONAL
         if scope not in ("full", "trial"):
             raise Rejected("scope须为full或trial")
@@ -225,9 +229,11 @@ class DeliveryMixin:
                 "SELECT stage,reason FROM optional_stage_choice WHERE episode_id=?", (episode_id,))}
             locked = self._kickoff(db, episode_id).get("sourceIntent") == "locked_screenplay"
             needed = tuple(s for s in ORDER if s not in OPTIONAL and (not locked or s not in ("story","characters","treatment"))) if scope == "full" else ("plan", "prompts")
+            if scope == "full" and require_publish:
+                needed = (*needed, "publish")
             for stage in needed:
                 if not adopted[stage]:
-                    problems.append(dict(stage=stage, segment=None, file=None, problem=f"{stage} 尚未采用"))
+                    problems.append(dict(stage=stage, segment=None, file=None, problem=f"{'发布文案' if stage == 'publish' else stage} 尚未采用"))
             if scope == "full":
                 unconfirmed=db.execute("SELECT count(*) FROM production_supplement WHERE episode_id=? AND state='proposed'",(episode_id,)).fetchone()[0]
                 if unconfirmed:
@@ -350,8 +356,8 @@ class DeliveryMixin:
                               rhythm=rhythm_result,placements=[p for p in placements["records"] if not p["issue"] and p["segment"] in {s["id"] for s in segs}])
 
     # ============================================================ deliver
-    def deliver(self, episode_id, scope, command_id, segments=None):
-        return self._deliver(episode_id, scope, command_id, segments)
+    def deliver(self, episode_id, scope, command_id, segments=None, pre_publication=False):
+        return self._deliver(episode_id, scope, command_id, segments, pre_publication)
 
     def _local_output(self, db, prior):
         if "packageId" in prior:
@@ -361,13 +367,17 @@ class DeliveryMixin:
         path = self.store._inside(self.store.root/source["relpath"])
         return dict(prior, path=str(path), html=str(path/"00_图文对照.html"))
 
-    def _deliver(self, episode_id, scope, command_id, segments=None):
+    def _deliver(self, episode_id, scope, command_id, segments=None, pre_publication=False):
+        if type(pre_publication) is not bool:
+            raise Rejected("交接模式须为布尔值")
         payload = dict(e=episode_id, s=scope, g=segments)
+        if pre_publication:
+            payload['prePublication'] = True
         with connect(self.db_path) as db:
             prior = self._existing_command(db, command_id, "deliver", payload)
             if prior:
                 return self._local_output(db, prior)
-        problems, ctx = self.delivery_problems(episode_id, scope, segments)
+        problems, ctx = self.delivery_problems(episode_id, scope, segments, require_publish=not pre_publication)
         if problems:
             raise Rejected("结构阻断：交付核验未通过", detail=problems)
         ep, segs = ctx["ep"], ctx["segs"]
@@ -406,7 +416,10 @@ class DeliveryMixin:
                            (did, episode_id, scope, dumps([s["id"] for s in segs]), manifest_hash,
                             final.relative_to(self.store.root).as_posix(), "deliverable", dumps(ctx["adopted"]), command_id,
                             self.clock()))
-                if scope == "full":
+                if scope == "full" and ctx['adopted']['publish']:
+                    from .completion import current as completion_current, adopted as complete
+                    if not completion_current(self,db,episode_id)['completed']:
+                        complete(self,db,dict(episode_id=episode_id,stage='publish'),ctx['adopted']['publish'])
                     db.execute("UPDATE episode SET state='delivered', revision=revision+1 WHERE id=?", (episode_id,))
                     db.execute("UPDATE topic SET status='已制作' WHERE episode_id=?", (episode_id,))
                     db.execute("INSERT INTO ledger VALUES(?,?,?,?,?,?,?,?,?)",
@@ -431,7 +444,8 @@ class DeliveryMixin:
             data = self.store.read_blob(version["sha256"])
             ext = deliverypage.media_suffix(version["kind"], version["name"], data)
             rel = f"{directory}/{safe}_v{version['version_no']}_{version['sha256'][:8]}{ext}"
-            put(rel, data)
+            self.store.materialize_blob(version["sha256"], root / rel)
+            files[rel] = version["sha256"]
             return rel
 
         prompt_paths = set()
@@ -558,8 +572,11 @@ class DeliveryMixin:
         local_ids = {v["id"] for v in versions}
         versions.extend(self.asset_version(a["id"]) for a in assets if a["id"] not in local_ids)
         gallery = []
+        with connect(self.db_path) as db:
+            selected_images = {r[0] for r in db.execute('SELECT adopted_version_id FROM asset_need WHERE episode_id=? AND removed=0', (ep['id'],))}
+        selected_images.update(v['id'] for v in versions if set(v.get('marks',[])) & {'required','adopted'})
         for v in versions:
-            if v["kind"] != "image" or (scope == "trial" and v["id"] not in used):
+            if v.get('cleanedAt') or v["kind"] != "image" or v['id'] not in used | (selected_images if scope == 'full' else set()):
                 continue
             rel = by_id[v["id"]]["path"] if v["id"] in used else pack_asset(v, "补选区")
             uses = [s["id"] for s in seg_entries if any(r["asset_id"] == v["id"] for r in s["references"])]
@@ -617,13 +634,18 @@ class DeliveryMixin:
         with connect(self.db_path) as db:
             rel=row(db,"SELECT relpath FROM package WHERE id=?",package_id)["relpath"]
         path=(self.store.root / rel).resolve()
+        with connect(self.db_path) as db:
+            from .storage_maintenance import removed
+            if removed(db, rel): raise NotFound("旧 H3 包已按 10 天保留规则清理")
         if (self.store.root / "packages").resolve() not in path.parents or not path.is_file():raise NotFound("未找到已导出的 H3 包")
         return path
 
     def delivery_view(self, delivery_id):
         with connect(self.db_path) as db:
             d = loads(row(db, "SELECT * FROM delivery WHERE id=?", delivery_id), "segments", "versions")
-            d["packages"]=[dict(id=r["id"],filename=Path(r["relpath"]).name) for r in db.execute("SELECT id,relpath FROM package WHERE delivery_id=? ORDER BY created_at DESC,rowid DESC",(delivery_id,))]
+            from .storage_maintenance import removed
+            d['cleanedAt'] = db.execute("SELECT max(removed_at) FROM storage_removed WHERE kind='delivery' AND owner=?", (delivery_id,)).fetchone()[0]
+            d["packages"]=[dict(id=r["id"],filename=Path(r["relpath"]).name,cleanedAt=removed(db,r['relpath'])) for r in db.execute("SELECT id,relpath FROM package WHERE delivery_id=? ORDER BY created_at DESC,rowid DESC",(delivery_id,))]
             d["revision"] = db.execute("SELECT count(*) FROM delivery WHERE episode_id=? AND scope=? AND rowid<=(SELECT rowid FROM delivery WHERE id=?)",(d["episode_id"],d["scope"],delivery_id)).fetchone()[0]
         root = self.store.root / d["relpath"]
         manifest = json.loads((root / "manifest.json").read_text())
@@ -636,6 +658,10 @@ class DeliveryMixin:
         with connect(self.db_path) as db:
             record = row(db, "SELECT relpath,manifest_hash,segments,episode_id FROM delivery WHERE id=?", delivery_id)
             code = row(db, "SELECT display_code FROM episode WHERE id=?", record["episode_id"])["display_code"]
+            cleaned = db.execute("SELECT max(removed_at) FROM storage_removed WHERE kind='delivery' AND owner=?", (delivery_id,)).fetchone()[0]
+            if cleaned:
+                return dict(ok=False,cleanedAt=cleaned,episodeId=code,segments=json.loads(record['segments']),
+                            errors=[dict(file='交付记录',problem='中间交付文件已按 10 天规则清理')])
         root = self.store.root / record["relpath"]
         errors = []
         result = dict(segments=json.loads(record["segments"]), episodeId=code, errors=errors)

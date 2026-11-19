@@ -8,14 +8,18 @@ from .db import connect, dumps, new_id, transaction
 from .errors import Conflict, Rejected, row
 from .methodpack import load_pack, method_entries
 from .prompts import render_settings
+from .topicruntime import RUNTIME_SCHEMA, save_runtime, validate_runtime
 
 FIELDS = ("title", "premise", "mechanism", "motivation", "difference", "reference_id")
 SCHEMA = {"type": "object", "additionalProperties": False, "required": ["candidates"],
           "properties": {"candidates": {"type": "array", "items": {
-              "type": "object", "additionalProperties": False, "required": list(FIELDS),
-              "properties": {key: {"type": "string"} for key in FIELDS}}}}}
+              "type": "object", "additionalProperties": False, "required": [*FIELDS, "runtime"],
+              "properties": {**{key: {"type": "string"} for key in FIELDS}, "runtime": RUNTIME_SCHEMA}}}}}
 INSTRUCTIONS = ("按本项目的选题研究方法和导演要求，按本轮指定数量提出可独立选择的备选卡。写明故事前提、"
                 "角色动机、推动事件的机制及相对最相似旧题的实质差异。逐一对照全部候选、已拍及已发布作品和本轮其余选题。即使标题、道具或动机不同，若主要事件推进和收尾仍重合，先换故事再交付。差异说明点名最接近的旧题编号及关键场面，不能只比较最近五条，也不能把候选称为已拍。没有旧题时如实说明。"
+                "导演指定的篇幅与时长是构思起点，先选信息容量适合的事件，再按目标设计剧情；只够短篇的点子不可拉长，应换合适的题。固定片长上下限相同，明确给出的范围照录。只指定下限或上限时另一端填 null，自主推荐给出具体时长或范围。"
+                "导演未指定的部分，由你逐题根据剧情的信息容量判断。两种情况都不得为填满时长硬凑剧情。正文讲清理解关键选择与后果所需的因果，"
+                "考虑观众要理解的线索、选择、后果与回收。不按字数、场次数或统一秒数划分长短篇。runtime 的 minSeconds 和 maxSeconds 是整片时长，以秒为单位。"
                 "每张卡的 reference_id 填一条实际借鉴的 research_source 段号，例如 R1。"
                 "有导演选定的共享知识库片段时，优先借鉴该片段。资料不足时标清缺少的依据。")
 
@@ -24,7 +28,7 @@ _NUMBER = r"(?:[0-9]+|[一二两三四五六七八九十百千零]+)"
 _COUNT_REQUEST = re.compile(
     rf"(?:制作|创作|生成|给我|给出|提供|提出|设计|构思|推荐|想要|需要|要求|再来|补充|再写|写|做|要|来|想)"
     rf"\s*(?:出|共|总共|一共)?\s*({_NUMBER})\s*(?:个|条|张|组|种|款|篇)?"
-    rf"\s*(?:新的|新|不同的|独立的|备选|候选|系列|长篇|短篇|短剧|故事|短视频)*选题"
+    rf"\s*(?:[\w·-]+风格的)?(?:新的|新|不同的|独立的|备选|候选|系列|长篇|短篇|短剧|故事|短视频)*选题"
 )
 _COUNT_ONLY = re.compile(rf"^\s*({_NUMBER})\s*(?:个|条|张)?\s*(?:选题)?[。！!\s]*$")
 
@@ -101,6 +105,7 @@ def research_reply(body, citations, count):
     for index, card in enumerate(cards, 1):
         if not all(card[k].strip() for k in FIELDS):
             raise Rejected(f"第 {index} 张备选卡缺少故事内容或依据")
+        validate_runtime(card["runtime"])
         ref = card["reference_id"].strip()
         if ref not in citations:
             raise Rejected(f"第 {index} 张备选卡引用了资料清单以外的段号 {ref[:40]}")
@@ -110,9 +115,12 @@ def research_reply(body, citations, count):
 
 
 class TopicResearchMixin:
-    def start_topic_research(self, project_id, direction, provider, command_id, reference=None):
+    def start_topic_research(self, project_id, direction, provider, command_id, reference=None, candidate_count=None):
         if not isinstance(direction, str) or not direction.strip() or not isinstance(provider, str) or provider not in self.executors:
             raise Rejected("请填写研究方向并选择执行器")
+        if candidate_count is not None and (type(candidate_count) is not int or candidate_count < 1):
+            raise Rejected("选题数量须为正整数")
+        count = candidate_count if candidate_count is not None else requested_count(direction)
         with transaction(self.db_path) as db:
             def start():
                 project = row(db, "SELECT name,summary,config_id,method_pack FROM project WHERE id=?", project_id)
@@ -151,7 +159,9 @@ class TopicResearchMixin:
                 source("导演的研究方向", direction.strip())
                 thread, turn, attempt = new_id(), new_id(), new_id()
                 header = dict(purpose="topic_research", projectId=project_id, threadId=thread,
-                              candidateCount=requested_count(direction), methodPack=pack["id"], provider=provider, sourceCodes=catalog_codes)
+                              candidateCount=count, methodPack=pack["id"], provider=provider, sourceCodes=catalog_codes)
+                if candidate_count is not None:
+                    header["chosenCount"] = candidate_count
                 header["executorConnection"] = self.run_connection(provider)
                 digest, rel = self.store.freeze(turn, header, entries)
                 db.execute("INSERT INTO free_thread VALUES(?,?,?)", (thread,project_id,direction.strip()[:48]))
@@ -162,6 +172,8 @@ class TopicResearchMixin:
             payload = [project_id,direction,provider]
             if reference is not None:
                 payload.append(reference)
+            if candidate_count is not None:
+                payload.append({"candidateCount":candidate_count})
             return self._command(db, command_id, "start_topic_research", payload, start)
 
     def topic_researches(self, project_id):
@@ -208,6 +220,8 @@ class TopicResearchMixin:
                 card, tid = cards[index], new_id()
                 db.execute("INSERT INTO topic VALUES(?,?,?,?,?,?,?,?,?,?)",
                            (tid,project_id,chosen_code,card["premise"],card["mechanism"],card["motivation"],"候选",None,origin,self.clock()))
+                if card.get("runtime"):
+                    save_runtime(db, tid, card["runtime"])
                 snapshot = dict(id=chosen_code, **card, researchTurn=turn_id, inputFingerprint=turn["input_hash"])
                 digest = self.store.put_blob(dumps(dict(candidates=[snapshot])).encode())
                 db.execute("INSERT INTO topic_source VALUES(?,?,?)", (tid,origin,digest))

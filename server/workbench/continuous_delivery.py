@@ -45,6 +45,9 @@ class ContinuousDelivery:
 
     def _continuous_delivery_problem(self,cid,problem):
         value=self._continuous_record(cid);eid=value['episode_id'];stage=problem['stage'];reason=problem['problem']
+        if stage=='publish':
+            self._continuous_stage(cid,'publish')
+            return True
         if reason.endswith(' 尚未采用') or stage=='spec':self._continuous_problem(cid,reason)
         if stage=='space':
             self._continuous_confirm_supplements(cid,'prompts')
@@ -136,8 +139,8 @@ class ContinuousDelivery:
         cursor=self._continuous_record(cid)['cursor']
         result=self.deliver(eid,'full',f'{cid}:deliver:{cursor.get("deliveryRound",0)}')
         delivery=self.delivery_view(result['deliveryId'])
-        self._continuous_cursor(cid,stage='delivery',phase='preview',deliveryId=delivery['id'])
-        self._continuous_update(cid,state='done',reason='图文交付已完成',choice=None)
+        self._continuous_cursor(cid,stage='publish',phase='done',deliveryId=delivery['id'])
+        self._continuous_update(cid,state='done',reason='发布文案已完成，本集项目制作完成',choice=None)
         return True
 
     def _continuous_late_recheck(self,cid):

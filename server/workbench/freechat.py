@@ -176,6 +176,7 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
                 digest, rel = self.store.freeze(turn,header,entries)
                 db.execute("INSERT INTO free_turn(id,thread_id,text,provider,status,attempt,input_hash,manifest_relpath) "
                            "VALUES(?,?,?,?,'queued',?,?,?)",(turn,tid,text,provider,attempt,digest,rel))
+                db.execute('INSERT INTO storage_chat VALUES(?,?,?,NULL)', (attempt,turn,self.clock()))
                 return dict(threadId=tid,turnId=turn,attemptId=attempt)
             return self._command(db,command_id,"send_free_chat",payload,create)
 
@@ -190,7 +191,7 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
                     raise Rejected("无法核对原研究资料")
                 note = next((e for e in self.store.manifest_texts(manifest) if e["role"]=="reference_note"),None)
                 reference = json.loads(note["text"]) if note else None
-                return self.start_topic_research(project_id,turn["text"],turn["provider"],command_id,reference)
+                return self.start_topic_research(project_id,turn["text"],turn["provider"],command_id,reference,manifest.get("chosenCount"))
         with transaction(self.db_path) as db:
             def retry():
                 turn = self._free_turn(db,project_id,turn_id)
@@ -198,7 +199,9 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
                 if turn["attempt"]!=expected_attempt or latest["id"]!=turn_id or turn["status"] not in {"failed","waiting_quota","stopped"}:
                     raise Conflict("仅可重试对话末尾已停止或失败的那次请求")
                 attempt = new_id()
+                db.execute('UPDATE storage_chat SET ended_at=? WHERE turn_id=? AND ended_at IS NULL', (self.clock(),turn_id))
                 db.execute("UPDATE free_turn SET status='queued',reason=NULL,attempt=? WHERE id=?",(attempt,turn_id))
+                db.execute('INSERT INTO storage_chat VALUES(?,?,?,NULL)', (attempt,turn_id,self.clock()))
                 return dict(turnId=turn_id,attemptId=attempt)
             return self._command(db,command_id,"retry_free_chat",[project_id,turn_id,expected_attempt],retry)
 
@@ -236,7 +239,7 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
                     with Image.open(BytesIO(data)) as image:
                         extension = image.format.lower()
                     path = work/f"{len(images)+1}.{extension}"
-                    path.write_bytes(data)
+                    self.store.materialize_blob(e["sha256"], path)
                     images.append(path)
             purpose = manifest["purpose"]
             research = purpose == "topic_research"
@@ -250,6 +253,8 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
             if research:
                 count = manifest.get("candidateCount") or topicresearch.requested_count(t["text"])
                 schema = topicresearch.result_schema(count)
+                if manifest.get("chosenCount") is not None:
+                    guidance += "导演已在数量选项中确认本次数量，以该选项为准。"
                 guidance += f"本次必须恰好生成 {count} 张新选题卡，参考故事不计入数量。"
                 history = [json.loads(e["text"])["premise"] for e in entries
                            if e["role"] == "research_source" and e["name"].startswith(("已发布作品 · ", "已拍作品 · ", "正式候选 · "))]
@@ -293,6 +298,8 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
         except Exception as exc:
             reason = str(exc)[:500]
         with transaction(self.db_path) as db:
+            if status == 'succeeded':
+                db.execute('UPDATE storage_chat SET ended_at=? WHERE attempt_id=?', (self.clock(),attempt))
             db.execute("UPDATE free_turn SET status=?,reply=?,reason=? WHERE id=? AND attempt=? AND status='running'",
                        (status,reply,reason,turn_id,attempt))
 

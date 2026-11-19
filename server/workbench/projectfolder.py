@@ -24,6 +24,7 @@ PARENTS = {
     "grid_cell_binding": ("asset_version_id","asset_version"),
     "stage_edit_session": ("artifact_id","artifact"),
     "free_turn": ("thread_id","free_thread"),
+    "storage_chat": ("turn_id","free_turn"),
     "import_extraction": ("import_id", "import_record"), "topic_source": ("topic_id","topic"),
     "version": ("artifact_id","artifact"), "thread": ("task_id","task"), "message": ("thread_id","thread"),
     "run": ("task_id","task"), "story_candidate": ("run_id","run"), "event": ("run_id","run"),
@@ -46,7 +47,7 @@ PARENTS = {
 def copy_records(source, dest, pid):
     tables = [r[0] for r in dest.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
     def ownership(table):
-        if table in ("topic_intent","topic_publication"):
+        if table in ("topic_intent","topic_publication","topic_runtime"):
             return "topic_id IN (SELECT id FROM topic WHERE project_id=?)"
         if table == "project":
             return "id=?"
@@ -57,9 +58,9 @@ def copy_records(source, dest, pid):
         return f'{field} IN (SELECT id FROM "{parent}" WHERE {ownership(parent)})'
 
     for table in tables:
-        if table in ("app_setting","api_provider","backup","command"):
+        if table in ("app_setting","api_provider","backup","command","storage_backup","storage_removed","storage_baseline"):
             continue
-        if table == "project_series_file" and not source.execute("SELECT 1 FROM sqlite_master WHERE name=?", (table,)).fetchone():
+        if table in ("project_series_file","topic_runtime") and not source.execute("SELECT 1 FROM sqlite_master WHERE name=?", (table,)).fetchone():
             continue
         rows = source.execute(f'SELECT * FROM "{table}" WHERE {ownership(table)} ORDER BY rowid',(pid,))
         marks = ",".join("?" for _ in rows.description)
@@ -82,6 +83,10 @@ def copy_records(source, dest, pid):
             owned.update(r[0] for r in dest.execute(f'SELECT id FROM "{table}"'))
         if "command_id" in fields and table != "command":
             commands.update(r[0] for r in dest.execute(f'SELECT command_id FROM "{table}" WHERE command_id IS NOT NULL'))
+    own_hashes = {r[0] for r in dest.execute('SELECT sha256 FROM asset_version')}
+    for rec in source.execute('SELECT * FROM storage_removed'):
+        if rec['owner'] in owned or rec['sha256'] in own_hashes:
+            dest.execute('INSERT INTO storage_removed VALUES(?,?,?,?,?,?)',tuple(rec))
     for rec in source.execute("SELECT * FROM command"):
         result = json.loads(rec["result"])
         refs = [v for k,v in result.items() if k.endswith("Id") or k=="receipt"] if isinstance(result,dict) else []
@@ -103,11 +108,15 @@ def copy_materials(source, dest, db):
             if files[relative] != digest:
                 raise Rejected(f"同一路径登记了不同文件指纹：{name}")
             return
+        from .storage_maintenance import removed
+        if not origin.exists() and removed(db, relative):
+            return
         target = origin
         if dest is not None:
             target = dest / name
             target.parent.mkdir(parents=True,exist_ok=True)
-            shutil.copyfile(origin,target)
+            from .storage import clone_file
+            clone_file(origin,target)
         if file_sha256(target) != digest:
             raise Rejected(f"项目文件指纹不一致：{name}")
         files[relative] = digest

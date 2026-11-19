@@ -83,7 +83,7 @@ export function Pills<T extends string>({ value, options, onChange }: { value: T
 
 import { FILM_STAGES } from "./workflow";
 export const PRODUCTION_STEPS: [string,string][] = [...FILM_STAGES];
-export const DELIVERY_STEPS: [string,string][] = [["delivery","交付核验"],["package","H3 出包"],["publish","发布文案·可选"]];
+export const DELIVERY_STEPS: [string,string][] = [["delivery","交付核验"],["publish","发布文案·最后一步"],["package","H3 出包"]];
 export const MATERIAL_TABS: [string,string][] = [["asset_design","素材清单"],["worksheet","备图工作单"],["shot_assets","按镜头补图"],["assets","全部图片"]];
 export const SHOT_TABS: [string,string][] = [["plan","分镜表"],["review","分镜审核"]];
 export const STAGES: [string,string][] = [...FILM_STAGES,...MATERIAL_TABS.slice(1),...DELIVERY_STEPS];

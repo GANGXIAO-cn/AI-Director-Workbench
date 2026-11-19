@@ -1,12 +1,15 @@
+import { useState } from "react";
+import { createPortal } from "react-dom";
 import { ModelReply } from "./ModelReply";
 import { ContinuousRecoveryNote } from "./ContinuousRecovery";
 import { ProjectMethodSync } from "./UploadedMethods";
 import { cmd } from "./api";
-import { ErrorLine, useAction, PROVIDER_LABEL } from "./ui";
+import { ErrorLine, Modal, useAction, PROVIDER_LABEL } from "./ui";
 import { FILM_STAGES } from "./workflow";
 
 export function ContinuousStatus({data,error,reload}:{data:any;error:string|null;reload:()=>void|Promise<void>}) {
   const act=useAction();
+  const [showAdjustment,setShowAdjustment]=useState(false);
   if(!data) return error?<ErrorLine error={{message:error}}/>:null;
   const run=data.run;
   const execute=(name:string,target_stage="stress")=>act.run(async()=>{await cmd(name,run && name!=="start_continuous"?{continuous_id:run.id}:{episode_id:data.episodeId,target_stage});await reload();});
@@ -36,7 +39,6 @@ export function ContinuousStatus({data,error,reload}:{data:any;error:string|null
         <a className="btn" href={`#/e/${data.episodeId}/assets`}>查看素材</a></div>)}
     </details>}
     {run?.mode==="fix" && run.cursor.fixStatus && <p>{run.cursor.fixStatus}</p>}
-    {run?.cursor.kickoffAdjustment && <div className="kickoff-adjustment"><p>调整前：{run.cursor.kickoffAdjustment.before}</p><p>调整后：{run.cursor.kickoffAdjustment.after}</p></div>}
     {run?.state==="done" && run.target_stage==="delivery"?<p>{run.reason}</p>:!run || ["done","cancelled","failed"].includes(run.state)?<>
       {run && <p>{run.reason}</p>}
       <b className="continuous-start-title">交给 AI 往下做</b>
@@ -51,6 +53,14 @@ export function ContinuousStatus({data,error,reload}:{data:any;error:string|null
       <div className="row continuous-actions"><button className="btn" disabled={act.busy || !!run.pause_requested} onClick={()=>execute("pause_continuous")}>{run.pause_requested?"本次调用结束后暂停":"暂停"}</button>{endButton}</div>
     </>:<>
       <p>{run.reason}</p><ContinuousRecoveryNote run={run} all/><div className="row continuous-actions">{run.state==="paused"&&<button className="btn primary" disabled={act.busy} onClick={()=>execute("resume_continuous")}>恢复我的任务</button>}{endButton}</div>
+    </>}
+    {run?.cursor.kickoffAdjustment && <>
+      <button className="btn ghost" onClick={()=>setShowAdjustment(true)}>查看开工调整</button>
+      {showAdjustment && createPortal(<Modal onClose={()=>setShowAdjustment(false)}>
+        <div className="spread"><h2>开工调整</h2><button className="btn" onClick={()=>setShowAdjustment(false)}>关闭</button></div>
+        {(["before","after"] as const).map(key=><section key={key}><h3>{key==="before"?"调整前":"调整后"}</h3>
+          <p className="chat-prose">{run.cursor.kickoffAdjustment[key].replace(/\n来源：[^\n]* sha256=[a-f0-9]{64}\n原卡全文：\n\{[^\n]*\}(?=\n|$)/g,"")}</p></section>)}
+      </Modal>,document.body)}
     </>}
     <ErrorLine error={act.error}/>
   </section>;

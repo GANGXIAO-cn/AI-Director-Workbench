@@ -4,7 +4,9 @@ import { cmd } from "./api";
 import { useDirectorCommand } from "./DirectorFiles";
 import { ErrorLine, Modal, PROVIDER_LABEL, useAction, usePoll, useQuery } from "./ui";
 
-type Candidate = {title:string;premise:string;mechanism:string;motivation:string;difference:string;source:string;quote:string;savedCode?:string};
+import { TopicRuntimeTag, type TopicRuntime } from "./TopicRuntime";
+
+type Candidate = {runtime?:TopicRuntime;title:string;premise:string;mechanism:string;motivation:string;difference:string;source:string;quote:string;savedCode?:string};
 type Run = {id:string;attempt:string;text:string;status:string;reason?:string;provider:string;candidates:Candidate[]};
 const states:Record<string,string> = {queued:"排队中",running:"正在研究",failed:"需要重试",waiting_quota:"等待额度",stopped:"已停止",succeeded:"已完成"};
 
@@ -18,13 +20,15 @@ export function ResearchReference({reference,replace,clear}:{reference:Excerpt;r
         <pre>{reference.text}</pre></details></div>;
 }
 
-export function TopicResearch({projectId,poolChanged,initialBrowse=false,hidePicker=false,onOriginal,onPick,referenceDraft}:{referenceDraft?:ReferenceDraft;projectId:string;poolChanged:()=>Promise<void>;initialBrowse?:boolean;hidePicker?:boolean;onOriginal?:(part:Excerpt)=>Promise<void>;onPick?:(topic:{id:string;code:string;title?:string;premise:string})=>void}) {
+export function TopicResearch({projectId,poolChanged,initialBrowse=false,hidePicker=false,onOriginal,onPick,referenceDraft}:{referenceDraft?:ReferenceDraft;projectId:string;poolChanged:()=>Promise<void>;initialBrowse?:boolean;hidePicker?:boolean;onOriginal?:(part:Excerpt)=>Promise<void>;onPick?:(topic:{id:string;code:string;title?:string;premise:string;runtime?:TopicRuntime})=>void}) {
   const records=useQuery<{providers:string[];runs:Run[]}>("topic_researches",{project_id:projectId});
   const [browsing,setBrowsing]=useState(initialBrowse);
   const [localReference,setLocalReference]=useState<Excerpt|null>(null);
   const reference=referenceDraft ? referenceDraft.value : localReference;
   const setReference=referenceDraft?.change ?? setLocalReference;
   const [direction,setDirection]=useState("");
+  const [countChoice,setCountChoice]=useState("");
+  const [customCount,setCustomCount]=useState("");
   const [provider,setProvider]=useState("");
   const [codes,setCodes]=useState<Record<string,string>>({});
   const [selected,setSelected]=useState("");
@@ -42,24 +46,31 @@ export function TopicResearch({projectId,poolChanged,initialBrowse=false,hidePic
       <ResourceBrowser kind="knowledge" storyPicker={!!onOriginal} onChoose={part=>{setReference(part);setBrowsing(false);}}/></Modal>}
     {!hidePicker && reference && <ResearchReference reference={reference} replace={()=>setBrowsing(true)} clear={()=>setReference(null)}/>}
     {reference&&onOriginal&&<button className="btn primary" disabled={action.busy} onClick={()=>action.run(()=>onOriginal(reference))}>按原文改编</button>}
-    <label>你想拍什么？（选填）<textarea value={direction} onChange={e=>setDirection(e.target.value)} placeholder="可选，例如：围绕一个误会展开的短喜剧"/></label>
-    <div className="row"><label>使用的 AI <select value={executor} onChange={e=>setProvider(e.target.value)}>
+    <label>你想拍什么？（选填）<textarea value={direction} onChange={e=>setDirection(e.target.value)} placeholder="例如：做 3 个长篇选题，每条 4 分钟，围绕一个误会展开"/></label>
+    <div className="row"><label>选题数量 <select value={countChoice} onChange={e=>setCountChoice(e.target.value)}>
+      <option value="">按文字要求（默认 3 个）</option>
+      {[1,2,3,4,5,6,8,10].map(n=><option key={n} value={n}>{n} 个</option>)}
+      <option value="custom">自定义</option></select></label>
+      {countChoice==="custom" && <label>自定义数量 <input type="number" min="1" step="1" value={customCount} onChange={e=>setCustomCount(e.target.value)}/></label>}
+      <label>使用的 AI <select value={executor} onChange={e=>setProvider(e.target.value)}>
       {providers.map(p=><option value={p} key={p}>{PROVIDER_LABEL[p] ?? p}</option>)}</select></label>
       <button className="btn primary" disabled={action.busy || !executor} onClick={()=>action.run(async()=>{
-        const result=await send("start_topic_research",{project_id:projectId,direction:direction.trim() || (reference ? "根据所选原文片段和项目设定提出备选题，说明借鉴之处。若片段只有书目信息，请说明依据不足。" : "结合项目已有资料，提出三个不同的短剧选题供我挑选。"),provider:executor,...(reference?{reference:{path:reference.path,sha256:reference.sha256,offset:reference.offset,spanLength:Array.from(reference.text).length,reason:reference.reason}}:{})},[]);
+        const count=countChoice ? Number(countChoice==="custom" ? customCount : countChoice) : undefined;
+        if (count!==undefined && (!Number.isSafeInteger(count) || count<1)) throw new Error("选题数量须为正整数");
+        const result=await send("start_topic_research",{project_id:projectId,candidate_count:count,direction:direction.trim() || (reference ? "根据所选原文片段和项目设定提出备选题，说明借鉴之处。若片段只有书目信息，请说明依据不足。" : "结合项目已有资料，自主提出不同的选题供我挑选，逐题推荐合适的篇幅和成片时长。"),provider:executor,...(reference?{reference:{path:reference.path,sha256:reference.sha256,offset:reference.offset,spanLength:Array.from(reference.text).length,reason:reference.reason}}:{})},[]);
         setSelected(result.turnId);setDirection("");await records.reload();
       })}>{reference?"参考这段内容想新题":"生成选题"}</button></div>
     {runs.length>0&&<label className="topic-history">历史研究 <select value={selected} onChange={e=>setSelected(e.target.value)}>
       <option value="">选择历史研究</option>{runs.map(r=><option key={r.id} value={r.id}>{r.text.replace(/\s+/g," ").slice(0,40)}{r.text.length>40?"…":""} · {states[r.status]}</option>)}</select></label>}
     {run&&<><div className="msg user">{run.text}</div>
-      <span role="status" className="research-status" data-chat-kind={pending(run)?"progress":run.status==="succeeded"?"status":"action"}>{states[run.status]}</span>{run.reason && <p className="error">{run.reason.includes("引用")?"这次生成的选题引用了无法核对的资料，请重新研究。":run.reason}</p>}
+      <span role="status" className="research-status" data-chat-kind={pending(run)?"progress":run.status==="succeeded"?"status":"action"}>{states[run.status]}{run.status==="succeeded" && ` · ${run.candidates.length} 个选题`}</span>{run.reason && <p className="error">{run.reason.includes("引用")?"这次生成的选题引用了无法核对的资料，请重新研究。":run.reason}</p>}
       {run.status!=="succeeded" && <button className="btn" disabled={action.busy} onClick={()=>action.run(async()=>{
         const result=await cmd(pending(run) ? "stop_free_chat" : "retry_free_chat",{project_id:projectId,turn_id:run.id,expected_attempt:run.attempt});if(result.turnId)setSelected(result.turnId);
         await records.reload();
       })}>{pending(run) ? "停止研究" : "重新研究"}</button>}
       {run.candidates.map((card,index)=>{
         const key=run.id+"-"+index,code=codes[key] ?? "";
-        return <article className="card" data-chat-kind={card.savedCode?"status":"choice"} key={key}><h3>{card.title}</h3><p>{card.premise}</p>
+        return <article className="card" data-chat-kind={card.savedCode?"status":"choice"} key={key}><div className="spread"><h3>{card.title}</h3><TopicRuntimeTag target={card.runtime}/></div><p style={{whiteSpace:"pre-line"}}>{card.premise}</p>
           <p>主角为什么这样做 · {card.motivation}<br/>事情怎样一步步变化 · {card.mechanism}<br/>与旧题的差异 · {card.difference}</p>
           <p>依据 · {card.source}<br/>“{card.quote}”</p>
           {card.savedCode ? <b>已保存到选题池 · {card.savedCode}</b> : <div className="row">
@@ -67,7 +78,7 @@ export function TopicResearch({projectId,poolChanged,initialBrowse=false,hidePic
             <button className="btn" disabled={action.busy} onClick={()=>action.run(async()=>{
               const saved=await send("accept_research_topic",{project_id:projectId,turn_id:run.id,index,code},[]);
               await records.reload();await poolChanged();
-              onPick?.({id:saved.topicId,code:saved.code,title:card.title,premise:card.premise});
+              onPick?.({id:saved.topicId,code:saved.code,title:card.title,premise:card.premise,runtime:card.runtime});
             })}>{onPick?"保存并选用":"保存到选题池"}</button></div>}</article>;
       })}</>}
       <ErrorLine error={action.error}/>{records.error && <p className="error">{records.error}</p>}

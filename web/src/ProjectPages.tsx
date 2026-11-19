@@ -6,6 +6,7 @@ import { FILM_STAGES } from "./workflow";
 import { ResourceBrowser } from "./Resources";
 import {ExecutorConnection} from "./ExecutorConnection";
 import { ProjectBaselines } from "./ProjectBaselines";
+import { TopicRuntimeTag, runtimeLabel, useManualRuntime } from "./TopicRuntime";
 import { isKickoffTopic } from "./topics";
 import { TopicResearch } from "./TopicResearch";
 import { FreeChat } from "./FreeChat";
@@ -256,6 +257,7 @@ function Topics({ id, pickTopic }: { id: string; pickTopic:(topic:any)=>void }) 
   const storyImport=useStoryImport();
   const { go } = useProjectRoute();
   const t=useQuery<any[]>("topics",{project_id:id});
+  const manualRuntime=useManualRuntime();
   const [form,setForm]=useState({code:"",premise:"",mechanism:"",motivation:""});
   const [status,setStatus]=useState("想拍");
   const [progress,setProgress]=useState("全部");
@@ -286,13 +288,13 @@ function Topics({ id, pickTopic }: { id: string; pickTopic:(topic:any)=>void }) 
           return <div key={i}><select aria-label={i===0 ? "第一张选题卡" : "第二张选题卡"} value={key}
             onChange={e=>setPair(pair.map((old,j)=>j===i?e.target.value:old))}>
             <option value="">选择一张选题卡</option>{cards.filter(c=>c.key!==pair[1-i]).map(c=>
-              <option key={c.key} value={c.key}>{c.code} · {c.group} · {c.title || c.premise}</option>)}</select>
-            {card && <><p>{card.premise}</p><p>事情怎样一步步变化 · {card.mechanism || "尚未记录"}</p>
+              <option key={c.key} value={c.key}>{c.code} · {c.runtime && runtimeLabel(c.runtime)+" · "}{c.group} · {c.title || c.premise}</option>)}</select>
+            {card && <><TopicRuntimeTag target={card.runtime}/><p style={{whiteSpace:"pre-line"}}>{card.premise}</p><p>事情怎样一步步变化 · {card.mechanism || "尚未记录"}</p>
               <p>相似选题 · {card.difference || "尚未记录"}</p></>}</div>;
         })}</div></details>}
       <div className="row"><label>选题意向 <select value={status} onChange={e=>setStatus(e.target.value)}>{["想拍","搁置","弃用","待整理","已交付","已拍","全部"].map(v=><option key={v}>{v}</option>)}</select></label>
         <label>制作进度 <select value={progress} onChange={e=>setProgress(e.target.value)}>{["全部","尚未开集","已开集","故事待审核","故事稿已采用","图文已交付","已登记发布"].map(v=><option key={v}>{v}</option>)}</select></label></div>
-      <div className="grid2">{list.map(x=><div className="card" key={x.id}><div className="spread"><b>{x.code} {x.title}</b><span>{x.group==="已交付"?stage(x):x.group+" · "+stage(x)}</span></div><p>{x.premise}</p>
+      <div className="grid2">{list.map(x=><div className="card" key={x.id}><div className="spread"><b>{x.code} {x.title}</b><span>{x.group==="已交付"?stage(x):x.group+" · "+stage(x)}</span></div><TopicRuntimeTag target={x.runtime}/><p style={{whiteSpace:"pre-line"}}>{x.premise}</p>
         {x.publication&&<details><summary>查看发布记录</summary>{x.publications.map((r:any)=><p key={r.platform+r.platform_id}>{r.platform} · {r.published_at} · {r.title} {r.evidence.startsWith("https://")&&<a href={r.evidence} target="_blank" rel="noreferrer">查看发布作品</a>}</p>)}</details>}
         {x.mechanism&&<p>事情怎样一步步变化 · {x.mechanism}</p>}{x.motivation&&x.motivation!=="MILO"&&<p>主角为什么这样做 · {x.motivation}</p>}
         {x.episode_id&&<a href={"#/e/"+x.episode_id+"/story"}>打开 {x.display_code}</a>}
@@ -304,8 +306,9 @@ function Topics({ id, pickTopic }: { id: string; pickTopic:(topic:any)=>void }) 
         })}>还原为可选题</button> : ["想拍","搁置","弃用"].filter(v=>v!==x.intent).map(v=><button className="btn" disabled={act.busy} key={v} onClick={()=>change(x.id,v)}>{v==="想拍"?"列为想拍":v==="搁置"?"暂时搁置":"弃用选题"}</button>)}</div></div>)}</div>
       {t.error&&<p>{t.error}</p>}{t.data&&!list.length&&<p>没有符合条件的选题。 <button className="btn" onClick={()=>{setStatus("全部");setProgress("全部");setSearch("");}}>查看全部选题</button></p>}
       <h2 style={{ marginTop: 20 }}>添加选题</h2>
+      {manualRuntime.fields}
       <div className="grid2">{(["code", "premise", "mechanism", "motivation"] as const).map((k) => <input key={k} placeholder={{ code: "编号（自动生成）", premise: "故事想法", mechanism: "事情怎样一步步变化（选填）", motivation: "主角为什么这样做（选填）" }[k]} value={form[k]} onChange={(e) => setForm({ ...form, [k]: e.target.value })} />)}</div>
-      <button className="btn primary" style={{ marginTop: 10 }} onClick={() => act.run(async () => { await cmd("add_topic", { project_id: id, ...form }); t.reload(); })}>保存到选题池</button>
+      <button className="btn primary" style={{ marginTop: 10 }} onClick={() => act.run(async () => { await cmd("add_topic", { project_id: id, ...form, runtime:manualRuntime.read() }); t.reload(); })}>保存到选题池</button>
       <ErrorLine error={act.error} />
     </div>
   );
@@ -659,6 +662,7 @@ function Tasks() {
 
 function Storage() {
   const s = useQuery<any>("storage_status");
+  const [storageReport,setStorageReport] = useState<any>(null);
   const [out, setOut] = useState<any>(null);
   const [target, setTarget] = useState("");
   const act = useAction();
@@ -667,6 +671,15 @@ function Storage() {
       <h1>服务与存储 · 备份恢复</h1><div className="muted small" style={{ margin: "6px 0 16px" }}>检测、隔离、手动备份与恢复。凭证只显示配置状态。</div>
       {s.data && <div className="card line"><div>资料目录 <span className="mono">{s.data.dataDir}</span> · {s.data.writable ? <Tag tone="green">可写</Tag> : <Tag tone="red">不可写</Tag>}</div>
         <div className="small" style={{ marginTop: 6 }}>最近备份：{s.data.lastBackup ? `${new Date(s.data.lastBackup.created_at * 1000).toLocaleString()} · ${s.data.lastBackup.files} 个文件` : "无"}</div></div>}
+      <div className="card" style={{ marginTop: 12 }}>
+        <strong>最终结果长期保留 · 中间文件保留 10 天</strong>
+        <p className="muted small">发布文案完成并采用后自动记录项目完成时间。备份最多保留两份，最新成功备份长期保留。</p>
+        <p className="small">{s.data?.maintenance?.policy?.enabled ? "自动维护已启用，升级前文件继续保留。" : "当前仅扫描，不删除现有文件。"}</p>
+        {s.data?.maintenance?.last && <p className="small">最近检查：{new Date(s.data.maintenance.last.at * 1000).toLocaleString()} · 待清理 {s.data.maintenance.last.files} 个文件，逻辑大小 {(s.data.maintenance.last.bytes / 1024 / 1024).toFixed(1)} MB（实际释放量可能更少）</p>}
+        <label className="small"><input type="checkbox" disabled={act.busy} checked={!!s.data?.maintenance?.policy?.enabled} onChange={e => { const enabled=e.target.checked; act.run(async()=>{await cmd("set_storage_cleanup",{enabled});s.reload();}); }}/> 自动清理升级后产生的到期中间文件</label>
+        <button className="btn" disabled={act.busy} onClick={() => act.run(async () => { setStorageReport(await cmd("storage_scan", {})); s.reload(); })}>检查存储</button>
+        {storageReport && <details className="small"><summary>查看待清理明细 · {storageReport.files} 个文件</summary>{storageReport.candidates.slice(0,100).map((f:any)=><p key={f.path}>{f.path} · {(f.bytes/1024/1024).toFixed(1)} MB{f.historical ? " · 升级前文件，仅列出，继续保留" : ""}</p>)}{storageReport.files>100 && <p>页面显示前 100 项。</p>}</details>}
+      </div>
       <div className="row" style={{ marginTop: 12 }}><button className="btn primary" onClick={() => act.run(async () => { setOut(await cmd("backup", {})); s.reload(); })}>立即备份</button></div>
       {out?.backupId && <div className="small" style={{ marginTop: 8 }}>备份 <span className="mono">{out.backupId}</span> · {out.files} 个文件</div>}
       <p className="muted small">备份包含项目、上传技能、自定义色卡和本地导出的 H3 包。外部挂载的剧本库和导演资料包保留挂载位置。</p>

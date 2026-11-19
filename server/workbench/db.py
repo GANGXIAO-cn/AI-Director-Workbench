@@ -61,6 +61,17 @@ CREATE TABLE IF NOT EXISTS kickoff_check(
  state TEXT NOT NULL DEFAULT 'local', token TEXT, provider TEXT, model TEXT,
  checks TEXT NOT NULL DEFAULT '[]', decisions TEXT NOT NULL DEFAULT '{}', error TEXT NOT NULL DEFAULT '', error_class TEXT);
 CREATE INDEX IF NOT EXISTS kickoff_check_episode ON kickoff_check(project_id,display_code);
+CREATE TABLE IF NOT EXISTS episode_completion(
+ episode_id TEXT PRIMARY KEY REFERENCES episode(id), publish_version_id TEXT NOT NULL,
+ basis TEXT NOT NULL, completed_at REAL);
+CREATE TABLE IF NOT EXISTS storage_removed(
+ relpath TEXT PRIMARY KEY, kind TEXT NOT NULL, owner TEXT NOT NULL, sha256 TEXT NOT NULL,
+ bytes INTEGER NOT NULL, removed_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS storage_baseline(relpath TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS storage_chat(
+ attempt_id TEXT PRIMARY KEY, turn_id TEXT NOT NULL REFERENCES free_turn(id), created_at REAL NOT NULL, ended_at REAL);
+CREATE TABLE IF NOT EXISTS storage_backup(
+ backup_id TEXT PRIMARY KEY REFERENCES backup(id), completed_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS app_setting(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS command(
   command_id TEXT PRIMARY KEY, kind TEXT NOT NULL, payload_hash TEXT NOT NULL,
@@ -422,6 +433,7 @@ CREATE TABLE IF NOT EXISTS topic(
   UNIQUE(project_id, code));
 CREATE TABLE IF NOT EXISTS project_archive(project_id TEXT PRIMARY KEY REFERENCES project(id), archived INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS episode_archive(episode_id TEXT PRIMARY KEY REFERENCES episode(id), archived INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS topic_runtime(topic_id TEXT PRIMARY KEY REFERENCES topic(id), runtime TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS topic_intent(topic_id TEXT PRIMARY KEY REFERENCES topic(id), intent TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS topic_publication(topic_id TEXT REFERENCES topic(id), platform TEXT NOT NULL, platform_id TEXT NOT NULL,
     title TEXT NOT NULL, published_at TEXT NOT NULL, evidence TEXT NOT NULL, PRIMARY KEY(topic_id,platform,platform_id));

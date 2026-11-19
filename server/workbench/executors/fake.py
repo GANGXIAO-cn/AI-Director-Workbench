@@ -170,7 +170,7 @@ def directed(req: ExecRequest, name: str, stage_reply=True):
         ref = re.search(r"^===== research_source · (R\d+) · ", p, re.M).group(1)
         return {"candidates":[dict(title=f"错拿的钥匙 {i+1}", premise=f"第{i+1}位值班员试图在交班前归还拿错的钥匙。",
                                    mechanism="两人互换线索", motivation="按时完成交班",
-                                   difference="将发现遗失改为主动归还。",reference_id=ref) for i in range(req.schema["properties"]["candidates"]["minItems"])]}
+                                   difference="将发现遗失改为主动归还。",reference_id=ref,runtime=dict(form="短篇",minSeconds=60,maxSeconds=90)) for i in range(req.schema["properties"]["candidates"]["minItems"])]}
     if req.kind == "free_chat":
         return {"reply":"已按本轮资料回应。"+request.strip()}
     if req.kind == "cut_explanation":

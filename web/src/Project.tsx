@@ -7,6 +7,7 @@ import { KickoffCheck } from "./KickoffCheck";
 import { CooperationSelect } from "./Cooperation";
 import { Wrench } from "lucide-react";
 import { DirectorFiles, useDirectorCommand } from "./DirectorFiles";
+import { runtimeLabel } from "./TopicRuntime";
 import { isKickoffTopic } from "./topics";
 import { ProjectPresets } from "./ProjectPresets";
 import { useProjectRoute } from "./projectNavigation";
@@ -222,7 +223,7 @@ export function Kickoff({ projectId, prefill, onClose, pictures=[] }: { projectI
         {source === "idea" && <textarea value={idea} onChange={(e) => setIdea(e.target.value)} placeholder="一句话想法" />}
         {source === "topic" && !topics.data?.some(isKickoffTopic) && <p className="muted">还没有可用的选题卡。可以直接从知识库选原文拍，或输入新想法。</p>}
         {source === "topic" && topics.data?.some(isKickoffTopic) && <select value={topicId} onChange={(e) => setTopicId(e.target.value)}><option value="">选择选题卡</option>
-          {(topics.data ?? []).filter(isKickoffTopic).map((t) => <option key={t.id} value={t.id}>{t.code} · {t.premise}</option>)}</select>}
+          {(topics.data ?? []).filter(isKickoffTopic).map((t) => <option key={t.id} value={t.id}>{t.code} · {t.runtime && runtimeLabel(t.runtime)+" · "}{t.title || t.premise}</option>)}</select>}
         {source === "import" && (p.imports.length ? <select value={importId} onChange={(e) => setImportId(e.target.value)}>
           {p.imports.map((i: any) => <option key={i.id} value={i.id} disabled={i.parse_status !== "parsed"}>{i.original_name}{i.parse_status !== "parsed" ? "（解析失败）" : ""}（{i.purpose === "script_source" ? "剧本" : "故事稿"}，作为故事来源）</option>)}</select>
           : <span className="muted small">本集没有导入材料。可在首页「导入故事稿 / 剧本」归位后再开工。</span>)}

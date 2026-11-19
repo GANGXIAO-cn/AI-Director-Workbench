@@ -295,6 +295,8 @@ class ImagesMixin:
             v = loads(row(db, "SELECT av.*, a.name, a.kind, a.category, a.origin, a.episode_id, a.project_id, a.roles FROM asset_version av "
                              "JOIN asset a ON a.id=av.asset_id WHERE av.id=?", version_id, missing="素材版本不存在"),
                       "cells", "changed_cells", "roles")
+            from .storage_maintenance import removed
+            v['cleanedAt'] = removed(db, v['relpath']) if not (self.store.root/v['relpath']).is_file() else None
             return v
         if db is not None:
             return get(db)
@@ -342,6 +344,8 @@ class ImagesMixin:
 
     def asset_bytes(self, version_id):
         v = self.asset_version(version_id)
+        if v.get('cleanedAt'):
+            raise NotFound("中间图片已按 10 天保留规则清理，制作记录仍保留")
         return self.store.read_blob(v["sha256"])
 
     def episode_assets(self, episode_id):
@@ -752,6 +756,10 @@ class ImagesMixin:
                                               cells=target.get("cellsMeta"), asset_id=target.get("assetId"),
                                               source_version_id=(item.get("inputs") or [None])[0] if b["operation"] == "edit" else None,
                                               changed_cells=item.get("cells"), note=f"批次 {batch_id}", db=db)
+                    if b['provider'] == 'openai-image-api':
+                        from .storage import write_atomic, canonical
+                        receipt = self.store.root / 'image-api' / row(db, 'SELECT local_request_id FROM image_request WHERE id=?', request_id)['local_request_id'] / 'stored-result.json'
+                        write_atomic(receipt, canonical(dict(sha256=res['sha256'])))
                     if target.get("grid") and b["operation"] == "edit":
                         source = item["inputs"][0]
                         bindings = json.loads(b["spec"]).get("gridBindings", {}).get(source, [])

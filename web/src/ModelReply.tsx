@@ -5,7 +5,7 @@ type Props = {provider?:string; model?:string; requestedModel?:string; effort?:s
 
 export function ModelReply({provider,model,requestedModel,effort,children}:Props) {
   const family = provider && (PROVIDER_LABEL[provider] ?? provider);
-  const modelLabel = model || (requestedModel ? `请求：${requestedModel}（服务商未回报）` : "");
+  const modelLabel = model || (provider !== "antigravity" && requestedModel ? `请求：${requestedModel}（服务商未回报）` : "");
   const title = [family,modelLabel,effort].filter(Boolean).join(" · ") || "助手";
   const version = model?.match(/\d+(?:\.\d+)?/)?.[0];
   const mark = version || (model || family || "AI").slice(0,2).toUpperCase();

@@ -13,6 +13,7 @@ LABELS = dict(STAGES)
 ORDER = tuple(LABELS)
 # Historical artifacts stay readable, without re-entering the active stage sequence.
 LABELS["acting"] = "历史表演稿"
+LABELS["publish"] = "发布文案"
 OPTIONAL = frozenset(("world", "stress"))
 NEXT = dict(zip(ORDER, ORDER[1:]))
 METHOD_REF = "unified-film@draft"
@@ -133,6 +134,8 @@ def check(stage, content, *, new_receipt=False):
 
 
 STANDARD_GOALS = {'story': '按开工资料起草故事稿', 'characters': '根据已采用的故事稿和项目角色设定，起草本集出场角色的小传。', 'world': '根据已采用的故事和角色，整理会影响角色选择或事件因果的规则，逐条写明影响及依据。上游未确认的推断单列到备注，避免与已确认规则重复。', 'treatment': '按已采用的故事、角色及适用世界规则划分场次。逐场写明时间、地点、出场角色的位置、动作、结果、状态变化和估计时长，核对相邻场次的人物与道具连续性，汇总全片时长预算。', 'script': '根据已采用的分场大纲、故事、角色和世界规则逐场写完整剧本。保留场次顺序和人物行动因果，写清动作、对白及场间衔接。', 'stress': '根据本集采用稿及开工要求审查剧本，提交冷读复述、审查范围、具体问题、依据和可选返修方案；待导演选择返修范围。'}
+
+STANDARD_GOALS["publish"] = "按已采用的制作内容和项目发布设置完成最后一步发布文案，填写标题、正文、标签及适用字段。"
 
 CONTINUOUS_GOALS = {**STANDARD_GOALS, "asset_design": "按已采用剧本、角色标准和制作提醒起草素材清单，声明新角色身份图与主场景首次出现的关键视觉，最多三项。"}
 

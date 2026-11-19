@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import time
 
+from .topicruntime import read_runtime
 from . import kickoffchecks, contracts, prompts, acting, shotrefs, imagechoices, attachments
 from .db import dumps, initialize, new_id, transaction, connect
 from .executors.base import ExecRequest
@@ -96,6 +97,11 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
         self._recovery_probe_lock = __import__("threading").Lock()
         self._recovery_identity_cache = {}
         initialize(self.db_path)
+        from .storage_maintenance import initialize as initialize_storage
+        initialize_storage(self)
+        from .completion import backfill
+        with transaction(self.db_path) as db:
+            backfill(self, db)
         self.mark_interrupted_requests()
         self.settle_unknown_requests()
         with transaction(self.db_path) as db:   # text runs left running by a previous process: retryable, no paid side effect
@@ -611,7 +617,18 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                               (kickoff["source_import_id"],)).fetchone()[0]
         if kickoff["source_type"] == "topic":
             t = db.execute("SELECT * FROM topic WHERE id=?", (kickoff["topic_id"],)).fetchone()
-            return f"选题卡 {t['code']}：{t['premise']}\n机制：{t['mechanism']}\n角色动机：{t['motivation']}" + self._original_card(db,t)
+            target = read_runtime(db, t["id"])
+            duration = ""
+            if target:
+                low, high = target["minSeconds"], target["maxSeconds"]
+                if high is None:
+                    seconds = f"至少 {low}"
+                elif low is None:
+                    seconds = f"最多 {high}"
+                else:
+                    seconds = str(low) if low == high else f"{low}–{high}"
+                duration = f" · {target['form']} · 建议成片 {seconds} 秒"
+            return f"选题卡 {t['code']}{duration}：{t['premise']}\n机制：{t['mechanism']}\n角色动机：{t['motivation']}" + self._original_card(db,t)
         return kickoff["idea_text"]
 
     def _group_inputs(self, db, episode_id, stage, pack):
@@ -1313,7 +1330,7 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
         images = []
         for n, e in enumerate(x for x in entries if x.get("binary")):
             path = workdir / f"{n + 1:02d}_{e['name']}"
-            path.write_bytes(self.store.read_blob(e["sha256"]))
+            self.store.materialize_blob(e["sha256"], path)
             images.append(path)
         executor = self.executors[run["provider"]]
         request = ExecRequest(run_id=run_id, purpose=run["purpose"], kind=kind, prompt=prompt,
@@ -2202,7 +2219,14 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
             return compute(db2)
 
     def adopt(self, artifact_id, version_id, expected_adopted_version_id, command_id, and_continue=False):
-        return self._adopt(artifact_id, version_id, expected_adopted_version_id, command_id, and_continue)
+        result = self._adopt(artifact_id, version_id, expected_adopted_version_id, command_id, and_continue)
+        with connect(self.db_path) as db:
+            art = _row(db, "SELECT episode_id,stage FROM artifact WHERE id=?", artifact_id)
+        if art['stage'] == 'publish':
+            problems, _ = self.delivery_problems(art['episode_id'], 'full')
+            if not problems:
+                result['delivery'] = self.deliver(art['episode_id'], 'full', 'publish-final:' + version_id)
+        return result
 
     def _adopt(self, artifact_id, version_id, expected_adopted_version_id, command_id, and_continue, actor="user", continuous_id=None):
         payload = dict(artifact_id=artifact_id, version_id=version_id, expected=expected_adopted_version_id,
@@ -2253,6 +2277,8 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                     self._continuous_changed(db,art["episode_id"])
                 result = dict(adoptionId=aid, adoptedVersionId=version_id)
                 result["impacts"] = self._after_adopt(db, art, version_id, expected_adopted_version_id)
+                from .completion import adopted as record_completion
+                record_completion(self, db, art, version_id)
                 repair_runs = self._repair_after_adoption(db,art,version_id)
                 if repair_runs:
                     result["runId"] = repair_runs[0]
@@ -2357,6 +2383,8 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
             view["skippedStages"] = dict(db.execute(
                 "SELECT stage, reason FROM optional_stage_choice WHERE episode_id=? AND reason<>''", (episode_id,)))
             view["sourceFiles"] = [dict(r) for r in db.execute("SELECT kind,relpath,sha256 FROM episode_source WHERE episode_id=? ORDER BY kind", (episode_id,))]
+            if kick and kick["source_type"] == "topic":
+                view["topicRuntime"] = read_runtime(db, kick["topic_id"])
             if kick and kick["source_import_id"]:
                 view["sourceImport"] = dict(db.execute(
                     "SELECT id,original_name,sha256,purpose,parsed_text FROM import_record WHERE id=?",
@@ -2479,6 +2507,18 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
         view["productionStatus"] = dict(materialsConfirmed=bool(materials_confirmed), space=bool(spaces) and all(s=="confirmed" for s in spaces),
                                         cast=cast_done, assets=complete and all(entries.get(s,{}).get("refs") for s in expected) and not missing_images,
                                         review=review_state=="已完成", package=bool(packaged))
+        with connect(self.db_path) as db:
+            from .completion import current
+            view["completion"] = current(self, db, episode_id)
+            adopted_versions = {a['stage']:a['adopted_version_id'] for a in view['artifacts']}
+            deliveries = [r for r in db.execute("SELECT id,versions FROM delivery WHERE episode_id=? AND scope='full' AND state='deliverable' ORDER BY created_at DESC,rowid DESC",(episode_id,))
+                          if all(adopted_versions.get(k)==v for k,v in json.loads(r['versions']).items())
+                          and not db.execute("SELECT 1 FROM storage_removed WHERE kind='delivery' AND owner=? AND removed_at>0 LIMIT 1",(r['id'],)).fetchone()]
+            view['productionStatus']['delivery'] = bool(deliveries)
+            view['productionStatus']['package'] = any(db.execute("SELECT 1 FROM package p WHERE delivery_id=? AND NOT EXISTS (SELECT 1 FROM storage_removed s WHERE s.relpath=p.relpath AND s.removed_at>0) LIMIT 1",(d['id'],)).fetchone() for d in deliveries)
+            view['deliveryInProgress'] = bool(db.execute("SELECT 1 FROM continuous_run WHERE episode_id=? AND state='running' LIMIT 1",(episode_id,)).fetchone())
+            if view['episode']['state']=='delivered' and not view['completion']['completed']:
+                view['episode']['state']='in_production'
         return view
 
     def _task_view(self, db, task, message_ids=None):

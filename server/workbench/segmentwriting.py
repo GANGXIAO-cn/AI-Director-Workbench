@@ -125,10 +125,8 @@ def write_segments(wb, run, task, manifest, entries):
         images = []
         for e in scoped:
             if e.get("binary"):
-                # Stored blobs are immutable. Link image filenames without duplicating media.
                 image = work / Path(e["name"]).name
-                if not image.exists():
-                    image.hardlink_to(wb.store.blob_path(e["sha256"]).resolve())
+                wb.store.materialize_blob(e["sha256"], image)
                 images.append(image)
         request = ExecRequest(rid,"create","draft",prompt,None if document else contracts.writing_schema(),
                               run["session_mode"],work,run["requested_model"],run["requested_effort"],
