@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / "resources/h3-packager"))
 import packager
 
 
-def load_segment(data, delivery, sid):
+def frozen_delivery(data, delivery):
     with sqlite3.connect(
         (data / "workbench.sqlite").resolve().as_uri() + "?mode=ro", uri=True
     ) as db:
@@ -34,6 +34,11 @@ def load_segment(data, delivery, sid):
         or manifest["deliveryId"] != delivery
     ):
         raise ValueError("交付清单与登记版本不同")
+    return root, manifest
+
+
+def load_segment(data, delivery, sid):
+    root, manifest = frozen_delivery(data, delivery)
     project = packager.load_project(str(root / "00_图文对照.html"))
     if sha256_bytes(project["raw"]) != manifest["files"]["episode.json"]:
         raise ValueError("交付剧集版本已改变")
@@ -458,8 +463,16 @@ def prepare(data, delivery, segment, dependencies, accepted, out, changes=()):
         # Polling an already submitted job must use its actual recorded inputs.
         seg["prompt"] = next(n["fieldValue"] for n in saved["nodeInfoList"] if n["nodeId"]=="263" and n["fieldName"]=="text")
     elif changes or bindings:
-        from .h3rework import compile_revision
-        seg["prompt"] = compile_revision(data,delivery,seg["prompt"],changes,bindings,out.parent)
+        from .h3rework import compile_revision, review_prefix, writer_changes
+        instructions = changes
+        if any(review_prefix.match(change) for change in changes):
+            root, manifest = frozen_delivery(data, delivery)
+            path = root / "交接来源/制作方案.json"
+            if file_sha256(path) != manifest["files"][path.relative_to(root).as_posix()]:
+                raise ValueError("返修所用分镜与交付版本不一致")
+            windows = [s for s in json.loads(path.read_bytes())["shots"] if s["segment"] == segment]
+            instructions = writer_changes(seg["prompt"], windows, changes)
+        seg["prompt"] = compile_revision(data,delivery,seg["prompt"],instructions,bindings,out.parent)
     out.mkdir(parents=True, exist_ok=True)
     write_atomic(
         out / "bindings.json", canonical(dict(bindings=bindings, skipped=skipped, changes=list(changes)))

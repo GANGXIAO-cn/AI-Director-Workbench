@@ -1,3 +1,4 @@
+import {SharedFilmProgress} from "./VideoProduction";
 import { ContinuousStatus, ContinuousChoice } from "./Continuous";
 import { StressReviewChat } from "./StressReviewChat";
 import { FirstDraft } from "./FirstDraft";
@@ -172,6 +173,7 @@ export default function Assistant({ view, stage, sel, setSel, reload, focus, bat
         <button className="btn" onClick={e=>e.currentTarget.closest("details")?.removeAttribute("open")}>收起</button>
       </div></details></div>
       {!deliveryFinished && continuousStatus}
+      <SharedFilmProgress/>
       <div className="msgs" ref={stream} role="log" aria-label="本阶段对话" onScroll={e=>{const n=e.currentTarget;follow.current=n.scrollHeight-n.scrollTop-n.clientHeight<60;}}>
         <ContinuousChoice run={continuous.data?.run} eid={view.episode.id} pid={view.episode.project_id} onCompare={route=>{setFocusChat(false);go(route);}} reload={async()=>{await continuous.reload();await reload();}}/>
         {adoptedStory && art && !art.versions.length && !tasks.length &&

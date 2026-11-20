@@ -1,3 +1,4 @@
+import {SharedFilmProgress} from "./VideoProduction";
 import {useEffect,useRef,useState} from "react";
 import {EpisodeMessages,StageExecutor} from "./Assistant";
 import {cmd} from "./api";
@@ -49,6 +50,7 @@ export function ProductionChat({project,episode,stage,delivery,view,reload}:{
   const name=stage==="finecut"?"精剪":"视频与配乐";
   return <aside className="assistant film-chat" aria-label={name+"导演助手"}>
     <div className="head">导演助手 · {name}</div>
+    <SharedFilmProgress/>
     <div className="msgs" ref={stream} onScroll={e=>{const n=e.currentTarget;following.current=n.scrollHeight-n.clientHeight-n.scrollTop<60;}} role="log" aria-label="本阶段对话">
       {context && <section className="mcard" aria-label="本集制作上下文"><b>{context.集号} · 本集制作上下文</b>
         <p>{context.标题}</p>

@@ -15,6 +15,7 @@ from .cloudtask import PollInterrupted, timing
 from .videoreview import MediaCallError
 from .storage import canonical, file_sha256, sha256_bytes, write_atomic
 from .local_credentials import LocalCredentials
+from .h3rework import WriterRevisionError
 from . import filmedit, productionmusic, videosegment, videobudget, onlineworkflows
 
 SCHEMA = """
@@ -495,6 +496,18 @@ class VideoQueue:
         with self.db() as db:
             self.register_old_deliveries(db)
             jobs = [dict(r) for r in db.execute("SELECT * FROM job ORDER BY rowid")]
+            paused = {
+                r[0]
+                for r in db.execute(
+                    "SELECT delivery FROM episode_control WHERE paused=1"
+                )
+            }
+            for job in jobs:
+                if (job["delivery"] not in paused and job["state"] == "需处理" and (job["error"] or "").startswith("写稿人补修后仍未通过：")
+                        and not (self.directory(job["delivery"], job["segment"], job["round"]) / "trial.json").exists()):
+                    job.update(state="排队中", error="等待写稿 AI 接续本轮局部返修")
+                    db.execute("UPDATE job SET state=?,error=? WHERE delivery=? AND segment=?",
+                               (job["state"], job["error"], job["delivery"], job["segment"]))
             stopped = {
                 (j["delivery"], j["segment"])
                 for j in jobs
@@ -534,12 +547,6 @@ class VideoQueue:
                     "SELECT name,site,instance,capacity,pool,pool_capacity,fingerprint FROM account ORDER BY name"
                 )
             ]
-            paused = {
-                r[0]
-                for r in db.execute(
-                    "SELECT delivery FROM episode_control WHERE paused=1"
-                )
-            }
             self.running = {k: v for k, v in self.running.items() if v.is_alive()}
             active = {
                 a["name"]: sum(
@@ -842,6 +849,8 @@ class VideoQueue:
                     self.decide_final_version(job,reason)
             else:
                 self.finish(job, out, review, future)
+        except WriterRevisionError as exc:
+            self.defer_media(job, "排队中", exc)
         except MediaCallError as exc:
             # A downloaded result can be reviewed again without another cloud submission.
             receipt=out/"trial.json"

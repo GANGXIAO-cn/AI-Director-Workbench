@@ -654,3 +654,36 @@ def test_music_handoff_recovers_without_regenerating_or_ignoring_pause(tmp_path,
         productionmusic.advance(q,db)
         assert db.execute("SELECT handoff FROM soundtrack").fetchone()[0]=="finecut/inputs.json"
     assert calls==[("original-task","original.wav")]*2
+
+
+def test_resume_writer_before_submission_without_restarting_other_jobs(setup, monkeypatch):
+    from workbench.h3rework import WriterRevisionError
+
+    q = setup
+    q.enqueue_batch("d", [body(s) for s in "ABC"])
+    with q.db() as db:
+        db.execute("UPDATE job SET state='需处理',round=1,error='写稿人补修后仍未通过：缺镜号'")
+        db.execute("UPDATE job SET error='云端任务需要核对' WHERE segment='C'")
+    submitted = q.directory("d", "B", 1)
+    submitted.mkdir(parents=True)
+    (submitted / "trial.json").write_text(json.dumps({"task":"existing"}))
+    q.pause("d", True)
+    q.dispatch()
+    with q.db() as db:
+        assert db.execute("SELECT state FROM job WHERE segment='A'").fetchone()[0] == "需处理"
+    q.pause("d", False)
+    q.dispatch()
+    with q.db() as db:
+        rows = {r["segment"]:dict(r) for r in db.execute("SELECT * FROM job")}
+    assert [(rows[s]["state"], rows[s]["round"]) for s in "ABC"] == [("排队中",1),("需处理",1),("需处理",1)]
+
+    def invalid(*args):
+        raise WriterRevisionError("写稿人补修后仍未通过：仍缺一镜")
+    monkeypatch.setattr(videosegment, "prepare", invalid)
+    q.execute(rows["A"], {}, [], {})
+    with q.db() as db:
+        job = db.execute("SELECT * FROM job WHERE segment='A'").fetchone()
+        retry = db.execute("SELECT * FROM media_retry WHERE segment='A'").fetchone()
+    assert (job["state"], job["round"], retry["round"], retry["attempts"]) == ("排队中",1,1,1)
+    assert "等待自动重试" in job["error"]
+    assert not (q.directory("d","A",1) / "trial.json").exists()

@@ -263,3 +263,30 @@ def test_pause_while_selecting_frame_reuses_expert_choice_on_restart(tmp_path,mo
         q.pause("d",False)
         videosegment.prepare(*args)
     assert len(calls)==1 and frames==[1] and len(labels)==2
+
+
+def test_prepare_translates_review_windows_to_frozen_prompt_shots(tmp_path, monkeypatch):
+    from workbench.storage import file_sha256
+
+    windows = [dict(id=f"S01-0{i}", segment="A", order=i,
+                    continuation="same" if i == 3 else "cut") for i in range(1, 7)]
+    board = tmp_path / "交接来源/制作方案.json"
+    board.parent.mkdir()
+    board.write_text(json.dumps(dict(shots=windows)))
+    source = ORIGINAL.replace("\n\noverall_soundscape:", "\n[Shot 3] Three.\n[Shot 4] Four.\n[Shot 5] Five.\n\noverall_soundscape:")
+    notes = ["[Shot 1] [Shot 4] [Shot 5] [Shot 6] 修正点名动作"]
+    seen = []
+    monkeypatch.setattr(videosegment, "load_segment", lambda *_: (dict(prompt=source, refs=[]), {}, {}))
+    monkeypatch.setattr(videosegment, "frozen_delivery", lambda *_: (tmp_path, dict(files={"交接来源/制作方案.json": file_sha256(board)})))
+    def revise(data, delivery, text, changes, bindings, directory):
+        seen.extend(changes)
+        return text
+    monkeypatch.setattr(h3rework, "compile_revision", revise)
+    out = tmp_path / "round-1"
+    videosegment.prepare(tmp_path, "delivery", "A", [], {}, out, notes)
+    assert seen[0].startswith("[Shot 1] [Shot 3] [Shot 4] [Shot 5] ")
+    assert "S01-04 对应提示词第 3 镜" in seen[0]
+    assert json.loads((out / "bindings.json").read_bytes())["changes"] == notes
+    assert h3rework.writer_changes(source, windows, ["[Shot 4] 修正点名动作"])[0].startswith("[Shot 3] ")
+    with pytest.raises(ValueError, match="无法对应"):
+        h3rework.writer_changes(source, windows[:2], notes)

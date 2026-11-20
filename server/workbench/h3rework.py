@@ -32,6 +32,45 @@ def shot_ranges(text):
     return ranges
 
 
+review_prefix = re.compile(r"^(?:\[Shot \d+\]\s*)+")
+
+
+class WriterRevisionError(ValueError):
+    """The writer must correct its reply before this round can be submitted."""
+
+
+def writer_changes(source, windows, changes):
+    # Review numbers follow the frozen board array. H3 numbers follow playback order.
+    numbers = list(shot_ranges(source))
+    ordered = sorted(enumerate(windows, 1), key=lambda pair: pair[1].get("order", 0))
+    mapping = {}
+    group = -1
+    for index, window in ordered:
+        if len(numbers) == len(windows) or group < 0 or window.get("continuation") != "same":
+            group += 1
+        if group >= len(numbers):
+            raise ValueError("交付提示词的镜头与分镜窗口无法对应")
+        mapping[index] = numbers[group]
+    if group + 1 != len(numbers):
+        raise ValueError("交付提示词的镜头与分镜窗口无法对应")
+    result = []
+    for change in changes:
+        prefix = review_prefix.match(change)
+        if not prefix:
+            result.append(change)
+            continue
+        indices = [int(n) for n in re.findall(r"\d+", prefix[0])]
+        if not all(i in mapping for i in indices):
+            raise ValueError("审片点名的镜号不在本段采用分镜内")
+        if all(i == mapping[i] for i in indices):
+            result.append(change)
+            continue
+        targets = " ".join(f"[Shot {n}]" for n in dict.fromkeys(mapping[i] for i in indices))
+        links = "、".join(f"{windows[i-1]['id']} 对应提示词第 {mapping[i]} 镜" for i in indices)
+        result.append(f"{targets} 依照交付分镜对应关系：{links}。只修点名窗口的动作，保留同镜其余内容。原审片意见：" + change[prefix.end():])
+    return result
+
+
 def literal_text(content):
     return QUOTED_LITERAL.findall(content) + re.findall(r"<d>.*?</d>", content)
 
@@ -188,7 +227,7 @@ def compile_revision(data, delivery, source, changes, bindings, directory):
                     edited = {e["shot"] for e in edits}
                     if not bindings:
                         if edited != targeted:
-                            raise ValueError("只改评审点名的镜号："+"、".join(map(str,sorted(targeted))))
+                            raise ValueError(f"只改评审点名的镜号：{sorted(targeted)}。本次漏改 {sorted(targeted-edited)}，多改 {sorted(edited-targeted)}")
                     else:
                         missing = targeted - edited
                         slot_targets = {}
@@ -215,7 +254,7 @@ def compile_revision(data, delivery, source, changes, bindings, directory):
             break
         except (ValueError, ValidationError) as exc:
             if attempt:
-                raise ValueError("写稿人补修后仍未通过：" + str(exc)) from exc
+                raise WriterRevisionError("写稿人补修后仍未通过：" + str(exc)) from exc
             from dataclasses import replace
             req = replace(req, prompt=request + "\n上次答复：" + json.dumps(result.structured, ensure_ascii=False)
                           + "\n仅纠正以下校验问题：" + str(exc))

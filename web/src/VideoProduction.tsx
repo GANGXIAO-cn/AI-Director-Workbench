@@ -66,7 +66,7 @@ export function FilmStatusScope({delivery,children}:{delivery:string|null;childr
   return <FilmContext.Provider value={session}>{children}</FilmContext.Provider>;
 }
 
-function FilmProgress({status,toggle,busy}:{status:Status;toggle:()=>void;busy:boolean}) {
+function FilmProgress({status,run,busy}:{status:Status;run:(path:string)=>void;busy:boolean}) {
   const {jobs,cut,music}=status;
   const produced=jobs.filter(j=>(status.budget?.counts?.[j.segment]??0)>0).length;
   const adopted=jobs.filter(j=>j.state==="已采用" || j.state==="已出片待选剪").length;
@@ -75,11 +75,14 @@ function FilmProgress({status,toggle,busy}:{status:Status;toggle:()=>void;busy:b
   const cutAction=cut?.action || (cut?.state==="渲染中"?"工作台正在处理精剪":cut?.state);
   return <section className="film-progress" aria-label="本集交付进度">
     <div className="spread"><strong>{status.paused?"已暂停新派发":cutAction || (music?.handoff?"精剪已收到素材":status.start?.state==="待开工"?"工作台正在安排视频与配乐":"本集制作进度")}</strong>
-      {cut?.state!=="已出片" && <button className="btn" disabled={busy} onClick={toggle}>{status.paused?"恢复本集派发":"暂停本集派发"}</button>}</div>
+      {cut?.state!=="已出片" && <button className="btn" disabled={busy} onClick={()=>run("pause/"+!status.paused)}>{status.paused?"恢复本集派发":"暂停本集派发"}</button>}</div>
     {!music && status.start && status.start.state!=="待开工" && <div>{status.start.state} {status.start.error}</div>}
     {jobs.length>0 && <div className="small">已出片 {produced} / {jobs.length} 段 · 已采用 {adopted} 段{music && " · 配乐："+(music.action || music.state)}</div>}
-    {!status.paused && working.map(j=><div className="small" key={j.segment}>{j.segment} · {j.action || j.state}{j.error && j.error!==j.action && " · "+j.error}</div>)}
+    {!status.paused && working.map(j=><div className="small" key={j.segment}>{j.segment} · {j.action || j.state}{j.error && j.error!==j.action && " · "+j.error}
+      {["待核对","需处理"].includes(j.state) && <button className="btn" disabled={busy} onClick={()=>run(encodeURIComponent(j.segment)+"/retry")}>恢复 {j.segment} 原任务</button>}</div>)}
     {!status.paused && !working.length && jobs.some(j=>j.state==="排队中") && <div className="small">视频等待派发</div>}
+    {!status.paused && music?.error && music.state!=="云端失败" && <button className="btn" disabled={busy} onClick={()=>run("bgm/retry")}>恢复配乐任务</button>}
+    {cut?.state==="修改受阻" && <button className="btn" disabled={busy} onClick={()=>run("finecut/undo")}>撤销上一条修改并重试</button>}
     {cut?.error && <div className="small">{cut.error}</div>}
     {status.paused && <div className="small">已经提交的工作可以收尾，恢复后继续下一步。</div>}
   </section>;
@@ -89,8 +92,10 @@ export function SharedFilmProgress() {
   const act=useAction();
   if(!session?.delivery)return null;
   const {status,delivery,setStatus,error}=session;
-  return <>{status && <FilmProgress status={status} busy={act.busy} toggle={()=>act.run(async()=>{
-    setStatus(await videoApi<Status>("POST",encodeURIComponent(delivery)+"/pause/"+!status.paused));
+  return <>{status && <FilmProgress status={status} busy={act.busy} run={path=>act.run(async()=>{
+    const base=encodeURIComponent(delivery);
+    await videoApi("POST",base+"/"+path);
+    setStatus(await videoApi<Status>("GET",base));
   })}/>}<ErrorLine error={act.error || (error?{message:error}:null)}/></>;
 }
 
@@ -165,27 +170,23 @@ export function VideoProduction({delivery,episode,full=false,finecut=false,autom
       ? suggested.filter(d=>d.target===segment).map(({target,...b})=>b) : deps(segment)})));
     setSelected([]);setDraft({});setManual([]);setEdit("");
   }
-  const expertProgress=!isShared && <FilmProgress status={status} busy={act.busy} toggle={()=>act.run(()=>change("pause/"+!status.paused))}/>;
   if(finecut) return <section className="card">
-    {expertProgress}
     {status.cut?.published && <video key={status.cut.published} controls playsInline preload="metadata"
       aria-label="本集精剪成片" style={{maxWidth:"100%",maxHeight:"65vh"}} src={`/api/video/${base}/final?v=${status.cut.published}`}/>}
     <TaskElapsed task={status.cut} local/>
     {status.cut?.finalReview && <details><summary>成片复核与交片决定</summary><p>独立评审 · {status.cut.finalReview.review.reason}</p><p>专家 · {status.cut.finalReview.decision.reason}</p><p>{status.cut.finalReview.audio}</p></details>}
     {status.cut?.feedbackReview && <p>修改验收 · {status.cut.feedbackReview}</p>}
-    {status.cut?.state === "修改受阻" && <p><button className="btn" disabled={act.busy} onClick={()=>act.run(()=>change("finecut/undo"))}>撤销上一条修改并重试</button></p>}
     {cut ? <><h3>已接收精剪素材</h3><div className="small muted">本集配乐 · {status.music?.action || "音频文件已返回（AI 未试听）"}</div><audio controls src={`/api/video/${base}/bgm`}/>
       {cut.clips.map(c=><p key={c.segment}><a href={`/api/video/${base}/${encodeURIComponent(c.segment)}/video/adopted`}>{c.segment}</a> · 可用 {c.review.usableStart}–{c.review.usableEnd} 秒 {c.review.cutAdvice}</p>)}</>
       : <p>{status.jobs.some(j=>j.state==="已止损")?"本集有分段达到止损条件，精剪等待可用素材。":status.music?.error?"配乐尚未就绪 · "+status.music.error:"专家等待各段成功出片和本集配乐，随后自动选材精剪。"}</p>}
     <ErrorLine error={act.error||(loadError||session.error?{message:loadError||session.error}:null)}/></section>;
   return <section className="card" aria-label="视频生成队列">
-    {expertProgress}
     {!isShared && !status.music && status.start && <p role="status">{status.start.state==="待开工"?"正在安排分段承接与整集派发":status.start.state} {status.start.error}</p>}
     {status.budget && <p>成功出片 {status.budget.used} / {status.budget.limit} 版{status.budget.reworkLimit != null && ` · 其中返工 ${status.budget.reworkUsed} / ${status.budget.reworkLimit} 次`}{Boolean(status.budget.reserved) && ` · 已预留 ${status.budget.reserved} 次`} · 每段最多返工 3 次</p>}
     {status.music && <div><b>本集 BGM · {status.music.action || status.music.state}{status.music.audio && !(status.music.action||"").includes("未试听") && " · AI 未试听"}</b>
       <TaskElapsed task={status.music.cloud}/>
       {status.music.audio && <audio controls preload="metadata" aria-label="本集配乐" src={`/api/video/${base}/bgm`}/>}
-      {status.music.error && <p>{status.music.error} {status.music.state!=="云端失败" && <button className="btn" onClick={()=>act.run(async()=>{await videoApi("POST",base+"/bgm/retry");setStatus(await videoApi<Status>("GET",base));})}>恢复配乐任务</button>}</p>}
+      {status.music.error && <p>{status.music.error}</p>}
       {status.music.handoff && <a href={cutUrl}>查看精剪素材</a>}</div>}
     {!automatic && <details><summary>调整派发</summary><div className="row" style={{marginTop:12}}>
       <button className="btn" disabled={act.busy} onClick={()=>act.run(async()=>{
@@ -203,7 +204,7 @@ export function VideoProduction({delivery,episode,full=false,finecut=false,autom
           {j?.bindings?.map(b=><a key={b.slot} href={`/api/video/${base}/${encodeURIComponent(s)}/reference/${b.slot}`} target="_blank" rel="noreferrer">{b.source} → 图 {b.slot} · 看来源帧（{b.seconds} 秒）</a>)}
           {editable&&segments.indexOf(s)>0&&<button className="btn" onClick={()=>setEdit(edit===s?"":s)}>编辑承接</button>}</td>
         <td>{j?.action || j?.state || "待派发"} {j?.cloud?.startedAt?j.account:""} {j&&j.round>0&&` · 返工 ${j.round}/3`}<TaskElapsed task={j?.cloud}/>{j?.error&&!j.cloud?.retryMessage&&<p>{j.error}</p>}
-          {j&&["待核对","需处理"].includes(j.state)&&<button className="btn" disabled={act.busy} onClick={()=>act.run(()=>change(encodeURIComponent(s)+"/retry"))}>恢复原任务</button>}</td>
+        </td>
         <td>{j && <ReworkNotes segment={s} notes={j.reworks??(j.changes??[]).map((change,i)=>({number:i+1,change}))}/>}
           {j?.review&&<details><summary>{j.review.join??"查看审片"}</summary><p>{j.review.reason}</p><p>{j.review.cutAdvice}</p></details>}
           {j?.state==="已采用"&&<button className="btn" onClick={()=>setPreview({segment:s,version:"adopted",label:"采用版"})}>预览采用版</button>}

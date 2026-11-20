@@ -1,6 +1,6 @@
 import {RunningHubWorkflows} from "./RunningHubWorkflows";
 import {ProductionChat} from "./ProductionChat";
-import {VideoProduction,FilmStatusScope,SharedFilmProgress} from "./VideoProduction";
+import {VideoProduction,FilmStatusScope} from "./VideoProduction";
 import {TopicRuntimeTag} from "./TopicRuntime";
 import {PreKickoffWorkspace} from "./Directions";
 import { RepairProgress } from "./RepairProgress";
@@ -63,6 +63,8 @@ function layout(plan: any) {
   return { segments: out, shots, total: clock };
 }
 
+type FilmSelection = {episode:string; requested:string|null; delivery:string|null};
+
 export default function Workspace({ id, stage }: { id: string; stage: string }) {
   const { hash, active, go } = useProjectRoute();
   const { focusChat, setFocusChat } = useDisplay();
@@ -70,6 +72,7 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
   const worksheet = stage==="worksheet";
   const productionPage = stage==="package" || stage==="finecut";
   const chatOnly = focusChat && !canvasMode && !["package","finecut","worksheet","shot_assets"].includes(stage);
+  const [filmSelection,setFilmSelection]=useState<FilmSelection|null>(null);
   const [previewId,setPreviewId]=useState("");
   useEffect(()=>setPreviewId(""),[id,stage,chatOnly]);
   useEffect(() => {
@@ -146,7 +149,11 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
   const adopted = (s: string) => !!v.artifacts.find((a: any) => a.stage === s)?.adopted_version_id;
   const mediaDelivery=v.filmStart?.delivery || v.filmStart?.pendingDelivery || null;
   const viewedDelivery=productionPage ? routeParams.get("delivery") : null;
-  const sharedDelivery=DELIVERY_STEPS.some(([k])=>k===stage) && (!viewedDelivery || viewedDelivery===mediaDelivery) ? mediaDelivery : null;
+  const requestedFilm=viewedDelivery || v.filmStart?.delivery || null;
+  const selectedFilm=filmSelection?.episode===id && filmSelection.requested===requestedFilm
+    ? filmSelection.delivery : null;
+  const sharedDelivery=productionPage ? selectedFilm || (!viewedDelivery ? mediaDelivery : null)
+    : DELIVERY_STEPS.some(([k])=>k===stage) ? mediaDelivery : null;
   const status = (s: string) => {
     const map: Record<string, boolean> = { story: adopted("story"), script: adopted("script"), plan: adopted("plan"),
       ...v.productionStatus, prompts: adopted("prompts"),
@@ -168,7 +175,6 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
         {chatOnly && previews.length>0 && <select className="preview-picker" aria-label="预览成果物" value={previewId} onChange={e=>setPreviewId(e.target.value)}>
           <option value="">预览成果物</option>{previews.map((item:any)=><option key={item.version.id} value={item.version.id}>{item.label}</option>)}</select>}
       </nav>
-      <SharedFilmProgress/>
       <div className={"ws"+(productionPage?" film-workspace":"")+(preview?" with-preview":"")+(chatOnly?" chat-only":"")+(canvasMode?" canvas-only":"")} style={{flex:1, gridTemplateColumns: preview ? "minmax(0, 3fr) minmax(0, 2fr)" : canvasMode || chatOnly ? "minmax(0, 1fr)" : `${cols[0]}px minmax(0, 1fr) ${cols[1]}px`}}>
         {!canvasMode && <div className="catalog">
           <div className="spread" style={{ padding: "0 8px 12px" }}><b>目录</b><a className="muted" href={`#/p/${v.episode.project_id}`}>⇤</a></div>
@@ -204,7 +210,7 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
           {routeParams.get("report") && <StressRepair ctx={ctx} stage={stage} reportId={routeParams.get("report")!} optionIndex={routeParams.get("option")}/>}
           {stageArtifact && inputVersion && <StageInputs key={inputVersion} versionId={inputVersion} records={decisions.data??[]} art={stageArtifact} onSave={async vid=>{await reload();setFocus(vid);}}/>}
           {(["space","cast"].includes(stage) || OPTIONAL_FILM_STAGES.has(stage)) && <OptionalStage key={id+stage} eid={id} stage={stage} skippedReason={v.skippedStages[stage] || ""} reload={view.reload}/>}
-          {productionPage?<PackageView ctx={ctx} finecut={stage==="finecut"}/>:!v.skippedStages[stage] && <StageView key={id+stage+String(ctx.locked)} stage={stage} ctx={ctx} />}
+          {productionPage?<PackageView ctx={ctx} finecut={stage==="finecut"} onSelectFilm={setFilmSelection}/>:!v.skippedStages[stage] && <StageView key={id+stage+String(ctx.locked)} stage={stage} ctx={ctx} />}
         </div>
         {/* 实测 122：备图工作单也保留导演助手，切换素材页签时对话不消失。 */}
         {productionPage && <ProductionChat key={id+stage} view={v} reload={reload} project={v.episode.project_id} episode={id} stage={stage}
@@ -2020,7 +2026,7 @@ function packageOverrides(params:typeof emptyPackageParams) {
     return overrides;
   }
 
-function PackageView({ ctx, finecut=false }: { ctx: Ctx; finecut?:boolean }) {
+function PackageView({ ctx, finecut=false,onSelectFilm }: { ctx: Ctx; finecut?:boolean;onSelectFilm?:(selection:FilmSelection)=>void }) {
   const { hash, go } = useProjectRoute();
   const [deliveries, setDeliveries] = useState<any[]>([]);
   const [did, setDid] = useState("");
@@ -2041,8 +2047,9 @@ function PackageView({ ctx, finecut=false }: { ctx: Ctx; finecut?:boolean }) {
     const ds = await Promise.all((ov.episodes.find((e: any) => e.id === ctx.eid)?.deliveries ?? []).map((d: any) => q("delivery_view", { delivery_id: d.id })));
     if (!active) return;
     const pick = requestedDelivery ? ds.find(x => x.id === requestedDelivery) : ds[ds.length - 1];
+    onSelectFilm?.({episode:ctx.eid,requested:requestedDelivery || null,delivery:pick && !pick.cleanedAt ? pick.id : null});
     setBatch(emptyPackageParams);setIndividual({});setTarget("");setDeliveries(ds); setDid(pick?.id ?? ""); setSegs(pick?.segments ?? []); setOut(null);
-  })(); return () => { active = false; }; }, [ctx.eid, requestedDelivery]);
+  })(); return () => { active = false; }; }, [ctx.eid, requestedDelivery,onSelectFilm]);
   const d = deliveries.find((x) => x.id === did);
   function packageArgs(){
     const entries=segs.filter(s=>individual[s]).map(s=>[s,packageOverrides(individual[s])]);
