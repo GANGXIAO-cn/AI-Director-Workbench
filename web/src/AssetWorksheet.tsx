@@ -142,7 +142,7 @@ export function AssetWorksheet({ctx,space}:{ctx:any;space:React.ReactNode}) {
        })}>按清单出图（{ready.length} 张）</button> : picks.length ? <button className="btn primary" onClick={()=>first(picks[0])}>去选图</button> :
        sheet.data.complete ? <a className="btn primary" href={link("plan")}>进入 08 分镜</a> :
        rows.some(r=>r.request) ? <button className="btn primary" onClick={()=>ctx.openBatch({id:rows.find(r=>r.request)!.request!.batchId})}>查看进行中的批次</button> : <span>请勾选待出图项或先完成所列依赖。</span>}
-      <label>出图通道 <select value={provider||""} onChange={e=>changeChannel({provider:e.target.value,model:"",size:""})}>{channels.map(p=><option key={p}>{p}</option>)}</select></label>
+      <label>出图通道 <select value={provider||""} onChange={e=>changeChannel({provider:e.target.value,model:"",size:""})}>{channels.map(p=><option key={p} value={p}>{providers.data?.[p]?.capabilities.label || p}</option>)}</select></label>
       {!!caps?.models?.length && <label>型号 <select value={model} onChange={e=>changeChannel({model:e.target.value})}>{caps.models.map((m:string)=><option key={m}>{m}</option>)}</select></label>}
       {!!caps && <label>尺寸 <select value={size} onChange={e=>changeChannel({size:e.target.value})}>{caps.sizes.map((s:string)=><option key={s}>{s}</option>)}</select></label>}
       <span className="muted small">通道和型号是本集设置，连续制作下一张图起也按它出；尺寸按画幅自动选</span>

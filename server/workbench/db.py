@@ -64,6 +64,15 @@ CREATE INDEX IF NOT EXISTS kickoff_check_episode ON kickoff_check(project_id,dis
 CREATE TABLE IF NOT EXISTS episode_completion(
  episode_id TEXT PRIMARY KEY REFERENCES episode(id), publish_version_id TEXT NOT NULL,
  basis TEXT NOT NULL, completed_at REAL);
+CREATE TABLE IF NOT EXISTS finecut_edit(
+ turn TEXT PRIMARY KEY REFERENCES free_turn(id),delivery TEXT NOT NULL REFERENCES delivery(id),edits TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS finecut_edit_delivery ON finecut_edit(delivery);
+CREATE TABLE IF NOT EXISTS film_start(
+ episode_id TEXT PRIMARY KEY REFERENCES episode(id),publish TEXT NOT NULL,state TEXT NOT NULL,
+ delivery TEXT,error TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS film_start_recovery(
+ episode_id TEXT PRIMARY KEY REFERENCES episode(id),publish TEXT NOT NULL,delivery TEXT,
+ attempts INTEGER NOT NULL,retry_at REAL);
 CREATE TABLE IF NOT EXISTS storage_removed(
  relpath TEXT PRIMARY KEY, kind TEXT NOT NULL, owner TEXT NOT NULL, sha256 TEXT NOT NULL,
  bytes INTEGER NOT NULL, removed_at REAL NOT NULL);

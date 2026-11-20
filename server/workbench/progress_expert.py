@@ -18,6 +18,28 @@ def provisional_image_issues(db, episode_id, version_id):
 
 
 class ProgressExpert:
+    def film_executors(self, episode_id, stage):
+        from . import filmroles
+        with connect(self.db_path) as db:
+            return {role: self.active_selection(slot) for role, slot in
+                    filmroles.selections(db, episode_id, stage).items()}
+
+    def save_film_executor(self, episode_id, stage, role, provider, model=None, effort=None, command_id=None):
+        from . import filmroles
+        key = filmroles.settings_key(episode_id, stage)
+        if role not in ("create", "review"):
+            raise Rejected("请选择写稿或独立评审")
+        self.validate_selection(provider, model, effort)
+        slot = dict(provider=provider, model=model, effort=effort)
+        with transaction(self.db_path) as db:
+            def save():
+                self._episode_in(db, episode_id)
+                db.execute("INSERT INTO app_setting(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE "
+                           "SET value=json_set(app_setting.value,?,json(?))",
+                           (key, dumps({role: slot}), "$." + role, dumps(slot)))
+                return slot
+            return self._command(db, command_id, "save_film_executor", [key, role, slot], save)
+
     def executor_defaults(self):
         saved = self.get_setting('executor-defaults', {})
         create = saved.get('create', dict(provider='codex', model=None, effort=None))
@@ -140,14 +162,14 @@ class ProgressExpert:
                 'summary 用白话说明发生什么、试过什么和下一步；不宣称问题已解决。以下是资料：\n'+dumps(evidence))
         answer=None; error=''
         for attempt in range(2):
-            rid=new_id(); actual=slot.get('model')
+            rid=new_id(); actual=None; connection=slot
             try:
                 connection=self.run_connection(slot['provider'],slot.get('model'),slot.get('effort'))
-                actual=connection['model']; work=self.store.run_dir(rid)/'work';work.mkdir(parents=True)
+                work=self.store.run_dir(rid)/'work';work.mkdir(parents=True)
                 req=ExecRequest(rid,'progress_expert','assets',prompt,schema,'ephemeral',work,connection['model'],connection['effort'],connection=connection)
                 result=self.executors[slot['provider']].start(req)
                 if not result.ok: raise Rejected(result.diagnostic or '专家不可用')
-                actual=result.reported_model or actual
+                actual=result.reported_model
                 out=result.structured
                 if not isinstance(out,dict) or any(k not in out for k in props):raise ValueError('字段不完整')
                 if any(not isinstance(out[k],str) for k in props if k!='issueKeys'):raise ValueError('文字字段格式不合格')
@@ -163,7 +185,7 @@ class ProgressExpert:
                 answer=out;error=''
             except (Rejected,ValueError,TypeError,KeyError,OSError) as exc:
                 error=redact(str(exc),500)
-            self._continuous_log(cid,'assets','expert_judgment',rid,answer['reason'] if answer else '专家判断未完成',dict(provider=slot['provider'],model=actual,effort=slot.get('effort'),input=evidence,output=answer,error=error))
+            self._continuous_log(cid,'assets','expert_judgment',rid,answer['reason'] if answer else '专家判断未完成',dict(provider=slot['provider'],requestedModel=connection.get('model'),model=actual,effort=connection.get('effort'),input=evidence,output=answer,error=error))
             self._continuous_checkpoint(cid)
             current=self._need(need['episode_id'],need['need_key'])
             if current['revision']!=need['revision']:
@@ -186,13 +208,13 @@ class ProgressExpert:
         prompt=('从项目图库中挑出能直接充当本素材条目的图（同一地点、同一物件或同一角色），最多两张；'
                 '只是同类或沾边的不选，没有合适的返回空数组。只依据名称与用途说明判断。reply JSON {"ids":[库图 id],"reason":"一句话理由"}。\n'
                 +dumps(dict(need=need_info,library=listing)))
-        rid=new_id(); picked=[]; error=''; actual=slot.get('model')
+        rid=new_id(); picked=[]; error=''; actual=None; connection=slot
         try:
             connection=self.run_connection(slot['provider'],slot.get('model'),slot.get('effort'))
-            actual=connection['model']; work=self.store.run_dir(rid)/'work';work.mkdir(parents=True)
+            work=self.store.run_dir(rid)/'work';work.mkdir(parents=True)
             result=self.executors[slot['provider']].start(ExecRequest(rid,'progress_expert','assets',prompt,schema,'ephemeral',work,connection['model'],connection['effort'],connection=connection))
             if not result.ok:raise Rejected(result.diagnostic or '专家不可用')
-            actual=result.reported_model or actual
+            actual=result.reported_model
             out=result.structured; known={e['id'] for e in entries}
             if not isinstance(out,dict) or not isinstance(out.get('ids'),list):raise ValueError('回包格式不合格')
             picked=[i for i in dict.fromkeys(out['ids']) if i in known][:2]
@@ -200,5 +222,5 @@ class ProgressExpert:
         except (Rejected,ValueError,TypeError,KeyError,OSError) as exc:
             error=redact(str(exc),500); reason='库图挑选未完成，本条目直接出图'
         self._continuous_log(cid,'assets','expert_judgment',need['need_key'],reason or ('选用库图' if picked else '图库没有适用图'),
-                             dict(purpose='library_pick',provider=slot['provider'],model=actual,picked=picked,offered=len(entries),error=error))
+                             dict(purpose='library_pick',provider=slot['provider'],requestedModel=connection.get('model'),model=actual,picked=picked,offered=len(entries),error=error))
         return [e for e in entries if e['id'] in picked]

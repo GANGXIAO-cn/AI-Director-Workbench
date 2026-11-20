@@ -37,7 +37,7 @@ def snapshot(ctx, did, publish):
                           if shot.get(k)})
         if shot.get("sound") or shot.get("cut"):
             effects.append({k:shot[k] for k in ("id","segment","action","sound","cut") if shot.get(k)})
-    return dict(format=1, revision=did, episode=ctx["ep"]["display_code"], title=publish["englishTitle"],
+    return dict(format=2, revision=did, episode=ctx["ep"]["display_code"], title=publish["englishTitle"],
                 adopted=ctx["adopted"], story={k:story[k] for k in ("synopsis","spine","causes","handoff") if story.get(k)},
                 directions=ctx["directions"], anchors=anchors, shots=keeps, effects=effects, required=ctx["requiredImages"],
                 products=[dict(code=p["code"],name=p["product"]["name"],segment=p["segment"],shot=p["shot_id"],
@@ -54,7 +54,7 @@ def render(data, legacy_labels=False):
         stage_names.update(story="01 故事梗概", characters="02 角色小传", world="03 世界观",
                            treatment="04 分场大纲", script="05 完整剧本", stress="06 压力测试",
                            asset_design="07 素材设计", acting="09 表演设计", plan="10 镜头设计", prompts="11 H3 提示词")
-    if data["format"] != 1:
+    if data["format"] not in (1, 2):
         raise ValueError("未知精剪交接格式")
     lines = [f"# {data['episode']} · {data['title']} 精剪交接", "", "制作意图交接，待接收实际视频。",
              f"交接修订 {data['revision']}", "", "## 来源版本", ""]
@@ -114,7 +114,7 @@ def render(data, legacy_labels=False):
     lines.extend(f"- {c.get('segment') or c.get('scene') or '全片'} · {c['at']} · {c['action']}" for c in data["cues"])
     lines += ["", "## 已知差异与未验证项", "",
               "已登记的原图适用限制见上述必留项。视频中的表演、动态连续性、实际声音及最终片长待看片核对。",
-              "", "## 实际素材入口", "", "本次静态包未附粗剪、剪辑工程、原片或独立配乐。对应路径待提供。",
-              "", "## 接收说明", "", "以最新明确修订和当前粗剪定位动作、反应与必留内容，记录实际位置。"
+              "", "## 实际素材入口", "", ("本次静态包未附粗剪、剪辑工程、原片或独立配乐。对应路径待提供。" if data["format"] == 1 else "视频和配乐并行生成。分段全部采用、配乐就绪后，工作台自动将原片和音乐交给精剪。"),
+              "", "## 接收说明", "", ("以最新明确修订和当前粗剪定位动作、反应与必留内容，记录实际位置。" if data["format"] == 1 else "按采用原片、可用区间和专家剪点定位动作与反应，按本集配乐安排节奏并混入原声。")+
               "保留原有制作记录；有混音限制、缺少素材或尚未实现的意图时，在接收记录中注明。"]
     return "\n".join(lines)+"\n"

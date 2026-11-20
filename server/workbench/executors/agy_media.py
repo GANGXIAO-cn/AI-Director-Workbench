@@ -38,13 +38,19 @@ def media_turn(proc, request):
         raise ValueError("Antigravity ACP closed before replying")
 
     init = call("initialize", dict(protocolVersion=1, clientCapabilities={}))
-    if not init["agentCapabilities"].get("promptCapabilities", {}).get("image"):
+    if request["images"] and not init["agentCapabilities"].get("promptCapabilities", {}).get("image"):
         raise ValueError("当前 Antigravity ACP 版本未声明图片输入能力")
     session = call("session/new", dict(cwd=str(Path.cwd()), mcpServers=[]))
     sid = session["sessionId"]
     model = request.get("model")
     if model:
         call("session/set_model", dict(sessionId=sid, modelId=model))
+    if request.get("effort"):
+        options = session.get("configOptions", [])
+        option = next((item for item in options if item.get("category") == "thought_level"), None)
+        if not option:
+            raise ValueError("当前 ACP 会话未提供独立推理强度选项，请使用含档位的型号或默认强度")
+        call("session/set_config_option", dict(sessionId=sid, configId=option["id"], value=request["effort"]))
     blocks = [dict(type="text", text=request["prompt"])]
     for path in map(Path, request["images"]):
         blocks.append(dict(type="image", mimeType=mimetypes.guess_type(path.name)[0] or "image/png",
@@ -57,7 +63,10 @@ def media_turn(proc, request):
 
 if __name__ == "__main__":
     request = json.load(sys.stdin)
-    with subprocess.Popen([sys.argv[1], "acp", "--sandbox"], stdin=subprocess.PIPE,
+    args = [sys.argv[1], "acp", "--sandbox"]
+    if request.get("independent"):
+        args.extend(["--process-per-session", "--include-default-customizations=false"])
+    with subprocess.Popen(args, stdin=subprocess.PIPE,
                           stdout=subprocess.PIPE, text=True) as proc:
         try:
             print(json.dumps(media_turn(proc, request)))

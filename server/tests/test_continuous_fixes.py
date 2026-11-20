@@ -2,9 +2,9 @@
 import json
 import pytest
 from pathlib import Path
-from helpers import Env
+from helpers import Env, assembled_english_prompts
 from test_image_assess import reply
-from workbench.executors.fake import draft
+from workbench.executors.fake import draft, directed
 from workbench import promptdraft
 
 
@@ -37,6 +37,8 @@ def fixture(tmp_path,last_scene=False,scene=False):
     pub=env.art(eid,'publish');env.save_adopt(eid,'publish',wb._continuous_version(pub['adopted_version_id']),'publish-rechecked')
     assert not wb.delivery_problems(eid,'full')[0]
     case['prompts']=vid;case['delivery']=wb.deliver(eid,'full','original')
+    with env.db() as db:
+        case['initialDeliveries']=db.execute('SELECT count(*) FROM delivery WHERE episode_id=?',(eid,)).fetchone()[0]
     return env,case
 
 
@@ -49,7 +51,7 @@ def test_K_T2_question_does_not_change_versions_or_register_decision(tmp_path):
     assert [a['adopted_version_id'] for a in wb.episode_view(eid)['artifacts']]==before
     with env.db() as db:
         assert db.execute('SELECT count(*) FROM director_decision WHERE episode_id=?',(eid,)).fetchone()[0]==0
-        assert db.execute('SELECT count(*) FROM delivery WHERE episode_id=?',(eid,)).fetchone()[0]==1
+        assert db.execute('SELECT count(*) FROM delivery WHERE episode_id=?',(eid,)).fetchone()[0]==case['initialDeliveries']
 
 
 def test_K_T1_K_T3_prompt_change_preserves_other_segments_scoped_decision_and_old_delivery(tmp_path):
@@ -76,9 +78,9 @@ def test_K_T1_K_T3_prompt_change_preserves_other_segments_scoped_decision_and_ol
     with env.db() as db:
         decision=db.execute('SELECT * FROM director_decision WHERE episode_id=?',(eid,)).fetchone()
         assert decision['text']==text and decision['scope_kind']=='scenes' and json.loads(decision['scope_value'])==['场02']
-        assert db.execute('SELECT count(*) FROM delivery WHERE episode_id=?',(eid,)).fetchone()[0]==2
+        assert db.execute('SELECT count(*) FROM delivery WHERE episode_id=?',(eid,)).fetchone()[0]==case['initialDeliveries']+1
     assert Path(case['delivery']['html']).read_bytes()==oldbytes
-    new=wb.delivery_view(result['cursor']['deliveryId']);assert new['revision']==2
+    new=wb.delivery_view(result['cursor']['deliveryId']);assert new['revision']==wb.delivery_view(case['delivery']['deliveryId'])['revision']+1
     assert '本次修改' in Path(new['html']).read_text() and text in Path(new['html']).read_text()
 
 
@@ -97,6 +99,7 @@ def test_K_T7_other_adjusts_named_plan_segment_and_its_prompts(tmp_path):
     env,case=fixture(tmp_path);wb=env.wb;eid=case['eid'];old=wb._continuous_version(case['prompts']);oldplan=case['plan']
     task=dict(type='other',segments=['G05'],needKeys=[],scenes=[],stages=['plan'],targets=['G05'],instruction='第五段动作更紧凑',reason='调整该段表演节奏')
     def execute(req):
+        if req.kind=='review' or '退回写稿人' in req.prompt:return directed(req,'codex')
         manifest=wb.run_manifest(req.run_id)['manifest'];stage=manifest['stage']
         if req.purpose=='image_assess':
             ids=[re.search(r'候选-([a-f0-9-]+)',p.name)[1] for p in req.images if '候选-' in p.name]
@@ -109,7 +112,8 @@ def test_K_T7_other_adjusts_named_plan_segment_and_its_prompts(tmp_path):
                 if shot['segment']=='G05':shot['action']='阿福更紧凑地推回抽屉，'+('先伸手' if shot['id']=='S11' else '随后停手')
             content['decisionNotes']=notes(env,eid,'G05','阿福更紧凑地推回抽屉')
         else:
-            content=promptdraft.draft(wb,eid);content['decisionNotes']=notes(env,eid,'G05','阿福更紧凑地推回抽屉')
+            content=assembled_english_prompts(req);content['segments']['G05']['txt']+='\nAfu immediately pushes the drawer closed.'
+            content['decisionNotes']=notes(env,eid,'G05','Afu immediately pushes the drawer closed.')
         return scripted_fields(req,content)
     env.codex.script=[reply(dict(kind='change',earliestStage='plan',instruction=task['instruction'],segments=['G05'],reason=task['reason'])),reply([task]),*([execute]*25)]
     result=wb.fix_after_delivery(eid,task['instruction'],'other')
@@ -128,6 +132,7 @@ def test_K_T6_story_fixes_one_scene_and_only_mapped_segments(tmp_path):
     original_script=wb._continuous_version(env.art(eid,'script')['adopted_version_id'])
     task=dict(type='story',segments=[],needKeys=[],scenes=['场01'],instruction='第一场先确认钥匙再锁门',reason='修正第一场钥匙因果')
     def execute(req):
+        if req.kind=='review' or '退回写稿人' in req.prompt:return directed(req,'codex')
         stage=wb.run_manifest(req.run_id)['manifest']['stage']
         if req.purpose=='image_assess':
             ids=[re.search(r'候选-([a-f0-9-]+)',p.name)[1] for p in req.images if '候选-' in p.name]
@@ -145,7 +150,8 @@ def test_K_T6_story_fixes_one_scene_and_only_mapped_segments(tmp_path):
                 if shot['segment']=='G07':shot.update(action='阿福先确认钥匙再锁门。'+('点头' if shot['id']=='S15' else '退开'),origin=dict(scene='场01',line='阿福先确认钥匙再锁门。'))
             where='G07';quote='阿福先确认钥匙再锁门。'
         else:
-            content=promptdraft.draft(wb,eid);where='G07';quote='阿福先确认钥匙再锁门。'
+            content=assembled_english_prompts(req);where='G07';quote='Afu checks the key before locking the door.'
+            content['segments']['G07']['txt']+='\n'+quote
         content['decisionNotes']=notes(env,eid,where,quote)
         return scripted_fields(req,content)
     env.codex.script=[reply(dict(kind='change',earliestStage='script',instruction=task['instruction'],segments=['G07'],reason=task['reason'])),reply([task]),*([execute]*30)]
@@ -165,6 +171,7 @@ def test_K_T5_continuity_uses_common_scene_preserves_script_and_other_segments(t
     env,case=fixture(tmp_path,scene=True);wb=env.wb;eid=case['eid'];old=wb._continuous_version(case['prompts'])
     script=env.art(eid,'script')['adopted_version_id'];task=dict(type='continuity',segments=['G06','G07'],needKeys=[],scenes=[],instruction='第六段和第七段桌子位置对不上',reason='统一窗边桌子和相邻段接点')
     def execute(req):
+        if req.kind=='review' or '退回写稿人' in req.prompt:return directed(req,'codex')
         if req.purpose=='image_assess':
             ids=[re.search(r'候选-([a-f0-9-]+)',p.name)[1] for p in req.images if '候选-' in p.name]
             return reply([assessment(i,props={},observation='实际原图可见便利店，角色图为柴犬阿福') for i in ids])(req)
@@ -181,11 +188,11 @@ def test_K_T5_continuity_uses_common_scene_preserves_script_and_other_segments(t
             content['assets'].append(dict(id='common-room',kind='scene',title='统一标准空景',description='桌子始终在窗边',imagePrompt='无角色便利店空景，桌子始终在窗边',sceneIds=['场02'],dependsOn=[],keyVisual=False))
             content['decisionNotes']=notes(env,eid,'场02','桌子始终在窗边')
             return scripted_fields(req,content)
-        content=promptdraft.draft(wb,eid)
-        for sid in ('G06','G07'):
-            entry=content['segments'][sid]
-            entry['txt']+='\n桌子始终在窗边，暖光从左侧进入。'
-        content['decisionNotes']=notes(env,eid,'G06、G07','桌子始终在窗边')
+        content=assembled_english_prompts(req)
+        sid,=content['segments']
+        assert sid in ('G06','G07')
+        content['segments'][sid]['txt']+='\nThe table stays beside the window.'
+        content['decisionNotes']=notes(env,eid,sid,'The table stays beside the window.')
         return scripted_fields(req,content)
     env.codex.script=[reply(dict(kind='change',earliestStage='prompts',instruction=task['instruction'],segments=task['segments'],reason=task['reason'])),reply([task]),*([execute]*20)]
     if pause:
@@ -222,7 +229,17 @@ def test_K_T4_packaged_prompt_and_image_edits_preserve_old_outputs(tmp_path):
     text='第三段提示词不合格，末两段的场景图也不合格'
     tasks=[dict(type='prompt',segments=['G03'],needKeys=[],scenes=[],instruction='修改第三段提示词',reason='第三段动作更明确'),dict(type='image',segments=[],needKeys=[case['needKey']],scenes=[],instruction='末两段换新场景图',reason='换符合用途的场景图')]
     def execute(req):
-        stage=wb.run_manifest(req.run_id)['manifest']['stage']
+        if req.kind=='review' or '退回写稿人' in req.prompt:return directed(req,'codex')
+        manifest=wb.run_manifest(req.run_id)['manifest']
+        stage=manifest['stage']
+        if manifest.get('judgmentKind')=='选图决定':return directed(req,'codex')
+        if manifest.get('judgmentKind')=='采用素材逐段选图':
+            from workbench.executors.fake import sections
+            from workbench.worksheetrefs import fallback_shots
+            material=json.loads(sections(req.prompt)['judgment_materials'])
+            return reply(dict(segments={r['segment']:fallback_shots(r['candidates'],r['shots'])[:r['limit']] for r in material['segments']}))(req)
+        if manifest.get('judgmentKind')=='image_prompt_revision':
+            return reply(dict(prompt='空便利店内货架排列整齐，门口和两侧走道清晰可见。'))(req)
         if req.purpose=='image_assess':
             ids=[re.search(r'候选-([a-f0-9-]+)',p.name)[1] for p in req.images if '候选-' in p.name]
             return reply([assessment(i,props={},observation='实际原图清晰支持该段场景') for i in ids])(req)
@@ -238,9 +255,11 @@ def test_K_T4_packaged_prompt_and_image_edits_preserve_old_outputs(tmp_path):
                 if shot.get('startAssetId')==case['scene']:shot['startAssetId']=new
             content['decisionNotes']=notes(env,eid,'G06、G07',new)
         else:
-            content=promptdraft.draft(wb,eid)
-            for sid in ('G03','G06','G07'):content['segments'][sid]['txt']+='\n按新场景明确动作。'
-            content['decisionNotes']=notes(env,eid,'G03、G06、G07','按新场景明确动作。')
+            content=assembled_english_prompts(req)
+            sid,=content['segments']
+            assert sid in ('G03','G06','G07')
+            content['segments'][sid]['txt']+='\nAfu enters the new room.'
+            content['decisionNotes']=notes(env,eid,sid,'Afu enters the new room.')
         return scripted_fields(req,content)
     env.codex.script=[reply(dict(kind='change',earliestStage='asset_design',instruction=text,segments=['G03','G06','G07'],reason='两项定点修改')),reply(tasks),*([execute]*45)]
     result=wb.fix_after_delivery(eid,text,'packaged-fix')
@@ -252,6 +271,10 @@ def test_K_T4_packaged_prompt_and_image_edits_preserve_old_outputs(tmp_path):
     assert all(content['segments'][s]==old['segments'][s] for s in ('G01','G02','G04','G05'))
     current=wb.prompt_review_status(final)
     assert current['G01']['coldRead']['reviewId']==old_reviews['G01']['coldRead']['reviewId']
-    assert current['G01']['comparison']['reviewId']==old_reviews['G01']['comparison']['reviewId']
+    # The comparison includes the adopted storyboard references. A replacement
+    # changes that basis even when the segment text and its cold read stay valid.
+    assert old_reviews['G01']['comparison']['state']=='passed'
+    assert current['G01']['comparison']['state']=='needed'
+    assert wb.adoption_gate(final)['review'] is None
     assert Path(packaged['path']).read_bytes()==old_zip and Path(case['delivery']['html']).read_bytes()==old_html
-    assert wb.delivery_view(result['cursor']['deliveryId'])['revision']==2
+    assert wb.delivery_view(result['cursor']['deliveryId'])['revision']==wb.delivery_view(case['delivery']['deliveryId'])['revision']+1

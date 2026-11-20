@@ -83,7 +83,7 @@ class ContinuousJudgments:
                 receipts[key]=receipt
                 self._continuous_cursor(cid,judgmentReceipts=receipts)
                 return answer,basis
-        self._continuous_problem(cid,kind + '：' + '；'.join(problems))
+        self._continuous_problem(cid,kind + '：' + '；'.join(problems),allow_content_repair=False)
 
     def _continuous_image_rule(self, eid, vid):
         with connect(self.db_path) as db:

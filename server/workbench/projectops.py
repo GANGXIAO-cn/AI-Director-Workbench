@@ -564,6 +564,11 @@ class ProjectOpsMixin(HistoryMixin):
     def _text_catalog(self):
         from .executors.cli import ClaudeExecutor
         catalog = text_catalog()
+        self.register_api_executors()
+        owner = getattr(self, 'parent', self)
+        for api in owner.api_providers():
+            models = [dict(id=m['id'], label=m['id'], efforts=[None], status='pending', source=api['name']) for m in api['models']]
+            catalog['api:'+api['id']] = dict(label=api['name'], models=models, effortFlag='reasoning_effort')
         if isinstance(self.executors.get("claude"), ClaudeExecutor):
             catalog["claude"] = dict(catalog["claude"], models=[catalog["claude"]["models"][0]])
         for provider in ("claude","antigravity"):
@@ -627,7 +632,7 @@ class ProjectOpsMixin(HistoryMixin):
                 match = re.fullmatch(r"([a-z0-9]+(?:[-.][a-z0-9]+)+)\s+(.{1,160})",line.strip())
                 if match:
                     slug, label = match.groups()
-                    models.append(dict(id=slug,label=label,efforts=[None],status="pending",source="本机 agy models"))
+                    models.append(dict(id=slug,label=label,efforts=[None,"low","medium","high","xhigh","max"],status="pending",source="本机 agy models"))
             message = "已读取本机 Google CLI 型号清单"
         if len(models)==1 and (provider!="claude" or models[0].get("source")!="本机 Claude CLI 型号清单"):
             raise Rejected("没有读到可识别的型号，已保留上次清单")
@@ -641,6 +646,10 @@ class ProjectOpsMixin(HistoryMixin):
             raise Rejected("未配置的执行器")
         if not cat:
             raise Rejected("未知执行器")
+        if provider.startswith("api:"):
+            if not isinstance(model,str) or not model.strip() or len(model)>512 or any(ord(c)<32 for c in model):
+                raise Rejected("请选择或填写 API 型号")
+            return dict(provider=provider, model=model, effort=effort, status="pending")
         entry = next((m for m in cat["models"] if m["id"] == model), None)
         pattern = r"[\w.:-][\w./:-]{0,180}" + (r"(?:\[1m\])?" if provider == "claude" else "")
         if model is not None and (not isinstance(model, str) or not re.fullmatch(pattern,model)):
@@ -650,7 +659,7 @@ class ProjectOpsMixin(HistoryMixin):
         if entry is None:
             return dict(provider=provider, model=model, effort=effort, status="pending", note="原生型号，能力待检测")
         if effort not in entry["efforts"]:
-            raise Rejected(f"{model or '默认型号'} 不支持强度 {effort}，请重选或使用默认", detail=dict(allowed=entry["efforts"]))
+            return dict(provider=provider,model=model,effort=effort,status="pending",note="该强度未列入本机清单，按所选参数提交")
         return dict(provider=provider, model=model, effort=effort, status=entry["status"])
 
     def _stage_executors(self, db, episode_id, stage):

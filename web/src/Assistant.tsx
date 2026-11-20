@@ -322,7 +322,7 @@ function RunTimer({run}:{run:{status:string;created_at:number;started_at?:number
 const BATCH_STATE: Record<string, string> = { awaiting_authorization: "待确认", authorized: "已授权", completed: "完成", partial: "部分待发",
   pending_reconcile: "待核对", partially_succeeded: "部分成功", failed: "失败", cancelled: "已取消" };
 
-function EpisodeMessages({view,stage:current,reload,revise}:any) {
+export function EpisodeMessages({view,stage:current,reload,revise}:any) {
   const root=useRef<HTMLDivElement>(null);
   const [older,setOlder]=useState<any[]>([]);
   const [cursor,setCursor]=useState<string|null>(null);
@@ -460,7 +460,7 @@ function Message({ view, scenes, m, task, reload, art, closeHistory, revise }: {
   </>}</ModelReply>;
 }
 
-function StageExecutor({role,slot,catalog,refreshCatalog,busy,onChange}: {
+export function StageExecutor({role,slot,catalog,refreshCatalog,busy,onChange}: {
   role:"create"|"review"|"expert"; slot:any; catalog:any; refreshCatalog:()=>Promise<void>; busy:boolean; onChange:(value:any)=>void
 }) {
   const label=role==="create"?"创作":role==="expert"?"专家":"独审";
@@ -481,8 +481,8 @@ function StageExecutor({role,slot,catalog,refreshCatalog,busy,onChange}: {
   const identity=useQuery<any>("executor_identity",{provider:slot.provider});
   const status=identity.data;
   return <fieldset className="col" disabled={busy}><legend>{label}</legend>
-    <select aria-label={label+"执行器"} value={slot.provider} onChange={e=>onChange({provider:e.target.value,model:null,effort:null})}>
-      {pickable(Object.keys(catalog.text),slot.provider).map(p=><option key={p} value={p}>{PROVIDER_LABEL[p]??p}</option>)}</select>
+    <select aria-label={label+"执行器"} value={slot.provider} onChange={e=>onChange({provider:e.target.value,model:catalog.text[e.target.value]?.models[0]?.id??null,effort:null})}>
+      {pickable(Object.keys(catalog.text),slot.provider).map(p=><option key={p} value={p}>{catalog.text[p]?.label??PROVIDER_LABEL[p]??p}</option>)}</select>
     <select aria-label={label+"型号"} disabled={needsCatalog && !modelError} value={slot.model??""} onChange={e=>onChange({...slot,model:e.target.value||null,effort:null})}>
       {models.map((m:any)=><option key={m.id??"default"} value={m.id??""}>{m.label}</option>)}</select>
     {needsCatalog && <small role="status">{modelError || "正在读取 Claude Code 型号…"}</small>}

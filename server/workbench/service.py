@@ -10,6 +10,7 @@ from . import kickoffchecks, contracts, prompts, acting, shotrefs, imagechoices,
 from .db import dumps, initialize, new_id, transaction, connect
 from .executors.base import ExecRequest
 from .executors.cli import redact
+from .errors import ExecutorUnavailable
 from .storycheck import check_story
 from .manuscripts import extract_manuscript
 from .freechat import FreeChatMixin
@@ -28,6 +29,11 @@ from . import decisions, supplements, workflow
 EDITOR_GUARD = ContextVar("editor_guard", default=None)
 ROUND_LIMIT = 2
 REVIEW_PASSES = {"review": "story", "cold_read": "cold_read", "comparison": "comparison"}
+
+
+def review_pass_name(purpose, stage):
+    return stage if purpose == "review" else REVIEW_PASSES[purpose]
+
 
 
 from .errors import Conflict, NotFound, Rejected, row as _row, loads as _loads
@@ -91,12 +97,16 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
         self.db_path = self.store.db_path
         self.executors = executors
         self.image_providers_map = image_providers or {}
-        self.session_api_keys = {}
+        from .local_credentials import LocalCredentials
+        self.credentials = LocalCredentials(self.store.root)
         self.clock = clock
         self._continuous_locks = {}
         self._recovery_probe_lock = __import__("threading").Lock()
         self._recovery_identity_cache = {}
         initialize(self.db_path)
+        self.register_api_executors()
+        from .videosegment import register_workbench
+        register_workbench(self)
         from .storage_maintenance import initialize as initialize_storage
         initialize_storage(self)
         from .completion import backfill
@@ -105,7 +115,7 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
         self.mark_interrupted_requests()
         self.settle_unknown_requests()
         with transaction(self.db_path) as db:   # text runs left running by a previous process: retryable, no paid side effect
-            db.execute("UPDATE run SET status='stopped',reason='旧09总体独审已退出流程，由提示词本步检查接续' WHERE status='queued' AND purpose IN ('cold_read','comparison')")
+            db.execute("UPDATE run SET status='stopped',reason='旧09总体独审已退出流程，由提示词本步检查接续' WHERE status='queued' AND (purpose IN ('cold_read','comparison') OR (purpose='review' AND task_id IN (SELECT id FROM task WHERE stage='prompts')))")
             db.execute("UPDATE continuous_run SET state='paused',reason='已暂停，可继续' WHERE state='running' AND pause_requested=1")
             db.execute("UPDATE continuous_run SET reason='服务重启，正在自动继续',cursor=json_set(cursor,'$.resumeAfterRestart',json('true')) WHERE state='running' AND pause_requested=0")
             db.execute("UPDATE project SET method_pack=? WHERE method_pack<>?", (workflow.METHOD_REF, workflow.METHOD_REF))
@@ -399,11 +409,15 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
 
     def start_episode(self, episode_id, source_type, executor_plan, source_import_id=None, idea_text=None,
                       topic_id=None, goal="", relation="independent", predecessor_ids=(), spec_overrides=None,
-                      command_id=None, project_id=None, display_code=None, leftover_facts=(), preset_name="default", preset_revision=None, use_story_skill=False, files=(), cooperation_mode=None, palette_ids=None, start_story=False, source_intent="adapt"):
+                      command_id=None, project_id=None, display_code=None, leftover_facts=(), preset_name="default", preset_revision=None, use_story_skill=False, files=(), cooperation_mode=None, palette_ids=None, start_story=False, source_intent="adapt", origin_topic_id=None):
         executor_plan={**self.executor_defaults(),**executor_plan}
         payload = dict(project_id=project_id, display_code=display_code, facts=list(leftover_facts), episode_id=episode_id, source_type=source_type, plan=executor_plan, imp=source_import_id,
                        idea=idea_text, topic=topic_id, goal=goal, relation=relation, pre=list(predecessor_ids),
                        spec=spec_overrides)
+        if origin_topic_id:
+            if source_type != "idea":
+                raise Rejected("改写后的选题须提供本集调整过的想法")
+            payload["originTopicId"] = origin_topic_id
         if source_intent not in ("adapt", "locked_screenplay") or (source_intent == "locked_screenplay" and source_type != "import"):
             raise Rejected("定稿剧本入口须选择已导入的完整剧本")
         initial_stage = "script" if source_intent == "locked_screenplay" else "story"
@@ -456,8 +470,9 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                         raise Rejected("该导入材料不能作为故事来源")
                     db.execute("UPDATE import_record SET episode_id=? WHERE id=?", (episode_id, source_import_id))
                 carried = self._carried(db, ep, relation, predecessor_ids)
-                if source_type == "topic":
-                    self._topic_on_kickoff(db, episode_id, topic_id)
+                linked_topic = topic_id or origin_topic_id
+                if linked_topic:
+                    self._topic_on_kickoff(db, episode_id, linked_topic)
                 project = _row(db, "SELECT spec_preset,method_pack FROM project WHERE id=?", ep["project_id"])
                 preset = self._project_presets(db, ep["project_id"]).get(preset_name)
                 if preset is None:
@@ -478,7 +493,7 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                 self._freeze_sources(db, episode_id, ep["project_id"])
                 kid = new_id()
                 db.execute("INSERT INTO kickoff VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                           (kid, episode_id, source_type, source_import_id, topic_id, idea_text, goal, relation,
+                           (kid, episode_id, source_type, source_import_id, linked_topic, idea_text, goal, relation,
                             dumps(list(predecessor_ids)), dumps(carried), revision, dumps(settings), dumps(spec),
                             dumps(executor_plan), self.clock()))
                 db.execute("INSERT INTO kickoff_preset VALUES(?,?,?,?)",
@@ -740,8 +755,17 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
 
     # ------------------------------------------------------------------ tasks, threads, runs
     def create_task(self, episode_id, stage, goal, auto_revise=False, executor=None, command_id=None, selection=None,
-                    prompt_images=None, files=(), trial_turn_id=None, workspace_revision=None, base_version_id=None, discussion_only=False, auto_dialogue=False, discussion_id=None, keep_instruction=False, bounded_judgment=None, rebuild=False, propose_story=False):
+                    prompt_images=None, files=(), trial_turn_id=None, workspace_revision=None, base_version_id=None, discussion_only=False, auto_dialogue=False, discussion_id=None, keep_instruction=False, bounded_judgment=None, rebuild=False, propose_story=False, creation_role=None, prompt_segments=None, prompt_notes_only=False):
         payload = dict(episode_id=episode_id, stage=stage, goal=goal, auto=auto_revise, ex=executor, sel=selection)
+        if prompt_segments is not None:
+            if stage != "prompts" or not base_version_id or not prompt_segments:
+                raise Rejected("提示词局部修订需要基版和具体段号")
+            payload["promptSegments"] = sorted(set(prompt_segments))
+            payload["promptNotesOnly"] = prompt_notes_only
+        if creation_role is not None:
+            if creation_role not in ("create", "expert", "review"):
+                raise Rejected("无效的任务分工")
+            payload["creationRole"] = creation_role
         if propose_story:payload["proposeStory"]=True
         if rebuild:payload["rebuild"]=True
         if bounded_judgment is not None:
@@ -782,6 +806,12 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                             raise Rejected("任务执行分工无效")
                         self.validate_selection(selected.get("provider"), selected.get("model"), selected.get("effort"))
                     plan.update({role:self.checked_connection(slot) for role,slot in executor.items()})
+                if stage == "stress" and not discussion_only and (not executor or "create" not in executor):
+                    plan["create"] = plan["review"]
+                    if not creation_role:
+                        plan["creationRole"] = "review"
+                if creation_role or bounded_judgment is not None:
+                    plan["creationRole"] = creation_role or "expert"
                 if stage not in WRITABLE:
                     raise Rejected("未知阶段")
                 self._require_workflow_inputs(db, episode_id, stage)
@@ -819,7 +849,7 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                     run_id = self._queue_story_proposal(db,tid,aid)
                 else:
                     run_id = self._queue_run(db, tid, "revise" if base else "create", base, goal, selection,
-                                             message_entries=extra, workspace_revision=workspace_revision, discussion_only=discussion_only, auto_dialogue=auto_dialogue, discussion_id=discussion_id, bounded_judgment=bounded_judgment)
+                                             message_entries=extra, workspace_revision=workspace_revision, discussion_only=discussion_only, auto_dialogue=auto_dialogue, discussion_id=discussion_id, bounded_judgment=bounded_judgment, extra_header={"promptSegments":payload["promptSegments"],"promptNotesOnly":prompt_notes_only} if prompt_segments else None)
                 if trial_turn_id:
                     art = _row(db,"SELECT * FROM artifact WHERE id=?",aid)
                     if self._edit_state(db,art,self._cooperation_mode(db,episode_id)) == "protected":
@@ -1010,7 +1040,7 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
             role=self.active_selection(dict(provider=provider,model=model,effort=effort))
             provider,model,effort=role['provider'],role.get('model'),role.get('effort')
         if provider not in self.executors:
-            raise Rejected(f"未配置的执行器：{provider}")
+            raise ExecutorUnavailable(f"未配置的执行器：{provider}")
         if role["provider"] == provider:
             if model is None:
                 model = role.get("model")
@@ -1033,7 +1063,7 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
         elif purpose == "review":
             version = self._version_of(db, target_version_id, task["artifact_id"])
             entries = prompts.review_inputs(pack, settings_text, kickoff_text,
-                                            render_stage(task["stage"], json.loads(version["content"])), profile, stage=task["stage"])
+                                            version["content"] if task["stage"]=="prompts" else render_stage(task["stage"], json.loads(version["content"])), profile, stage=task["stage"])
             entries += self._extra_review_inputs(db, task, version)
         else:
             base_content = json.loads(self._version_of(db, base_version_id, task["artifact_id"])["content"]) \
@@ -1121,11 +1151,11 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                         isolationLevel=self._isolation_status(slot['provider']))
         provider = header["provider"]
         if provider not in self.executors:
-            raise Rejected(f"未配置的执行器：{provider}")
+            raise ExecutorUnavailable(f"未配置的执行器：{provider}")
         if any("data" in e for e in entries) and not getattr(self.executors[provider], "reads_images", False):
-            raise Rejected(f"{provider} 当前配置不支持本次原图输入")
-        if header["sessionMode"] == "ephemeral" and self._isolation_status(provider) != "session":
-            raise Rejected(f"{provider} 的会话隔离未验证，必需审核等待")
+            raise ExecutorUnavailable(f"{provider} 当前连接无法传入本次原图")
+        if header["sessionMode"] == "ephemeral":
+            header = dict(header, isolationLevel=self._isolation_status(provider))
         run_id = new_id()
         fingerprint, rel = self.store.freeze(run_id, header, entries)
         db.execute("INSERT INTO run(id,task_id,purpose,counted_round,provider,requested_model,requested_effort,"
@@ -1138,9 +1168,11 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
 
         return run_id
 
-    def retry_run(self, run_id, provider=None, model=None, effort=None, command_id=None):
+    def retry_run(self, run_id, provider=None, model=None, effort=None, command_id=None, use_selected_defaults=False):
         """Explicit retry (e.g. after waiting for quota or switching executor). Never automatic."""
         payload = dict(run_id=run_id, provider=provider, model=model, effort=effort)
+        if use_selected_defaults:
+            payload["useSelectedDefaults"] = True
         with transaction(self.db_path) as db:
             def run():
                 old = _row(db, "SELECT * FROM run WHERE id=?", run_id, missing="运行不存在")
@@ -1151,7 +1183,15 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                 if run_id not in retryable_attempts(attempts):
                     raise Conflict("本次请求已有后续执行，请刷新后查看最新结果")
                 header, entries = self._snapshot_parts(old)
+                if old["purpose"]=="review" and header["stage"]=="prompts":
+                    raise Rejected("此旧任务为09整稿审核。当前提示词按段核对。")
                 segmented = db.execute("SELECT 1 FROM prompt_segment_progress WHERE run_id=?", (run_id,)).fetchone()
+                if segmented and old["reason"] == "分段提示词校验失败":
+                    receipt = self.store.run_dir(run_id) / "segment-repair.json"
+                    segment, _, error = (old["diagnostic"] or "").partition("：")
+                    header["segmentRepair"] = json.loads(receipt.read_text()) if receipt.is_file() else dict(segment=segment,error=error)
+                    if command_id and ":segment-repair:" in command_id:
+                        header["segmentRepair"]["role"] = "create"
                 if not segmented and header.get('methodPack',{}).get('id')==workflow.METHOD_REF and ((old['purpose'] in ('create','revise','parallel') and header.get('stage') in ('asset_design','acting','plan','prompts')) or old['purpose'] in ('cold_read','comparison')) and not header.get('contextProfile')=='bounded_judgment':
                     # A retry is a new frozen run, never edit the old receipt.
                     pack,profile=self._episode_method(db,header['episodeId'])
@@ -1179,12 +1219,12 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                     target=replacement['provider']
                 if old["status"] == "waiting_quota" and old['provider']!='claude' and target != old["provider"] and self.get_setting("quota_retry_policy") == "same_cli":
                     raise Rejected("限流策略只允许使用原执行器重试，可在我的模型服务中调整")
-                if model is None and target == old["provider"]:
+                if not use_selected_defaults and model is None and target == old["provider"]:
                     model_for_retry = old["requested_model"]
                 else:
                     model_for_retry = model
                 effort_for_retry = effort
-                if effort is None and target == old["provider"] and model_for_retry == old["requested_model"]:
+                if not use_selected_defaults and effort is None and target == old["provider"] and model_for_retry == old["requested_model"]:
                     effort_for_retry = old["requested_effort"]
                 if replacement:
                     model_for_retry,effort_for_retry=replacement.get('model'),replacement.get('effort')
@@ -1260,10 +1300,12 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
         if digest != run["input_hash"]:
             return self._finish(run_id, "failed", reason="输入清单指纹不符")
         entries = self.store.manifest_texts(manifest)
-        if (task["stage"] == "prompts" and run["purpose"] == "create" and not run["base_version_id"]
+        if (task["stage"] == "prompts" and (run["purpose"] == "create" and not run["base_version_id"] or manifest.get("promptSegments") and run["purpose"]=="revise")
                 and not manifest.get("stageDialogue") and any(e["role"] == "prompt_scaffold" for e in entries)):
             from .segmentwriting import write_segments
             return write_segments(self, run, task, manifest, entries)
+        if task["stage"]=="prompts" and run["purpose"]=="review":
+            return self._finish(run_id,"stopped",reason="旧09整稿审核已退出流程")
         document = self._document_mode(run, task)
         if document:
             entries = prompts.document_entries(entries)
@@ -1272,10 +1314,13 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
         clarify = not document and task["stage"] != "stress" and not dialogue and bool(manifest.get("allowClarify")) and kind == "draft" \
             and getattr(self.executors[run["provider"]], "union_schema", True)
         if kind == "review":
-            review_pass = "plan" if run["purpose"] == "review" and task["stage"] == "plan" else REVIEW_PASSES[run["purpose"]]
+            review_pass = review_pass_name(run["purpose"], task["stage"])
             required = [s["key"] for s in self._review_settings(task, manifest) if s["strength"] == "required"]
             if run["purpose"] == "review":
                 trailer = prompts.review_trailer(required, stage=task["stage"])
+                if task["stage"] == "prompts":
+                    segments = self._continuous_version(run["target_version_id"])["segments"]
+                    trailer += "\n本次核对段号：" + "、".join(segments)
             else:
                 trailer = prompts.segment_review_trailer(run["purpose"],
                                                          manifest.get("scope"), required)
@@ -1324,15 +1369,96 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                     trailer = ("按输出格式直接交发布文案。title 写英文标题，body 只写正文第一行，tags 只写本集新增标签。"
                                "tempoBpm 选择适合本集的整数速度，suno_style 写拍号、乐器和情绪变化，suno_exclude 排除 vocals。"
                                "配乐是否启用由程序继承。cues 按发布依据的全片时窗写各段的配乐动作。")
-        prompt = prompts.prompt_from(entries, trailer, "bounded_judgment" if manifest.get("contextProfile")=="bounded_judgment" else run["purpose"], document=document)
         workdir = self.store.run_dir(run_id) / "work"
         workdir.mkdir(parents=True, exist_ok=True)
+        executor = self.executors[run["provider"]]
+        cold_retelling = None
+        if task["stage"] == "stress" and run["purpose"] in ("create", "revise") and not dialogue:
+            script_entry = next((e for e in entries if e["role"] == "adopted_script"), None)
+            if script_entry:
+                with connect(self.db_path) as db:
+                    raw_script = self._adopted_content(db, task["episode_id"], "script")
+                if isinstance(raw_script, dict):
+                    body_parts = []
+                    for sc in raw_script.get("scenes", []) or []:
+                        if not isinstance(sc, dict):
+                            continue
+                        lines = [f"## {sc.get('id', '')} {sc.get('heading', '')}".strip()]
+                        for k, lbl in (("action", ""), ("dialogue", "对白："), ("sound", "声音：")):
+                            val = sc.get(k)
+                            if isinstance(val, str) and val.strip():
+                                lines.append(lbl + val.strip())
+                        body_parts.append("\n".join(lines))
+                    if raw_script.get("shootingSegments"):
+                        seg_lines = []
+                        for sg in raw_script["shootingSegments"]:
+                            if not isinstance(sg, dict):
+                                continue
+                            bits = [str(sg.get("id", ""))]
+                            for k, lbl in (("action", ""), ("dialogue", "对白："), ("sound", "声音：")):
+                                val = sg.get(k)
+                                if isinstance(val, str) and val.strip():
+                                    bits.append(lbl + val.strip())
+                            seg_lines.append(" · ".join(b for b in bits if b))
+                        if seg_lines:
+                            body_parts.append("## 拍摄段落\n" + "\n".join(seg_lines))
+                    pure_script_text = "\n\n".join(body_parts).strip() or script_entry["text"]
+                else:
+                    pure_script_text = script_entry["text"]
+                cold_workdir = self.store.run_dir(run_id) / "cold_read"
+                cold_workdir.mkdir(parents=True, exist_ok=True)
+                cold_schema = {
+                    "type": "object",
+                    "required": ["retelling"],
+                    "properties": {"retelling": {"type": "string", "minLength": 1}},
+                    "additionalProperties": False,
+                }
+                cold_prompt = (
+                    "你是故事审查的独立评审。本步为【冷读复述】，你只能阅读下面这一份剧本正文，不得假设或脑补剧外设定。"
+                    "请只依据剧本正文复述你看懂了什么：按场次说明发生了什么事、人物为何行动、结局和情绪是什么；"
+                    "如果剧本里某处看不懂或缺少铺垫，直接如实写明看不懂的地方。"
+                    "返回 JSON 对象 {\"retelling\": \"...\"}。\n\n"
+                    f"===== adopted_script =====\n{pure_script_text}"
+                )
+                cold_req = ExecRequest(
+                    run_id=run_id + ":cold-read",
+                    purpose="stress_cold_read",
+                    kind="draft",
+                    prompt=cold_prompt,
+                    schema=cold_schema,
+                    session_mode="ephemeral",
+                    workdir=cold_workdir,
+                    model=run["requested_model"],
+                    effort=run["requested_effort"],
+                    timeout=int(self.get_setting("executor_timeout", 600)),
+                    images=[],
+                    connection=manifest.get("executorConnection", {}),
+                )
+                try:
+                    cold_outcome = executor.start(cold_req)
+                except Exception as exc:
+                    return self._finish(run_id, "failed", reason="executor_error", diagnostic=repr(exc)[:500])
+                if not cold_outcome.ok:
+                    status = "waiting_quota" if cold_outcome.error_class == "quota" else "failed"
+                    return self._finish(run_id, status, reason=cold_outcome.error_class,
+                                        diagnostic=cold_outcome.diagnostic or "06 冷读复述未完成", outcome=cold_outcome)
+                raw_cold = (cold_outcome.structured or {}).get("retelling") if isinstance(cold_outcome.structured, dict) else None
+                cold_retelling = raw_cold.strip() if isinstance(raw_cold, str) else ""
+                if not cold_retelling:
+                    return self._finish(run_id, "failed", reason="schema", diagnostic="06 冷读复述为空", outcome=cold_outcome)
+                (self.store.run_dir(run_id) / "cold-read.json").write_text(
+                    json.dumps(dict(retelling=cold_retelling), ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                entries = [*entries, dict(role="cold_read_retelling", name="冷读复述（仅依据剧本正文）.txt", text=cold_retelling)]
+                trailer += ("\n第一步只依据剧本正文的冷读复述已完成（见 cold_read_retelling）。"
+                            "请原样保留该冷读复述填入 retelling，不得在看过开工要求后倒推改写冷读；"
+                            "再对照本集开工要求与上游材料完成 diagnosis、issues、options、productionNotes。")
+        prompt = prompts.prompt_from(entries, trailer, "bounded_judgment" if manifest.get("contextProfile")=="bounded_judgment" else run["purpose"], document=document)
         images = []
         for n, e in enumerate(x for x in entries if x.get("binary")):
             path = workdir / f"{n + 1:02d}_{e['name']}"
             self.store.materialize_blob(e["sha256"], path)
             images.append(path)
-        executor = self.executors[run["provider"]]
         request = ExecRequest(run_id=run_id, purpose=run["purpose"], kind=kind, prompt=prompt,
                               schema=(publish_schema or (None if document else contracts.writing_schema(dialogue, clarify) if kind == "draft" else contracts.review_content_schema(review_pass))),
                               session_mode=run["session_mode"],
@@ -1421,6 +1547,16 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                 outcome.structured = bind_writing_reply(run, task, outcome.structured, selectable_kind=bool(clarify or dialogue))
             elif run["purpose"] in REVIEW_PASSES:
                 outcome.structured = bind_review_reply(run, outcome.structured, review_pass, manifest.get("scope"))
+            if cold_retelling and isinstance(outcome.structured, dict) and outcome.structured.get("kind") == "draft":
+                changes_list = outcome.structured.get("changes")
+                if isinstance(changes_list, list):
+                    found_retelling = False
+                    for item in changes_list:
+                        if isinstance(item, dict) and item.get("field") == "retelling":
+                            item["value"] = cold_retelling
+                            found_retelling = True
+                    if not found_retelling:
+                        changes_list.append(dict(targetId=task["artifact_id"], field="retelling", value=cold_retelling))
             kind = "review" if run["purpose"] in REVIEW_PASSES else "draft"
             if clarify and isinstance(outcome.structured, dict) and outcome.structured.get("kind") == "clarification":
                 kind = "clarification"
@@ -1432,12 +1568,6 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
             record_validation(problems)
             if not problems:
                 break
-            if kind=='draft' and not dialogue and not attempts and previous_reply and run['purpose'] in ('create','revise'):
-                with connect(self.db_path) as db:
-                    owned=self._continuous_owns_run(db,task['episode_id'],run_id)
-                if owned and self.episode_expert(task['episode_id']).get('provider')!=run['provider']:
-                    self._save_failed_output(run_id,outcome)
-                    return self._finish(run_id,'failed',reason='已收到回包，未通过入库校验',diagnostic=failure_diagnostic(),outcome=outcome,attempts=attempts)
             if attempts >= 1:
                 self._save_failed_output(run_id, outcome)
                 return self._finish(run_id, "failed", reason="回包两次不符合契约", diagnostic=failure_diagnostic(),
@@ -1594,6 +1724,8 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
         base = self._version_of(db, run["base_version_id"], task["artifact_id"]) if run["base_version_id"] else None
         content = json.loads(base["content"]) if base else {}
         updates = {c["field"]: normalize(task["stage"], c["field"], c["value"]) for c in changes}
+        if task["stage"]=="prompts" and base and set(updates)=={"notes"}:
+            return dict(content, notes=updates["notes"])
         responses = updates.get("productionNoteResponses")
         if isinstance(responses, list) and responses:
             manifest, _ = self.store.load_manifest(run["manifest_relpath"])
@@ -1762,7 +1894,7 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
         problems = []
         if result["reviewedVersionId"] != vid:
             problems.append("reviewedVersionId 与被审版本不符")
-        expected_pass = "plan" if run["purpose"] == "review" and task["stage"] == "plan" else REVIEW_PASSES[run["purpose"]]
+        expected_pass = review_pass_name(run["purpose"], task["stage"])
         if result["pass"] != expected_pass:
             problems.append(f"遍次应为 {expected_pass}")
         if expected_pass == "cold_read" and any(i["settingId"] for i in result["issues"]):
@@ -1790,6 +1922,12 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                     problems.append("分段审查"+("观察" if observations else "意见位置")+"不匹配："+"、".join(invalid)+"；versionId 须为 "+vid+"；objectId 允许："+"、".join(sorted(allowed))+"；unit 须为 segment 或 grid_cell")
                     break
         covered = {o["objectId"] for o in result["observations"]}
+        if expected_pass == "prompts":
+            segments = set(self._continuous_version(vid)["segments"])
+            if missing := segments - covered:
+                problems.append("合并独审漏掉分段：" + "、".join(sorted(missing)))
+            if any(i["location"]["objectId"] not in segments for i in result["issues"]):
+                problems.append("提示词问题须定位到本版的实际段号")
         if expected_pass == "comparison" and not ({manifest.get("scope")} | set(decision_texts)) <= covered:
             problems.append("对照观察须覆盖本段及每条适用决定")
         if expected_pass == "story" and (missing := sorted(required - covered)):
@@ -1864,19 +2002,22 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                     self._continuous_owns_run(db,task['episode_id'],run_id) and
                     (check_story(content) or not str(content.get('title','')).strip() and db.execute(
                         "SELECT 1 FROM continuous_run WHERE episode_id=? AND state='running' AND target_stage='delivery'",(task['episode_id'],)).fetchone())):   # expert mode: draft goes straight to review
-                    follow.append(self._queue_run(db, task["id"], "review", None, "", target_version_id=vid))
+                    try:
+                        follow.append(self._queue_run(db, task["id"], "review", None, "", target_version_id=vid))
+                    except Rejected as exc:
+                        self._message(db, thread, "assistant", "草稿已保存，独审待派发：" + str(exc), None, None, run_id)
             else:
                 rid = new_id()
                 manifest, _ = self.store.load_manifest(run["manifest_relpath"])
                 scope, scope_hash = manifest.get("scope") or "", manifest.get("scopeHash")
-                pass_name = "plan" if run["purpose"] == "review" and task["stage"] == "plan" else REVIEW_PASSES[run["purpose"]]
+                pass_name = review_pass_name(run["purpose"], task["stage"])
                 pass_no = db.execute("SELECT count(*)+1 FROM review WHERE version_id=? AND pass=? AND scope=?",
                                      (run["target_version_id"], pass_name, scope)).fetchone()[0]
                 snapshot = {s["key"]: s for s in self._review_settings(task, manifest)}
                 db.execute("INSERT INTO review(id,version_id,run_id,input_hash,pass_no,pass,original_decision,isolation_level,"
                            "reviewer,observations,created_at,scope,scope_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                            (rid, run["target_version_id"], run_id, run["input_hash"], pass_no, pass_name,
-                            result["decision"], "session", run["provider"], dumps(result["observations"]), self.clock(),
+                            result["decision"], run["isolation_level"] or "new", run["provider"], dumps(result["observations"]), self.clock(),
                             scope, scope_hash))
                 decision_texts = self._review_decisions(manifest)
                 blocking_issues = []
@@ -1899,7 +2040,7 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                 if blocking_issues and result["decision"] != "pass" and task["auto_revise"] and pass_name == "story":
                     if task["used_rounds"] < task["max_rounds"]:
                         db.execute("UPDATE task SET used_rounds=used_rounds+1 WHERE id=?", (task["id"],))
-                        request = "按独立审查意见修订：\n" + "\n".join(
+                        request = "基于本版逐项修复以下独审意见，保留其余内容：\n" + "\n".join(
                             f"- {i['location']['anchor']}：{i['reason']}" for i in blocking_issues)
                         follow.append(self._queue_run(db, task["id"], "revise", run["target_version_id"], request,
                                                       counted=True))
@@ -1988,8 +2129,8 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
             def run():
                 version = _row(db, "SELECT * FROM version WHERE id=?", version_id, missing="版本不存在")
                 art = _row(db, "SELECT * FROM artifact WHERE id=?", version["artifact_id"])
-                if art["stage"] not in ("story", "script", "plan"):
-                    raise Rejected("独立内容审核用于故事、剧本或08分镜；09在写作内检查自身结果")
+                if art["stage"] not in workflow.MANUSCRIPT_REVIEW_STAGES:
+                    raise Rejected("整稿独审适用于故事、剧本和分镜。09 提示词在写作时逐段核对。")
                 tid = task_id
                 if tid:
                     task = _row(db, "SELECT * FROM task WHERE id=?", tid)
@@ -2002,12 +2143,10 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                     else:
                         row = db.execute("SELECT id FROM task WHERE artifact_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",
                                          (art["id"],)).fetchone()
-                        if not row and art["stage"] == "plan":
+                        if not row:
                             kickoff=self._kickoff(db,art["episode_id"])
-                            execution={**kickoff["executor_plan"],**self._stage_executors(db,art["episode_id"],"plan")}
-                            tid,_=self._draft_thread(db,art["project_id"],art["episode_id"],art["id"],"plan","审核当前分镜",execution)
-                        elif not row:
-                            raise Rejected("请先在本集建立故事任务")
+                            execution={**kickoff["executor_plan"],**self._stage_executors(db,art["episode_id"],art["stage"])}
+                            tid,_=self._draft_thread(db,art["project_id"],art["episode_id"],art["id"],art["stage"],"审核当前采用候选稿",execution)
                         else:
                             tid = row[0]
                 run_id = self._queue_run(db, tid, "review", None, "", target_version_id=version_id,
@@ -2152,6 +2291,14 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
     def _content_gate(self, db, art, content,check_supplement_conflicts=True):
         plan = self._adopted_plan(db, art["episode_id"])
         gate = dict(formatErrors=check_content(art["stage"], content, plan))
+        if art["stage"] in ("plan", "prompts") and not gate["formatErrors"]:
+            from . import timeline
+            board=content if art["stage"]=="plan" else plan
+            spec=self._kickoff(db,art["episode_id"])["spec"]
+            maximum=validate_spec(spec)["segmentMaxSeconds"]
+            for seg in timeline.layout(board)["segments"]:
+                if seg["duration_ms"]>maximum*1000:
+                    gate["formatErrors"].append(f"{seg['id']} 时长超过本集每段 {maximum} 秒上限，请在分镜拆段")
         if art['stage']=='asset_design':
             fixed=self._fixed_standards(db,art['episode_id'])
             for asset in content.get('assets',[]):
@@ -2196,12 +2343,12 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                     gate["formatErrors"].append(str(exc))
             if art["stage"] == "prompts":
                 gate["formatErrors"].extend(self._prompt_reference_errors(db, art["episode_id"], content.get("segments"), reference_cache=reference_cache))
-            if art["stage"] in ("story", "plan"):
+            if art["stage"] in (*workflow.MANUSCRIPT_REVIEW_STAGES, "prompts"):  # also retain findings on legacy 09 versions
                 if art["stage"] == "story" and db.execute("SELECT 1 FROM task_pack p JOIN task t ON t.id=p.task_id WHERE t.artifact_id=? LIMIT 1",
                               (art["id"],)).fetchone():
                     sources = [json.loads(e["text"]) for e in self._version_materials(db,version,{"adaptation_source"})]
                     gate["formatErrors"].extend(adaptation_errors(content.get("adaptation"),sources))
-                review = self._latest_review(db, version_id)
+                review = db.execute("SELECT * FROM review WHERE version_id=? AND coalesce(scope,'')='' ORDER BY pass_no DESC LIMIT 1",(version_id,)).fetchone()
                 if review:
                     issues = [dict(r) for r in db.execute(
                         "SELECT i.*, w.reason AS waiver_reason FROM issue i LEFT JOIN waiver w ON w.issue_id=i.id "
@@ -2279,6 +2426,9 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                 result["impacts"] = self._after_adopt(db, art, version_id, expected_adopted_version_id)
                 from .completion import adopted as record_completion
                 record_completion(self, db, art, version_id)
+                if art["stage"] == "publish":
+                    from .filmauto import register
+                    register(db, art["episode_id"], version_id)
                 repair_runs = self._repair_after_adoption(db,art,version_id)
                 if repair_runs:
                     result["runId"] = repair_runs[0]
@@ -2305,6 +2455,9 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
         return aid
 
     def _adopted_content(self, db, episode_id, stage):
+        working=workflow.binding_candidate.get()
+        if stage=='plan' and working and working['episode']==episode_id:
+            return json.loads(_row(db,'SELECT content FROM version WHERE id=?',working['version'])['content'])
         row = db.execute("SELECT v.content FROM artifact a JOIN version v ON v.id=a.adopted_version_id "
                          "WHERE a.episode_id=? AND a.stage=?", (episode_id, stage)).fetchone()
         return json.loads(row[0]) if row else None
@@ -2375,6 +2528,13 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
             chat_page=self._episode_messages(db,episode_id,limit=chat_limit) if chat_limit is not None else None
             if chat_page is not None:view['chatPage']=chat_page
             message_ids={m['id'] for m in chat_page['messages']} if chat_page is not None else None
+            start = db.execute("SELECT state,delivery,error FROM film_start WHERE episode_id=?", (episode_id,)).fetchone()
+            view["filmStart"] = dict(start) if start else None
+            if start and not start["delivery"]:
+                formal = db.execute("SELECT d.id FROM delivery d JOIN film_start f ON f.episode_id=d.episode_id "
+                                    "WHERE d.episode_id=? AND d.scope='full' AND d.state='deliverable' "
+                                    "AND json_extract(d.versions,'$.publish')=f.publish ORDER BY d.rowid DESC LIMIT 1", (episode_id,)).fetchone()
+                view["filmStart"]["pendingDelivery"] = formal[0] if formal else None
             view["cooperationMode"] = self._cooperation_mode(db, episode_id)
             view["workflow"] = dict(method=workflow.METHOD_REF, stages=list(workflow.STAGES))
             entry = db.execute("SELECT source_intent,initial_stage FROM workflow_entry WHERE episode_id=?", (episode_id,)).fetchone()
@@ -2383,7 +2543,7 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
             view["skippedStages"] = dict(db.execute(
                 "SELECT stage, reason FROM optional_stage_choice WHERE episode_id=? AND reason<>''", (episode_id,)))
             view["sourceFiles"] = [dict(r) for r in db.execute("SELECT kind,relpath,sha256 FROM episode_source WHERE episode_id=? ORDER BY kind", (episode_id,))]
-            if kick and kick["source_type"] == "topic":
+            if kick and kick["topic_id"]:
                 view["topicRuntime"] = read_runtime(db, kick["topic_id"])
             if kick and kick["source_import_id"]:
                 view["sourceImport"] = dict(db.execute(
@@ -2406,10 +2566,14 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                 art = dict(art)
                 art["executorSettings"] = self._stage_executors(db,episode_id,art["stage"])
                 art["editState"] = self._edit_state(db, art, view["cooperationMode"])
+                rulings={d["ref"]:d["reason"] for d in db.execute(
+                    "SELECT ref,reason FROM ai_decision WHERE episode_id=? AND stage=? AND kind='expert_judgment' AND reverted_at IS NULL ORDER BY rowid",
+                    (episode_id,art["stage"]))}
                 art["versions"] = []
                 for v in db.execute("SELECT * FROM version WHERE artifact_id=? ORDER BY display_no", (art["id"],)):
                     v = _loads(dict(v), "content")
                     v["aiAdopted"] = bool(db.execute("SELECT 1 FROM ai_decision d JOIN adoption a ON a.id=d.ref WHERE d.kind='adopt' AND a.version_id=?",(v["id"],)).fetchone())
+                    v["expertReason"] = rulings.get(v["id"])
                     v["gate"] = self.adoption_gate(v["id"], db, reference_cache=reference_cache)
                     if art["stage"] == "stress":
                         row = db.execute("SELECT value FROM app_setting WHERE key=?", ("stress-disposition:" + v["id"],)).fetchone()
@@ -2438,7 +2602,6 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
             needs = db.execute("""SELECT count(*), count(CASE WHEN adopted_version_id IS NOT NULL OR decision='text_only' THEN 1 END)
                                   FROM asset_need WHERE episode_id=? AND removed=0""", (episode_id,)).fetchone()
             materials_confirmed = bool(needs[0] and needs[0] == needs[1])
-            packaged = db.execute("SELECT 1 FROM package JOIN delivery ON delivery.id=package.delivery_id WHERE delivery.episode_id=? LIMIT 1", (episode_id,)).fetchone()
         matrix = self.cast_matrix(episode_id)
         roles = matrix["roles"]
         cast_done = bool(roles and matrix["rows"]) and all(
@@ -2506,17 +2669,17 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
         skips = view["skippedStages"]
         view["productionStatus"] = dict(materialsConfirmed=bool(materials_confirmed), space=bool(spaces) and all(s=="confirmed" for s in spaces),
                                         cast=cast_done, assets=complete and all(entries.get(s,{}).get("refs") for s in expected) and not missing_images,
-                                        review=review_state=="已完成", package=bool(packaged))
+                                        review=review_state=="已完成")
         with connect(self.db_path) as db:
-            from .completion import current
-            view["completion"] = current(self, db, episode_id)
-            adopted_versions = {a['stage']:a['adopted_version_id'] for a in view['artifacts']}
-            deliveries = [r for r in db.execute("SELECT id,versions FROM delivery WHERE episode_id=? AND scope='full' AND state='deliverable' ORDER BY created_at DESC,rowid DESC",(episode_id,))
-                          if all(adopted_versions.get(k)==v for k,v in json.loads(r['versions']).items())
-                          and not db.execute("SELECT 1 FROM storage_removed WHERE kind='delivery' AND owner=? AND removed_at>0 LIMIT 1",(r['id'],)).fetchone()]
-            view['productionStatus']['delivery'] = bool(deliveries)
-            view['productionStatus']['package'] = any(db.execute("SELECT 1 FROM package p WHERE delivery_id=? AND NOT EXISTS (SELECT 1 FROM storage_removed s WHERE s.relpath=p.relpath AND s.removed_at>0) LIMIT 1",(d['id'],)).fetchone() for d in deliveries)
-            view['deliveryInProgress'] = bool(db.execute("SELECT 1 FROM continuous_run WHERE episode_id=? AND state='running' LIMIT 1",(episode_id,)).fetchone())
+            from .completion import current, current_deliveries, film_progress
+            adopted_versions = {a["stage"]:a["adopted_version_id"] for a in view["artifacts"]}
+            deliveries = current_deliveries(db, episode_id, adopted_versions)
+            film = film_progress(self, db, episode_id, deliveries)
+            view["completion"] = current(self, db, episode_id, film)
+            view["productionStatus"].update(delivery=bool(deliveries), package=film[1], finecut=bool(film[2]))
+            active=db.execute("SELECT state FROM continuous_run WHERE episode_id=? AND state IN ('running','waiting_external') LIMIT 1",(episode_id,)).fetchone()
+            view['deliveryInProgress']=bool(active and active['state']=='running')
+            view['expertAdvancing']=bool(active)
             if view['episode']['state']=='delivered' and not view['completion']['completed']:
                 view['episode']['state']='in_production'
         return view
@@ -2559,7 +2722,11 @@ class Core(ContinuousMixin, StressRepairMixin, WorksheetMixin, supplements.Suppl
                 if progress:
                     results = db.execute("SELECT segment,fields FROM prompt_segment_result WHERE task_id=? AND basis=?",
                                          (task["id"], progress["basis"]))
-                    saved = {r["segment"]:json.loads(r["fields"])["segments"][r["segment"]]["txt"] for r in results}
+                    saved = {}
+                    for record in results:
+                        sid = record["segment"]
+                        fields = json.loads(record["fields"])
+                        saved[sid] = fields["segments"][sid]["txt"] if "segments" in fields else fields["notes"]
                     run["segmentProgress"] = dict(current=progress["current_segment"], total=progress["total"], saved=saved)
         return task
 

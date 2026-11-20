@@ -3,6 +3,12 @@
 The writable artifacts below use workbench step numbers. Asset selection, review,
 delivery verification and packaging are separate operator steps.
 """
+from contextvars import ContextVar
+
+# Only the worker assembling references reads the candidate as its working board.
+# Other callers continue to see the last formally adopted version.
+binding_candidate = ContextVar("binding_candidate", default=None)
+
 STAGES = (
     ("story", "01 故事方向"), ("characters", "02 角色"),
     ("world", "03 世界规则"), ("treatment", "04 分场"),
@@ -135,8 +141,16 @@ def check(stage, content, *, new_receipt=False):
 
 STANDARD_GOALS = {'story': '按开工资料起草故事稿', 'characters': '根据已采用的故事稿和项目角色设定，起草本集出场角色的小传。', 'world': '根据已采用的故事和角色，整理会影响角色选择或事件因果的规则，逐条写明影响及依据。上游未确认的推断单列到备注，避免与已确认规则重复。', 'treatment': '按已采用的故事、角色及适用世界规则划分场次。逐场写明时间、地点、出场角色的位置、动作、结果、状态变化和估计时长，核对相邻场次的人物与道具连续性，汇总全片时长预算。', 'script': '根据已采用的分场大纲、故事、角色和世界规则逐场写完整剧本。保留场次顺序和人物行动因果，写清动作、对白及场间衔接。', 'stress': '根据本集采用稿及开工要求审查剧本，提交冷读复述、审查范围、具体问题、依据和可选返修方案；待导演选择返修范围。'}
 
-STANDARD_GOALS["publish"] = "按已采用的制作内容和项目发布设置完成最后一步发布文案，填写标题、正文、标签及适用字段。"
+_publish_goal = "按已采用的制作内容和项目发布设置完成最后一步发布文案，填写标题、正文、标签及适用字段。"
 
-CONTINUOUS_GOALS = {**STANDARD_GOALS, "asset_design": "按已采用剧本、角色标准和制作提醒起草素材清单，声明新角色身份图与主场景首次出现的关键视觉，最多三项。"}
+CONTINUOUS_GOALS = {**STANDARD_GOALS, "stress": "根据本集采用稿及开工要求审查剧本，先只依据剧本正文做冷读复述，再提交审查范围、具体问题、依据和可选返修方案，交专家推进处理。", "publish": _publish_goal, "asset_design": "按已采用剧本、角色标准和制作提醒起草素材清单，声明新角色身份图与主场景首次出现的关键视觉，最多三项。"}
 
 CONTINUOUS_GOALS.update(plan="根据已采用剧本和实际素材，在同一分镜表内完成动作、表情、视线、摄影与声音设计。沿用剧本拍摄段，每个观看窗口1–3秒整秒；填写 visibleRoles 和影响行动的 propStates，保留已有素材用途及小差异接受结论。", prompts="根据采用分镜和绑定原图逐窗写自然语言提示词，并在本次写作内按短片技能完成内容通读与对照检查。修正遗漏、错译、错引和歧义，不重审整体方案或重新批准素材；不机械拼接字段，不另写自检证明。")
+
+
+# 08 is the final whole-manuscript review. 09 checks each prompt during writing.
+MANUSCRIPT_REVIEW_STAGES = ("story", "script", "plan")
+
+
+def needs_manuscript_review(stage, *, skips_diagnosis):
+    return stage in ("story", "plan") or stage == "script" and skips_diagnosis

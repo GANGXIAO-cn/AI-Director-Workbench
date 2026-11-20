@@ -210,6 +210,8 @@ class StressRepairMixin:
         ep=self._episode_in(db,eid)
         aid=self._ensure_artifact(db,ep,stage)
         executor={**self._kickoff(db,eid)["executor_plan"],**self._stage_executors(db,eid,stage)}
+        if action in ("verify", "early"):
+            executor = {**executor, "create": executor["review"], "creationRole": "review"}
         issues=json.loads(plan["issues"])
         impacts=[r for r in pending_changes(db,eid) if r["stage"]==stage]
         if step.get("scopeIssues"):

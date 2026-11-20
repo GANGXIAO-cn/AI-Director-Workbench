@@ -215,8 +215,8 @@ class PromptReviewMixin(ImageAssessmentMixin):
         plan_exec = json.loads(row(db, "SELECT executor_plan FROM task WHERE id=?", tid)["executor_plan"])
         review_slot = self._stage_executors(db,art["episode_id"],"prompts").get("review",plan_exec["review"])
         prov = provider or review_slot["provider"]
-        if prov not in self.executors or self._isolation_status(prov) == "unverified":
-            raise Rejected("审核执行器的会话隔离未验证")
+        if prov not in self.executors:
+            raise Rejected("所选独审执行器未配置")
         if refs and not getattr(self.executors[prov], "reads_images", True):
             raise Rejected(f"{prov} 在当前隔离配置下不能读图，请选择能读图的审核执行器")
         images = [image_attachment(r["label"], self.store.read_blob(r["sha256"])) for r in refs if r["kind"] == "image"]
@@ -283,37 +283,7 @@ class PromptReviewMixin(ImageAssessmentMixin):
         return active
 
     def start_prompt_review_batch(self, version_id, pass_name, command_id, provider=None, model=None, effort=None):
-        if pass_name not in ("cold_read","comparison"):
-            raise Rejected("请选择第一遍冷读或第二遍对照")
-        with transaction(self.db_path) as db:
-            def enqueue():
-                version = loads(row(db,"SELECT * FROM version WHERE id=?",version_id),"content")
-                art = row(db,"SELECT * FROM artifact WHERE id=?",version["artifact_id"])
-                if art["stage"] != "prompts":
-                    raise Rejected("整版送审须选择提示词版本")
-                context = self._review_context(db,art,version)
-                entries = version["content"].get("segments",{})
-                if not context or set(entries) != set(context):
-                    raise Rejected("提示词段号与已采用制作方案不一致，请核对整版段落")
-                errors = self._prompt_reference_errors(db,art["episode_id"],entries)
-                if errors:
-                    raise Rejected("；".join(errors))
-                order, own, comp = self._segment_hashes(db,version_id,context)
-                active = self._active_prompt_reviews(db,art["id"])
-                if pass_name == "comparison" and any(not comp[sid] or (sid,"cold_read",own[sid]) in active for sid in order):
-                    raise Rejected("须先完成整版各段冷读并保存观察")
-                queued = {}
-                for sid in order:
-                    digest = (own if pass_name == "cold_read" else comp)[sid]
-                    if (sid,pass_name,digest) in active:
-                        continue
-                    state = self._seg_review_state(db,art["id"],sid,pass_name,digest)
-                    if state["state"] == "needed":
-                        queued[sid] = self._queue_segment_review(db,version_id,sid,pass_name,provider,model,effort,context=context)["runId"]
-                return dict(runIds=list(queued.values()),segments=queued)
-            payload = dict(version=version_id, passName=pass_name)
-            payload.update({key:value for key,value in dict(provider=provider,model=model,effort=effort).items() if value is not None})
-            return self._command(db,command_id,"prompt_review_batch",payload,enqueue)
+        raise Rejected("09 提示词在写作时逐段通读核对，已取消整版批量送审")
 
     def _seg_review_state(self, db, artifact_id, segment, pass_name, scope_hash):
         r = db.execute("SELECT r.* FROM review r JOIN version v ON v.id=r.version_id WHERE v.artifact_id=? AND r.pass=? "

@@ -153,6 +153,8 @@
           "enum": [
             "story",
             "plan",
+            "prompts",
+            "script",
             "cold_read",
             "comparison"
           ]

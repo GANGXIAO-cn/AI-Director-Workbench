@@ -70,6 +70,8 @@ class ConnectionsMixin:
         if provider not in self.executors:
             raise Rejected("未配置的执行器")
         executor = self.executors[provider]
+        if provider.startswith("api:"):
+            return dict(authenticated=executor.probe()["authenticated"], accountLabel=None)
         if not isinstance(executor,CliExecutor):
             simulated = executor.probe().get("structured_result") == "simulated"
             return dict(authenticated=None, accountLabel=None,simulated=simulated)
@@ -119,4 +121,7 @@ class ConnectionsMixin:
             model = settings["model"]
         if effort is None and model == settings["model"]:
             effort = settings["effort"]
-        return dict(proxy=settings["proxy"],model=model,effort=effort)
+        connection = dict(proxy=settings["proxy"],model=model,effort=effort)
+        if provider.startswith("api:"):
+            connection["binding"] = self.executors[provider].config()["binding"]
+        return connection

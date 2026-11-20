@@ -34,30 +34,72 @@ class ContinuousRecovery:
         batches = sorted(set(batchIds or ()))
         return dict(id=f'{scope}|{kind}|'+('b:'+','.join(batches) if batches else str(provider or '')),
                     scope=scope, kind=kind, provider=provider, role=role, batchIds=batches,
-                    resetsAt=resetsAt, at=self.clock(), lastTry=None)
+                    resetsAt=resetsAt, at=self.clock(), lastTry=None, **{k:ignored[k] for k in ('model','effort') if k in ignored})
+
+    def _continuous_run_role(self, run):
+        purpose = run.get('purpose') or run.get('role')
+        role = {'revise':'create','parallel':'create','cold_read':'review','comparison':'review','proposal':'expert'}.get(purpose,purpose)
+        if not run.get('task_id'):
+            return run.get('stage','kickoff'), role
+        with connect(self.db_path) as db:
+            task = row(db,'SELECT stage,executor_plan FROM task WHERE id=?',run['task_id'])
+        if role=='image_assess' and run.get('manifest_relpath'):
+            manifest,_=self.store.load_manifest(run['manifest_relpath'])
+            if manifest.get('imageAssessment',{}).get('coarse'):
+                role='review'
+        if role == 'create':
+            role = json.loads(task['executor_plan']).get('creationRole',role)
+            if task['stage']=='prompts' and run.get('manifest_relpath'):
+                manifest, _ = self.store.load_manifest(run['manifest_relpath'])
+                role = manifest.get('segmentRepair',{}).get('role',role)
+        return task['stage'], role
 
     def _run_blocks(self, run, scope=None):
         reason = run.get('reason') or run.get('errorClass')
         kind = 'quota' if run.get('status')=='waiting_quota' or reason=='quota' else {
             'authentication':'auth', 'network':'transient', 'timeout':'transient', 'interrupted':'transient'}.get(reason)
-        purpose = run.get('purpose') or run.get('role')
-        role = {'revise':'create','parallel':'create','cold_read':'review','comparison':'review','proposal':'expert'}.get(purpose,purpose)
-        stage=run.get('stage','kickoff')
-        if run.get('task_id'):
-            with connect(self.db_path) as db:
-                stage=row(db,'SELECT stage FROM task WHERE id=?',run['task_id'])['stage']
+        stage, role = self._continuous_run_role(run)
         block = self._recovery_block(scope or f'run:{stage}:{role}', kind,
                                      provider=run.get('provider'), role=role, resetsAt=parse_resets(run))
+        if block:
+            block.update(model=run.get('requested_model',run.get('model')), effort=run.get('requested_effort',run.get('effort')))
         return [block] if block else []
 
     def _claim_resume(self, db, cid, auto=None, now=None):
         value = row(db, 'SELECT * FROM continuous_run WHERE id=?', cid)
-        allowed = (auto is None and value['state']=='paused') or (auto is not None and value['state'] in ('running','waiting_external'))
+        allowed = (auto is None and value['state'] in ('paused','failed')) or (auto is not None and value['state'] in ('running','waiting_external'))
         if not allowed or (auto is not None and value['pause_requested']):
             if auto is not None:
                 return None
             raise Conflict('当前状态不能继续')
         cursor = json.loads(value['cursor'])
+        if value['state']=='failed':
+            newer = db.execute("SELECT 1 FROM continuous_run WHERE episode_id=? AND id<>? AND (created_at>? OR state IN ('running','paused','waiting_external')) LIMIT 1",
+                               (value['episode_id'],cid,value['created_at'])).fetchone()
+            if newer:
+                raise Conflict('本集已有更新的连续制作，请从最新进度继续')
+            if cursor.get('stage')=='prompts':
+                from .promptrepairs import retained_writer_notes
+                corrected=retained_writer_notes(db,cursor)
+                if corrected:
+                    cursor.setdefault('ignoredVersions',[]).append(cursor['promptCandidate'])
+                    cursor.update(promptCandidate=corrected,queue=[],nextRepair=None)
+            # Earlier builds discarded the base on the third repair even when only review dispatch failed.
+            # Recover a complete owned draft only from that failed chain. Later director edits take priority below.
+            history = cursor.get('repairHistory',{}).get('story:story',[])
+            if cursor.get('stage')=='story' and any(attempt.get('method')=='rebuild' and '会话隔离未验证' in attempt.get('reason','') for attempt in history):
+                from .storycheck import check_story
+                drafts = db.execute("SELECT v.id,v.content,v.source_run_id FROM version v JOIN artifact a ON a.id=v.artifact_id WHERE a.episode_id=? AND a.stage='story' ORDER BY v.display_no DESC",(value['episode_id'],))
+                ignored = []
+                for draft in drafts:
+                    if draft['source_run_id'] not in cursor.get('ownedRuns',[]):break
+                    content = json.loads(draft['content'])
+                    if not check_story(content) and content.get('title'):
+                        cursor['ignoredVersions'] = list(dict.fromkeys(cursor.get('ignoredVersions',[])+ignored))
+                        cursor.update(queue=[],nextRepair=None,runId=draft['source_run_id'])
+                        break
+                    ignored.append(draft['id'])
+            cursor.get('repairHistory',{}).pop(str(cursor.get('stage'))+':'+str(cursor.get('stage')),None)
         previous=db.execute('SELECT status,reason FROM run WHERE id=?',(cursor.get('runId'),)).fetchone()
         interrupted=previous and previous['status']!='succeeded'
         if not interrupted and cursor.get('judgmentKind') in ('素材用途接续','引用用途核对') and cursor.get('phase')=='judgment':
@@ -102,6 +144,17 @@ class ContinuousRecovery:
         with transaction(self.db_path) as db:
             for r in db.execute("SELECT id,cursor FROM continuous_run WHERE state='running' AND pause_requested=0").fetchall():
                 if json.loads(r['cursor']).get('resumeAfterRestart') and self._claim_resume(db,r['id'],auto=[]):
+                    ready.append(r['id'])
+            # A retired 09 merge could fail an ongoing expert run after its writer had already fixed it.
+            from .promptrepairs import retained_writer_notes
+            failed=db.execute("""SELECT c.id,c.cursor FROM continuous_run c WHERE c.state='failed'
+                AND c.pause_requested=0 AND c.mode='full' AND json_extract(c.cursor,'$.stage')='prompts'
+                AND NOT EXISTS (SELECT 1 FROM continuous_run n WHERE n.episode_id=c.episode_id AND n.rowid>c.rowid)
+                AND NOT EXISTS (SELECT 1 FROM continuous_run n WHERE n.episode_id=c.episode_id
+                    AND n.state IN ('running','paused','waiting_external'))""").fetchall()
+            for r in failed:
+                cursor=json.loads(r['cursor'])
+                if retained_writer_notes(db,cursor) and self._claim_resume(db,r['id']):
                     ready.append(r['id'])
         return ready
 
@@ -148,14 +201,24 @@ class ContinuousRecovery:
 
     def _provider_switched(self, db, r, b):
         role=b.get('role')
-        if role in ('image','image_assess') or not role:return False
+        if role == 'image' or not role or not b.get('provider'):return False
         c=r['cursor']
-        if role=='kickoff':slot=c.get('startArgs',{}).get('executor_plan',{}).get('create',{})
+        if role=='kickoff':
+            plan=c.get('startArgs',{}).get('executor_plan',{})
+            slot=plan.get('expert') or plan.get('create',{})
+        elif role in ('image_assess','expert'):
+            slot=self.episode_expert(r['episode_id'])
         else:
             plan={**self._kickoff(db,r['episode_id'])['executor_plan'],
                   **self._stage_executors(db,r['episode_id'],b['scope'].split(':')[1] if b['scope'].startswith('run:') else c.get('stage','story'))}
             slot=plan.get(role,{})
-        return bool(slot.get('provider') and slot['provider']!=b.get('provider'))
+        if slot.get('provider'):
+            cfg=self.run_connection(slot['provider'],slot.get('model'),slot.get('effort'))
+            slot=dict(slot,model=cfg['model'],effort=cfg['effort'])
+        if b['kind']=='quota' and slot.get('provider')!=b.get('provider') and self.get_setting('quota_retry_policy')=='same_cli':
+            return False
+        return bool(slot.get('provider') and (slot['provider']!=b.get('provider') or
+                    'model' in b and any(slot.get(key) != b.get(key) for key in ('model','effort'))))
 
     def changed_continuous_runs(self, now=None):
         now=self.clock() if now is None else now
@@ -176,10 +239,14 @@ class ContinuousRecovery:
                     expired=next((b for b in blocks if now>=b['at']+deadlines[b['kind']]
                                   or cursor.get('wakeCounts',{}).get(b['id'],0)>=LIMIT[b['kind']]),None)
                     # Conditions are evaluated per item: run any still-eligible siblings first.
-                    eligible=[b for b in blocks if now<b['at']+deadlines[b['kind']]]
-                    ids=[b['id'] for b in eligible if self._block_ready(
-                        b,now,dict(probes,switched=self._provider_switched(db,r,b) if b['kind']=='auth' else False),cursor.get('wakeCounts',{}))
-                        and cursor.get('wakeCounts',{}).get(b['id'],0)<LIMIT[b['kind']]]
+                    ids=[]
+                    for block in blocks:
+                        kind=block['kind']
+                        if kind in ('auth','quota','transient') and self._provider_switched(db,r,block):
+                            ids.append(block['id'])
+                        elif (now<block['at']+deadlines[kind] and cursor.get('wakeCounts',{}).get(block['id'],0)<LIMIT[kind]
+                              and self._block_ready(block,now,probes,cursor.get('wakeCounts',{}))):
+                            ids.append(block['id'])
                     if ids:
                         if self._claim_resume(db,r['id'],auto=ids,now=now):ready.append(r['id'])
                         continue
@@ -223,16 +290,21 @@ class ContinuousRecovery:
         return ready
 
     def _continuous_retry_slot(self, cid, run):
-        if run.get('reason')!='authentication' or run.get('purpose') in ('image','image_assess'):
+        reason=(run.get('reason') or '').split(' → 已重试为 ')[0]
+        if reason not in ('authentication','quota','network','timeout','unavailable','model_not_found') or run.get('purpose')=='image':
             return {}
         value=self._continuous_record(cid)
+        stage, role = self._continuous_run_role(run)
         with connect(self.db_path) as db:
-            stage=row(db,'SELECT stage FROM task WHERE id=?',run['task_id'])['stage']
             plan={**self._kickoff(db,value['episode_id'])['executor_plan'],
                   **self._stage_executors(db,value['episode_id'],stage)}
-        role={'revise':'create','parallel':'create','cold_read':'review','comparison':'review','proposal':'expert'}.get(run.get('purpose'),run.get('purpose'))
-        slot=plan.get(role,{})
-        return {k:slot.get(k) for k in ('provider','model','effort')} if slot.get('provider') and slot['provider']!=run['provider'] else {}
+        slot=self.episode_expert(value['episode_id']) if role in ('expert','image_assess') else plan.get(role,{})
+        if slot.get('provider'):
+            cfg=self.run_connection(slot['provider'],slot.get('model'),slot.get('effort'))
+            slot=dict(slot,model=cfg['model'],effort=cfg['effort'])
+        if reason=='quota' and slot.get('provider')!=run['provider'] and self.get_setting('quota_retry_policy')=='same_cli':
+            return {}
+        return dict(provider=slot['provider'],model=slot.get('model'),effort=slot.get('effort'),use_selected_defaults=True) if slot.get('provider') and (slot['provider'] != run['provider'] or slot.get('model') != run.get('requested_model') or slot.get('effort') != run.get('requested_effort')) else {}
 
     def _restart_retry(self, cid, run):
         if run['status'] not in ('failed','stopped') or run.get('reason') not in INTERRUPTED:return None

@@ -32,7 +32,7 @@ class ContinuousFinishing(ContinuousJudgments, PromptRepairs):
                 if validate(answer):return answer
             except (ValueError,TypeError,KeyError,AttributeError):pass
             instruction+='\n上次回复格式不合格，请按指定 JSON 契约重回。'
-        self._continuous_problem(cid,'只读判断格式重试后仍不符合契约')
+        self._continuous_problem(cid,'只读判断格式重试后仍不符合契约',allow_content_repair=False)
 
     def _continuous_cast(self,cid):
         eid=self._continuous_record(cid)['episode_id'];art=self._continuous_art(eid,'plan')
@@ -140,20 +140,33 @@ class ContinuousFinishing(ContinuousJudgments, PromptRepairs):
         updated=[dict(s,strategy='flex') if s['id'] in segments else s for s in plan['segments']]
         result=self.save_manual(art['id'],plan_id,dict(segments=updated),f'{cid}:product-flex:{plan_id}:'+fingerprint(updated),note='商品主图独立随段输入')
         vid=self._continuous_internal_version(cid,result['versionId'])
-        self._continuous_adopt(cid,'plan',vid)
+        from .workflow import binding_candidate
+        working=binding_candidate.get()
+        if working and working['episode']==art['episode_id']:
+            working['version']=vid
+        else:
+            self._continuous_adopt(cid,'plan',vid)
         return vid
 
-    def _continuous_prompt_revision(self,cid,vid,affected,instruction):
+    def _continuous_prompt_revision(self,cid,vid,affected,instruction,*,notes_only=False):
         eid=self._continuous_record(cid)['episode_id'];old=self._continuous_version(vid)
         from . import timeline, stages
         plan=self._continuous_version(self._continuous_art(eid,'plan')['adopted_version_id'])
         affected=set(affected)
-        for segment in timeline.layout(plan)['segments']:
+        for segment in ([] if notes_only else timeline.layout(plan)['segments']):
             sid=segment['id'];entry=old['segments'].get(sid)
             if not entry or stages.check_segment_prompt(sid,entry,segment['duration_ms'],segment['strategy'],segment['shots']):affected.add(sid)
-        resegmented=set(old['segments'])!={s['id'] for s in plan['segments']}
-        self._continuous_create(cid,'prompts',instruction+' 只修受影响段 '+dumps(sorted(affected))+'。segments只返回这些段的完整内容，其他仍在当前方案中的段由系统从基版继承。decisionNotes 按所修段填写 segmentId。照已采用分镜逐窗撰写自然正文，不能机械拼接字段；保留未变化窗口文字。',base=vid,prompt_images=True)
-        new=self._continuous_art(eid,'prompts')['versions'][-1];content=new['content']
+        current_ids={s['id'] for s in plan['segments']}
+        resegmented=set(old['segments'])!=current_ids
+        affected.intersection_update(current_ids)
+        if affected:
+            self._continuous_create(cid,'prompts',instruction+'。只返回当前请求指定段的完整内容。保留未变化窗口文字。',base=vid,prompt_images=True,prompt_segments=sorted(affected),prompt_notes_only=notes_only)
+            new=self._continuous_art(eid,'prompts')['versions'][-1]
+        elif resegmented:
+            new=next(v for v in self._continuous_art(eid,'prompts')['versions'] if v['id']==vid)
+        else:
+            return vid
+        content=new['content']
         plan=self._continuous_version(self._continuous_art(eid,'plan')['adopted_version_id'])
         current_ids={s['id'] for s in plan['segments']}
         # Preserve exact content, references and observation receipts outside the
@@ -163,6 +176,7 @@ class ContinuousFinishing(ContinuousJudgments, PromptRepairs):
             if sid not in affected and sid in current_ids:merged[sid]=entry
         if set(merged)!=current_ids:self._continuous_problem(cid,'分段修订未覆盖当前方案全部段号')
         preserved=dict(old,segments=merged)
+        if 'notes' in content:preserved['notes']=content['notes']
         if 'decisionNotes' in content:
             from .decisions import revised_segment_notes
             preserved['decisionNotes']=revised_segment_notes(old.get('decisionNotes',[]),content['decisionNotes'],affected,current_ids)
@@ -202,6 +216,25 @@ class ContinuousFinishing(ContinuousJudgments, PromptRepairs):
         self._grid_artwork(cid,eid,self._continuous_art(eid,'plan')['adopted_version_id'])
         return self._continuous_prompt_revision(cid,vid,affected,'按新采用镜头方案和段号映射重写受影响段，更新受影响段的引用和用途说明，继承已采用绑定，不新增逐镜图片审核。'+dumps(answer))
 
+    def _prompt_problem_segments(self,cid,vid,reason):
+        import re
+        eid=self._continuous_record(cid)['episode_id']
+        with connect(self.db_path) as db:plan=self._adopted_content(db,eid,'plan')
+        ids={s['id'] for s in plan['segments']}
+        def mentioned(key):
+            return re.search(r'(?<![a-zA-Z0-9_-])'+re.escape(key)+r'(?![a-zA-Z0-9_-])',reason)
+        affected={sid for sid in ids if mentioned(sid)}
+        affected.update(s['segment'] for s in plan['shots'] if mentioned(s['id']))
+        if affected:return affected
+        # A location-free diagnostic is a request to locate the fault, never an all-segment edit.
+        material=dict(problem=reason,shots={s['id']:s['segment'] for s in plan['shots']},
+                      segments={sid:entry.get('txt','') for sid,entry in self._continuous_version(vid).get('segments',{}).items()})
+        def validate(answer):
+            items=answer.get('segments') if isinstance(answer,dict) else None
+            return [] if isinstance(items,list) and items and all(isinstance(s,str) and s in ids for s in items) else ['请给出现有受影响段号']
+        answer,_=self._continuous_bounded_json(cid,'定位提示词问题',vid,'根据已发现的问题定位具体段，不重审。reply {"segments":["受影响段号"]}。',material,validate,stage='prompts')
+        return set(answer['segments'])
+
     def _continuous_prompt_checks(self,cid,vid):
         """Writing includes the content check; fix concrete assembly errors locally.
 
@@ -210,15 +243,8 @@ class ContinuousFinishing(ContinuousJudgments, PromptRepairs):
         """
         errors=self.adoption_gate(vid)['formatErrors']
         if errors:
-            segment_ids=set(self._continuous_version(vid).get('segments',{}))
-            affected=set()
-            for error in errors:
-                matches={sid for sid in segment_ids if error.startswith((sid+'：',sid+' ',sid+':'))}
-                if not matches:
-                    affected=segment_ids
-                    break
-                affected.update(matches)
-            vid=self._continuous_prompt_revision(cid,vid,affected,'修正本次提示词的具体格式或引用错误，并按原尺度检查正文：'+'；'.join(errors))
+            affected=self._prompt_problem_segments(cid,vid,'；'.join(errors))
+            vid=self._continuous_prompt_revision(cid,vid,affected,'修正本次提示词的具体格式或引用错误：'+'；'.join(errors))
         return vid
 
     def _continuous_finish_stages(self,cid):
@@ -251,7 +277,7 @@ class ContinuousFinishing(ContinuousJudgments, PromptRepairs):
         gate=self.adoption_gate(plan_id)
         if gate['review'] is None:
             self._continuous_cursor(cid,stage='plan',phase='plan_review')
-            self._continuous_execute(cid,self.submit_review(plan_id,f'{cid}:plan-review:{plan_id}')["runId"])
+            self._continuous_submit_review(cid,plan_id,f'{cid}:plan-review:{plan_id}')
             gate=self.adoption_gate(plan_id)
         if gate['blocking']:
             with connect(self.db_path) as db:
@@ -269,13 +295,15 @@ class ContinuousFinishing(ContinuousJudgments, PromptRepairs):
             gate=self.adoption_gate(plan_id)
         if gate['review'] is None:
             self._continuous_cursor(cid,stage='plan',phase='plan_review')
-            self._continuous_execute(cid,self.submit_review(plan_id,f'{cid}:plan-review:{plan_id}')['runId'])
+            self._continuous_submit_review(cid,plan_id,f'{cid}:plan-review:{plan_id}')
             gate=self.adoption_gate(plan_id)
         if gate['blocking']:
             self._continuous_cursor(cid,stage='plan')
             self._continuous_problem(cid,'分镜定稿仍有独审指出的关键问题：'+dumps(gate['blocking']))
-        for issue in gate['unresolved']:
-            self.waive(issue,plan_id,'08分镜：不影响当前用途的普通意见按本版采用',f'{cid}:plan-waive:{issue}')
+        if gate['unresolved']:
+            ruling=self._stage_ruling(cid,'plan',next(v for v in self._continuous_art(eid,'plan')['versions'] if v['id']==plan_id),gate)
+            for issue in gate['unresolved']:
+                self.waive(issue,plan_id,ruling,f'{cid}:plan-waive:{issue}')
         grids=self._grid_artwork(cid,eid,plan_id)
         self._episode_image_review(cid,eid,self.asset_worksheet(eid)['rows'],grids)
         placements=self.product_placements(eid,check_prompt_refs=False)

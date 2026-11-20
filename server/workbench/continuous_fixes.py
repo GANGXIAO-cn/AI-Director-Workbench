@@ -83,7 +83,9 @@ class ContinuousFixes:
     def _fix_stage(self,cid,stage,task):
         eid=self._continuous_record(cid)['episode_id'];art=self._continuous_art(eid,stage);base=art['adopted_version_id'];old=self._continuous_version(base)
         instruction=task['instruction']+'\n只改以下范围，未列出的场次、段、素材条目保持原样：'+dumps(task)
-        self._continuous_create(cid,stage,instruction,base=base,prompt_images=stage=='prompts')
+        scoped=sorted((set(task['segments'])|set(task.get('targets',[]))) & old.get('segments',{}).keys()) if stage=='prompts' else []
+        self._continuous_create(cid,stage,instruction,base=base,prompt_images=stage=='prompts',
+                                **({'prompt_segments':scoped, 'prompt_notes_only':set(task.get('targets',[])) & set(stages.WRITABLE[stage])=={'notes'}} if scoped else {}))
         candidate=self._continuous_art(eid,stage)['versions'][-1];content=dict(candidate['content'])
         scene_ids=set(task['scenes'])|set(task.get('mappedScenes',[]));segment_ids=set(task['segments']);need_ids=set(task['needKeys'])
         targets=set(task.get('targets',[]));scene_ids|=targets;segment_ids|=targets;need_ids|=targets
@@ -120,16 +122,22 @@ class ContinuousFixes:
     def _fix_images(self,cid,task):
         eid=self._continuous_record(cid)['episode_id'];cursor=self._continuous_record(cid)['cursor']
         receipt=cursor.get('fixImageReceipt')
+        prior=cursor.get('fixImageOriginalPrompts',{})
         if receipt is None:
+            prior={key:self._need(eid,key)['source_prompt'] for key in task['needKeys']}
             self._fix_stage(cid,'asset_design',task)
             receipt={key:self._need(eid,key)['adopted_version_id'] for key in task['needKeys']}
-            self._continuous_cursor(cid,fixImageReceipt=receipt)
+            self._continuous_cursor(cid,fixImageReceipt=receipt,fixImageOriginalPrompts=prior)
         for key in task['needKeys']:
             token=str(cursor['fixIndex'])+':'+key
             state=self._image_state(cid,key)
             if state.get('fixPrepared')!=token:
                 need=self._need(eid,key)
-                self.set_asset_need(eid,key,need['revision'],'generate',f'{cid}:fix-image:{token}',prompt=need['image_prompt']+'\n'+task['instruction'])
+                prompt=need['source_prompt']
+                if not prompt or prompt==prior.get(key) or need['image_prompt']!=prompt:
+                    prompt=self._reviewed_image_prompt(cid,eid,key,need['image_prompt'] or need['description'],
+                        dict(instruction=task['instruction'],adoptedDesign=prompt),'局部修改')
+                self.set_asset_need(eid,key,need['revision'],'generate',f'{cid}:fix-image:{token}',prompt=prompt)
                 self._image_state(cid,key,attempts=[],retiredCandidates=list(need['candidates']),libraryChecked=True,assessedRevision=None,fixPrepared=token,epoch=token)
         if not self._continuous_images(cid):return False
         mapping={old:self._need(eid,key)['adopted_version_id'] for key,old in receipt.items() if old}
@@ -243,5 +251,6 @@ class ContinuousFixes:
             self._continuous_cursor(cid,fixIndex=index+1)
             value=self._continuous_record(cid)
         self._continuous_cursor(cid,fixPhase='delivery')
-        self._continuous_delivery(cid)
+        if self._continuous_prepare_handoff(cid):
+            self._continuous_delivery(cid)
         return self._continuous_record(cid)

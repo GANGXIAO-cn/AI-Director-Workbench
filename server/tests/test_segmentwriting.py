@@ -108,3 +108,90 @@ def test_local_revision_keeps_other_decision_quotes():
     assert check() == []
     updated.append(updated[-1])
     assert check() == ["G02：决定 D01 的落点重复"]
+
+
+def test_writer_repairs_only_failed_segment_with_previous_reply(tmp_path):
+    env, case, cid, _ = finishing_fixture(tmp_path)
+    wb, eid = env.wb, case['eid']
+    wb.save_episode_expert(eid,'antigravity','chosen-expert')
+    job = wb.create_task(eid,'prompts','按段写',rebuild=True,prompt_images=False,
+                         executor={'create':{'provider':'codex'}})
+    wb._continuous_cursor(cid,stage='prompts')
+    before=(len(env.codex.calls),len(env.ag.calls))
+    def good(req):
+        sid, = json.loads(sections(req.prompt)['prompt_scaffold'])
+        return draft(req,segments=json.dumps({sid:{'txt':'Shot 1: The dog steps forward.','sound':{}}}))
+    def broken(req):
+        return draft(req,segments=json.dumps({'WRONG':{'txt':'A red umbrella.','sound':{}}}))
+    def different_error(req):
+        assert req.model!='chosen-expert' and 'A red umbrella.' in req.prompt
+        return draft(req,segments=json.dumps({'G02':{'txt':'','sound':{}}}))
+    def fixed(req):
+        assert req.model!='chosen-expert' and 'previousResponse' in req.prompt
+        assert list(json.loads(sections(req.prompt)['prompt_scaffold']))==['G02']
+        return good(req)
+    env.codex.script=[good,broken,broken,different_error,different_error,fixed]
+    wb._continuous_execute(cid,job['runId'])
+    assert len(env.codex.calls)-before[0]==6 and len(env.ag.calls)==before[1]
+    assert wb._continuous_record(cid)['state']=='running'
+    assert set(env.art(eid,'prompts')['versions'][-1]['content']['segments'])=={'G01','G02'}
+
+
+def test_notes_only_revision_preserves_prompt_and_sibling_notes(tmp_path):
+    import pytest
+    from workbench.errors import Rejected
+    env, case, cid, _ = finishing_fixture(tmp_path)
+    wb, eid = env.wb, case['eid']
+    writer = {'create':{'provider':'codex'}}
+    initial = wb.create_task(eid,'prompts','写两段',rebuild=True,prompt_images=False,executor=writer)
+    def first(req):
+        sid, = json.loads(sections(req.prompt)['prompt_scaffold'])
+        return draft(req,segments=json.dumps({sid:{'txt':'Shot 1: The dog pauses.','sound':{}}}),
+                     notes=sid+' 服装见图6')
+    env.codex.script=[first,first]
+    env.drain(initial['runId'])
+    base=env.art(eid,'prompts')['versions'][-1]
+    job=wb.create_task(eid,'prompts','只修第一段图号',base_version_id=base['id'],prompt_segments=['G01'],
+                       prompt_notes_only=True,prompt_images=False,executor=writer)
+    def correct(req):
+        packet=sections(req.prompt)
+        assert list(json.loads(packet['prompt_scaffold']))==['G01']
+        assert 'G02' not in packet['base_version']
+        return draft(req,notes='G01 服装见图5')
+    env.codex.script=[correct]
+    env.drain(job['runId'])
+    revised=env.art(eid,'prompts')['versions'][-1]
+    assert revised['content']==dict(base['content'],notes='G01 服装见图5\nG02 服装见图6')
+    with pytest.raises(Rejected,match='逐段核对'):
+        wb.submit_review(revised['id'],'accidental-whole-review')
+
+    # Simulate an old system merge that undid exactly the notes field (E23).
+    from workbench.db import transaction
+    with transaction(wb.db_path) as db:
+        stale=wb._new_version(db,job['artifactId'],revised['id'],'manual',dict(revised['content'],notes=base['content']['notes']))
+        db.execute("INSERT INTO review VALUES('legacy',?,?,?,1,'prompts','revise','session','reader','[]',0,'',NULL)",
+                   (stale,initial['runId'],'snapshot'))
+        loc=json.dumps(dict(anchor='notes 中第一段',objectId='G01'))
+        db.execute("INSERT INTO issue VALUES('note','legacy',1,?,'reference',NULL,NULL,'revise','备注图号',1)",(loc,))
+        cursor=json.loads(db.execute('SELECT cursor FROM continuous_run WHERE id=?',(cid,)).fetchone()[0])
+        cursor.update(stage='prompts',promptCandidate=stale,ownedVersions=[stale],ownedRuns=[job['runId']],pendingUserChange=False)
+        db.execute("UPDATE continuous_run SET state='failed',cursor=? WHERE id=?",(json.dumps(cursor),cid))
+        cursor['userStamp']=wb._continuous_user_stamp(db,eid,cursor['ownedRuns'])
+        db.execute("UPDATE continuous_run SET cursor=? WHERE id=?",(json.dumps(cursor),cid))
+    assert wb.restart_continuous_runs()==[cid]
+    assert wb._continuous_record(cid)['cursor']['promptCandidate']==revised['id']
+    assert wb._resume_prompt_candidate(cid,revised['id'])==revised['id']
+    assert wb.restart_continuous_runs()==[]
+
+
+def test_legacy_unlabelled_notes_use_an_exact_replacement(tmp_path):
+    env,case,_,vid=finishing_fixture(tmp_path)
+    wb=env.wb
+    art=env.art(case['eid'],'prompts')
+    base=wb.save_manual(art['id'],vid,{'notes':'开场杯子见图6。第二段保留木门。'},'old-note')['versionId']
+    job=wb.create_task(case['eid'],'prompts','开场杯子应用图5',base_version_id=base,prompt_segments=['G01'],
+                       prompt_notes_only=True,prompt_images=False,executor={'create':{'provider':'codex'}})
+    env.codex.script=[lambda req:draft(req,notes=json.dumps({'before':'开场杯子见图6','after':'开场杯子见图5'}))]
+    env.drain(job['runId'])
+    revised=env.art(case['eid'],'prompts')['versions'][-1]
+    assert revised['content']==dict(wb._continuous_version(base),notes='开场杯子见图5。第二段保留木门。')

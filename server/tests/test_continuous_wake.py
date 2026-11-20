@@ -251,11 +251,10 @@ def test_auth_switch_uses_new_executor(tmp_path,monkeypatch):
     monkeypatch.setattr(wb,'executor_identity',lambda provider:dict(authenticated=False))
     monkeypatch.setattr(wb,'_stage_executors',lambda db,eid,stage:{'create':{'provider':'antigravity'}})
     assert wb.changed_continuous_runs()==[cid]
-    # Only the creation slot changed. The following review still uses the unavailable account.
-    with pytest.raises(Halt):wb._continuous_execute(cid)
+    wb._continuous_execute(cid)
     with env.db() as db:
         assert db.execute("SELECT 1 FROM run WHERE provider='antigravity' AND purpose='create' AND status='succeeded'").fetchone()
-    assert wb._continuous_record(cid)['cursor']['blocks'][0]['role']=='review'
+    assert not wb._continuous_record(cid)['cursor']['queue']
 
 
 def test_restart_does_not_hold_items_from_an_older_stop(tmp_path):
@@ -321,3 +320,19 @@ def test_transport_retry_only_draws_missing_item(tmp_path,monkeypatch):
     assert wb._continuous_images(cid)
     assert wb._need(eid,'bell')['adopted_version_id'] and wb._need(eid,'lamp')['adopted_version_id']==lamp
     assert sorted(calls)==['bell','bell','lamp']
+
+
+def test_quota_wait_honors_director_model_change_on_same_provider(tmp_path):
+    env=Env(tmp_path)
+    wb=env.wb
+    _,eid=env.new_episode(plan={'create':{'provider':'codex','model':'original'},'review':{'provider':'codex'}})
+    cid=run_record(env,eid,stage='story')
+    env.codex.script=[lambda req:ExecOutcome(False,error_class='quota',quota_resets_at='in 12h')]
+    rid=wb.create_task(eid,'story','写稿')['runId']
+    with pytest.raises(Halt):
+        wb._continuous_execute(cid,rid)
+    assert wb.changed_continuous_runs()==[]
+    wb.save_stage_executor(env.art(eid,'story')['id'],'create','codex','replacement')
+    assert wb.changed_continuous_runs()==[cid]
+    wb._continuous_execute(cid)
+    assert [r.model for r in env.codex.calls]==['original','replacement']

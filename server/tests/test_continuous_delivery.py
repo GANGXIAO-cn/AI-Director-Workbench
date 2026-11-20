@@ -57,7 +57,7 @@ def test_J_T1_delivery_problem_routes_and_spec_stops(tmp_path,monkeypatch,stage)
         monkeypatch.setattr(wb,method,lambda *a,_name=method,**k:called.append(_name) or True)
     monkeypatch.setattr(wb,'_continuous_prompt_checks',lambda c,v:called.append('_continuous_prompt_checks') or v)
     monkeypatch.setattr(wb,'_continuous_prompt_revision',lambda c,v,*a:called.append('_continuous_prompt_revision') or v)
-    problem=dict(stage=stage,segment='G01' if stage=='recheck' else None,file=None,problem='本次核验问题')
+    problem=dict(stage=stage,segment='G01' if stage in ('recheck','prompts') else None,file=None,problem='本次核验问题')
     if stage=='spec':
         with pytest.raises(Halt):wb._continuous_delivery_problem(cid,problem)
         assert wb._continuous_record(cid)['state']=='failed' and wb._continuous_record(cid)['choice'] is None
@@ -72,7 +72,7 @@ def test_J_T1_same_problem_stops_after_two_repairs(tmp_path,monkeypatch):
     env,case,cid=fixture(tmp_path);wb=env.wb;calls=[]
     monkeypatch.setattr(wb,'delivery_problems',lambda *a:([dict(stage='space',segment=None,file=None,problem='空间尚未确认')],None))
     monkeypatch.setattr(wb,'_continuous_delivery_problem',lambda *a:calls.append(a) or True)
-    with pytest.raises(Halt):wb._continuous_delivery(cid)
+    with pytest.raises(Halt):wb._continuous_prepare_handoff(cid)
     assert len(calls)==2 and '空间尚未确认' in wb._continuous_record(cid)['reason']
 
 
@@ -100,3 +100,29 @@ def test_report_text_only_does_not_restart_production(tmp_path):
     changed,_=env.save_adopt(eid,'stress',dict(report,productionNotes=notes),'report-production-change')
     with env.db() as db:
         assert db.execute("SELECT 1 FROM impact WHERE source_ref=? AND state='pending'",('stress:'+changed,)).fetchone()
+
+
+def test_checklist_evidence_and_targeted_missing_reference(tmp_path, monkeypatch):
+    env=Env(tmp_path)
+    wb=env.wb
+    case=env.full_episode(segments={"G01":[8000],"G02":[9000]},deliver=False)
+    eid=case["eid"]
+    reference=env.image(case["pid"],eid,name="桶身",rgb=(36,37,38))["versionId"]
+    wb.mark_image(eid,reference,"required",requirement={"targetSegments":["G02"]})
+    checklist=wb.delivery_checklist(eid)
+    evidence=checklist["evidence"]
+    assert evidence["segments"]==["G01","G02"] and evidence["durationMs"]==17000
+    assert evidence["shots"]==2 and evidence["readableImages"]==1
+    assert all(r["number"]>=1 for r in checklist["roleReceipts"])
+    issue=next(p for p in checklist["problems"] if p.get("kind")=="required_reference")
+    assert issue["file"]=="桶身" and issue["affectedSegments"]==["G02"]
+    trial=wb.delivery_checklist(eid,"trial",["G01"])
+    assert not trial["problems"] and trial["evidence"]["durationMs"]==8000
+    from test_continuous_wake import run_record
+    cid=run_record(env,eid)
+    work=[]
+    monkeypatch.setattr(wb,"_continuous_prompt_revision",lambda c,v,segs,note:work.append((segs,note)) or v)
+    monkeypatch.setattr(wb,"_continuous_prompt_checks",lambda c,v:v)
+    monkeypatch.setattr(wb,"_continuous_adopt",lambda *args:None)
+    assert wb._continuous_delivery_problem(cid,issue)
+    assert work[0][0]=={"G02"} and reference in work[0][1]

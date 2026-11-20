@@ -72,6 +72,7 @@ def test_selection_changes_while_exporting_and_legacy_marks(tmp_path, monkeypatc
     wb = env.wb
     sample = env.full_episode(segments={"G01":[8000]}, deliver=False)
     eid, vid = sample["eid"], sample["img"]["versionId"]
+    existing = {d["id"] for d in wb.list_projects()[0]["deliveries"]}
     write = wb._write_delivery
 
     def concurrent_mark(*args):
@@ -83,7 +84,7 @@ def test_selection_changes_while_exporting_and_legacy_marks(tmp_path, monkeypatc
         change.setattr(wb, "_write_delivery", concurrent_mark)
         with pytest.raises(Rejected, match="必用图发生变化"):
             wb.deliver(eid,"full","race")
-    assert not wb.list_projects()[0]["deliveries"]
+    assert {d["id"] for d in wb.list_projects()[0]["deliveries"]} == existing
     legacy = next(a for a in wb.episode_assets(eid) if a["id"]==vid)["requirement"]
     assert legacy["selectedBy"]=="unrecorded" and not legacy["targetSegments"]
     env.review_segments(sample["prompts"], ["G01"], cid="legacy")

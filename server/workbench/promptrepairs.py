@@ -1,5 +1,6 @@
 """Candidate-bound note repairs. Record patches never rewrite segment prose."""
 import json
+import re
 from .db import connect, transaction, dumps
 from .errors import row, Conflict
 from . import productionnotes as pn
@@ -12,6 +13,37 @@ def note_proof(content,basis):
     return fingerprint(dict(segments={k:v.get('txt','') for k,v in content.get('segments',{}).items()},
         responses=content.get('productionNoteResponses',[]),report=basis['reportVersionId'],notes=basis['notes'],
         upstream={s:basis['stages'].get(s,{}) for s in pn.STAGES if s!='prompts'}))
+
+
+def retained_writer_notes(db, cursor):
+    """Recognize the retired merge that put old notes back over a writer's correction."""
+    vid = cursor.get('promptCandidate')
+    if vid not in cursor.get('ownedVersions',[]):
+        return None
+    row = db.execute("""SELECT v.content,p.id,p.content AS written,p.source_run_id,g.content AS original
+        FROM version v JOIN version p ON p.id=v.base_id JOIN version g ON g.id=p.base_id
+        JOIN artifact a ON a.id=v.artifact_id WHERE v.id=? AND v.origin='manual' AND a.stage='prompts'
+        AND v.artifact_id=p.artifact_id AND p.artifact_id=g.artifact_id""",(vid,)).fetchone()
+    if not row or row['source_run_id'] not in cursor.get('ownedRuns',[]):
+        return None
+    merged, written, original = (json.loads(row[key]) for key in ('content','written','original'))
+    before, after = merged.pop('notes',None), written.pop('notes',None)
+    if merged!=written or before!=original.get('notes') or not before or not after or before==after:
+        return None
+    issues = db.execute("""SELECT i.loc FROM issue i JOIN review r ON r.id=i.review_id
+        WHERE r.id=(SELECT id FROM review WHERE version_id=? AND pass='prompts' AND scope=''
+        ORDER BY rowid DESC LIMIT 1) AND i.blocking=1""",(vid,)).fetchall()
+    locations = [json.loads(i[0]) for i in issues]
+    if not locations or not all(re.search(r'(?<![A-Za-z_])notes(?![A-Za-z_])',loc.get('anchor',''),re.I) for loc in locations):
+        return None
+    affected = {loc.get('objectId') for loc in locations}
+    from .segmentwriting import saved_note_blocks
+    blocks = saved_note_blocks(db,vid,before)
+    if set(blocks)!=set(merged.get('segments',{})) or not affected<=blocks.keys():
+        return None
+    if any(after.count(block)!=1 for sid,block in blocks.items() if sid not in affected):
+        return None
+    return row['id']
 
 
 class PromptRepairs:
@@ -105,7 +137,7 @@ class PromptRepairs:
                         ids=v.get('missingSegments')
                         if not isinstance(ids,list) or not ids or any(not isinstance(s,str) or s not in valid for s in ids):errors.append(key+' missingSegments 无效')
                         if not isinstance(v.get('revisionInstruction'),str) or not v['revisionInstruction'].strip():errors.append(key+' 缺修订指令')
-                    elif v.get('owner') not in ('asset_design','acting','plan'):errors.append(key+' 上游负责阶段无效')
+                    elif v.get('owner') not in ('asset_design','plan'):errors.append(key+' 上游负责阶段无效')
                 return errors
             answer,_=self._continuous_bounded_json(cid,'制作提醒核对',vid,instruction,material,validate,stage='prompts')
             patches=[];affected=set();instructions=[];upstream=[]

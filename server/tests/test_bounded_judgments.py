@@ -217,9 +217,11 @@ def test_manual_resume_retries_failed_business_reply_but_not_success(tmp_path):
     from workbench.continuous import Halt
     env,case,cid,_=finishing_fixture(tmp_path);wb=env.wb;wb.save_episode_expert(case['eid'],'codex')
     env.codex.script=[reply(dict(value=0)),reply(dict(value=2)),reply(dict(value=1))]
-    from workbench.continuous import UserChange
-    with pytest.raises(UserChange):wb._continuous_bounded_json(cid,'test','one','value=1',{},valid_answer)
-    assert wb._continuous_record(cid)['state']=='running'
+    with pytest.raises(Halt):wb._continuous_bounded_json(cid,'test','one','value=1',{},valid_answer)
+    rec=wb._continuous_record(cid)
+    assert rec['state']=='waiting_external' and not rec['cursor'].get('nextRepair') and rec['cursor'].get('blocks')
+    from workbench.db import transaction
+    with transaction(wb.db_path) as db:db.execute("UPDATE continuous_run SET state='running',reason=NULL WHERE id=?",(cid,))
     answer,_=wb._continuous_bounded_json(cid,'test','one','value=1',{},valid_answer)
     assert answer==dict(value=1)
     assert len(wb._continuous_record(cid)['cursor']['judgmentReceipts']['test:one']['attempts'])==1

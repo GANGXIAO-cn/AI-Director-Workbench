@@ -1,3 +1,4 @@
+import { ModelPick } from "./Project";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { ModelReply } from "./ModelReply";
 import { useEffect, useRef, useState } from "react";
@@ -19,6 +20,8 @@ export function FreeChat({pid,thread}:{pid:string;thread?:string}) {
   const library = useQuery<{methods:Method[]}>("custom_methods",{project_id:pid});
   const methods = library.data?.methods ?? [];
   const [chosen,setChosen] = useState<string[]|null>(null);
+  const modelCatalog=useQuery<any>("model_catalog");
+  const [chosenModel,setSelection]=useState<{model:string|null;effort:string|null}|null>(null);
   const [provider,setProvider] = useState("");
   const [selectedImages,setImages] = useState<string[]|null>(null);
   const requested = new URLSearchParams(route.hash.split("?")[1]).getAll("image");
@@ -37,6 +40,7 @@ export function FreeChat({pid,thread}:{pid:string;thread?:string}) {
   const submission = useRef<{payload:string;id:string}|null>(null);
   const turns = transcript.data?.turns ?? [];
   const last = turns.at(-1);
+  const selection = chosenModel ?? {model:last?.model??null,effort:last?.effort??null};
   const selected = chosen ?? last?.methods ?? [];
   const executor = provider || last?.provider || (options.data?.providers.includes("codex")?"codex":options.data?.providers[0]) || "";
   const pending = last?.status==="queued" || last?.status==="running";
@@ -51,7 +55,7 @@ export function FreeChat({pid,thread}:{pid:string;thread?:string}) {
   async function send() {
     follow.current=true;
     const chosenCanvas = canvases.find(c=>c.id===canvas);
-    const payload = {project_id:pid,thread_id:thread,previous:last?.id,text,provider:executor,
+    const payload = {project_id:pid,thread_id:thread,previous:last?.id,text,provider:executor,...selection,
       images,methods:selected,canvas:chosenCanvas?.id,canvas_revision:chosenCanvas?.revision};
     const serialized = JSON.stringify(payload);
     if (submission.current?.payload !== serialized) submission.current = {payload:serialized,id:commandId()};
@@ -88,7 +92,7 @@ export function FreeChat({pid,thread}:{pid:string;thread?:string}) {
     <div className="free-composer"><details className="free-tools"><summary>更多工具</summary><div className="row">
     <select aria-label="历史自由对话" value={thread||""} onChange={e=>route.go("#/p/"+pid+"/free"+(e.target.value?"/"+e.target.value:""))}>
       <option value="">新对话</option>{transcript.data?.threads.map(t=><option key={t.id} value={t.id}>{t.title}</option>)}</select>
-    {thread && <a className="btn" href={"#/p/"+pid+"/free"}>新对话</a>}</div><label>本次执行器 <select value={executor} onChange={e=>setProvider(e.target.value)}>{options.data?.providers.map(p=><option key={p}>{p}</option>)}</select></label>
+    {thread && <a className="btn" href={"#/p/"+pid+"/free"}>新对话</a>}</div><ModelPick label="本次执行器" catalog={modelCatalog.data} provider={executor} sel={selection} setSel={setSelection} setProvider={(p:string)=>{setProvider(p);setSelection({model:modelCatalog.data?.text[p]?.models[0]?.id??null,effort:null});}}/>
       <details><summary>创作技能（{selected.length}）</summary>{methods.map(m=><label key={m.id}>{m.title} <select aria-label={m.title+"对话版本"}
         value={selected.find(v=>m.versions.some(r=>r.id===v))||""} onChange={e=>choose(m,e.target.value)}><option value="">不使用</option>
         {m.versions.map(v=><option key={v.id} value={v.id}>R{v.number}</option>)}</select></label>)}

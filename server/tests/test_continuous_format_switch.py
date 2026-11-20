@@ -31,13 +31,13 @@ def claim(wb,cid,auto=None):
     with transaction(wb.db_path) as db:wb._claim_resume(db,cid,auto=auto)
 
 
-def test_format_switch_runs_review_provider_without_changing_settings(tmp_path):
+def test_format_retry_keeps_selected_writer_and_settings(tmp_path):
     env,eid,cid,rid=make_run(tmp_path);wb=env.wb
     env.codex.script=[lambda req:ExecOutcome(False,error_class='schema',diagnostic='bad JSON')]*2
     wb._continuous_execute(cid)
     records=decisions(env,cid)
-    assert len(env.codex.calls)==2 and len(records)==1
-    assert json.loads(records[0]['detail'])['to']=='antigravity'
+    assert len(env.codex.calls)==3 and len(records)==1 and not env.ag.calls
+    assert json.loads(records[0]['detail'])['to']=='codex'
     assert not wb._continuous_record(cid)['cursor']['queue']
     with env.db() as db:
         plan=json.loads(db.execute('SELECT executor_plan FROM kickoff WHERE episode_id=?',(eid,)).fetchone()[0])
@@ -90,24 +90,24 @@ def test_manual_inflight_waits_and_wakes(tmp_path,status):
     assert len(env.ag.calls)==1 and not env.codex.calls
 
 
-def test_manual_failed_retry_can_switch_latest(tmp_path):
+def test_manual_failed_retry_keeps_directors_latest_selection(tmp_path):
     env,eid,cid,rid=make_run(tmp_path);wb=env.wb;fail(wb,rid)
     child=wb.retry_run(rid,provider='antigravity',command_id='manual')['runId'];fail(wb,child)
     claim(wb,cid);wb._continuous_execute(cid)
     record=decisions(env,cid)[0]
     assert json.loads(record['detail'])['from']=='antigravity'
-    assert json.loads(record['detail'])['to']=='codex'
+    assert json.loads(record['detail'])['to']=='antigravity'
 
 
 @pytest.mark.parametrize('single_provider',[False,True])
 def test_no_candidate_or_second_format_failure_stops(tmp_path,single_provider):
     env,eid,cid,rid=make_run(tmp_path);wb=env.wb;fail(wb,rid)
     if single_provider:wb.executors={'codex':env.codex}
-    else:env.ag.script=[lambda req:ExecOutcome(False,error_class='schema')]*2
+    env.codex.script=[lambda req:ExecOutcome(False,error_class='schema')]*2
     with pytest.raises(Halt):wb._continuous_execute(cid)
     reason=wb._continuous_record(cid)['reason']
-    assert ('没有其他可用执行器' if single_provider else '本轮已换过一次执行器') in reason
-    assert len(decisions(env,cid))==(0 if single_provider else 1)
+    assert '重试过一次' in reason and not env.ag.calls
+    assert len(decisions(env,cid))==1
 
 
 @pytest.mark.parametrize('recovery',['retry','restart-retry'])
@@ -168,17 +168,17 @@ def test_direct_run_claims_manual_child_without_switch(tmp_path):
     assert wb.finish_image_assess(child)[0]['versionId']==vid
 
 
-def test_stage_review_override_and_model_used(tmp_path):
+def test_review_override_does_not_replace_writer_on_retry(tmp_path):
     env,eid,cid,rid=make_run(tmp_path);wb=env.wb;fail(wb,rid)
     wb.save_stage_executor(env.art(eid,'story')['id'],'review','antigravity','test-model',None,'stage-review')
     wb._continuous_cursor(cid,stage='prompts')
     wb._continuous_execute(cid)
     with env.db() as db:
         retried=db.execute('SELECT * FROM run WHERE id=?',(decisions(env,cid)[0]['ref'],)).fetchone()
-        assert retried['provider']=='antigravity' and retried['requested_model']=='test-model'
+        assert retried['provider']=='codex' and retried['requested_model']!= 'test-model'
 
 
-def test_invalid_review_falls_back_to_expert(tmp_path):
+def test_invalid_reviewer_does_not_change_writer(tmp_path):
     env,eid,cid,rid=make_run(tmp_path);wb=env.wb;fail(wb,rid)
     with transaction(wb.db_path) as db:
         plan=json.loads(db.execute('SELECT executor_plan FROM kickoff WHERE episode_id=?',(eid,)).fetchone()[0])
@@ -186,7 +186,7 @@ def test_invalid_review_falls_back_to_expert(tmp_path):
         plan['expert']=dict(provider='antigravity')
         db.execute('UPDATE kickoff SET executor_plan=? WHERE episode_id=?',(json.dumps(plan),eid))
     wb._continuous_execute(cid)
-    assert json.loads(decisions(env,cid)[0]['detail'])['to']=='antigravity'
+    assert json.loads(decisions(env,cid)[0]['detail'])['to']=='codex'
 
 
 @pytest.mark.parametrize('reason',['回包两次不符合契约','已收到回包，未通过入库校验'])
@@ -217,6 +217,7 @@ def test_exhausted_format_error_dispatches_repair_without_manual_resume(tmp_path
     wb.executors={'codex':env.codex}
     wb._continuous_cursor(cid,stage='story')
     fail(wb,rid,'回包两次不符合契约')
+    env.codex.script=[lambda req:ExecOutcome(False,error_class='schema')]*2
     with pytest.raises(UserChange):wb._continuous_execute(cid)
     run=wb._continuous_record(cid)
     assert run['state']=='running' and run['choice'] is None

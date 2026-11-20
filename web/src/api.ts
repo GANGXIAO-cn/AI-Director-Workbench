@@ -66,3 +66,6 @@ export function commandWithFiles(name:string, args:Record<string,any>, files:Fil
   for (const file of files) form.append("files",file);
   return send("POST","/with-files/"+encodeURIComponent(name),undefined,form);
 }
+
+export const videoApi = <T = any,>(method:string, path:string, body?:unknown) =>
+  send<T>(method,"/video/"+path,body);

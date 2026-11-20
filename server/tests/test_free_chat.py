@@ -124,3 +124,40 @@ def test_free_chat_racing_sends_stop_retry_and_restart(tmp_path):
     again = restarted.retry_free_chat(pid,fresh["turnId"],fresh["attemptId"])
     restarted.execute_free_chat(again["turnId"],again["attemptId"])
     assert restarted.free_chat(pid,tid)["turns"][-1]["status"]=="succeeded"
+
+
+def test_video_and_finecut_have_independent_live_stage_conversations(tmp_path):
+    env=Env(tmp_path)
+    wb=env.wb
+    pid,eid=env.new_episode()
+    plan=wb.episode_view(eid)['kickoff']['executor_plan']
+    provider=(plan.get('expert') or plan['create'])['provider']
+    for stage,question in [('package','视频进度？'),('finecut','可以剪了吗？')]:
+        turn=wb.send_free_chat(pid,question,provider,episode_id=eid,stage=stage)
+        wb.execute_free_chat(turn['turnId'],turn['attemptId'])
+        turns=wb.free_chat(pid,episode_id=eid,stage=stage)['turns']
+        assert len(turns)==1 and turns[0]['reply'] and turns[0]['text']==question
+        assert '本次提问时的实际制作记录' in wb.executors[provider].calls[-1].prompt
+    assert wb.free_chat(pid)['threads']==[]
+
+
+def test_finecut_chat_inherits_frozen_script_and_video_discussion(tmp_path):
+    env = Env(tmp_path)
+    wb = env.wb
+    case = env.full_episode(segments={"G01":[8000],"G02":[8000]})
+    pid,eid,d = case['pid'],case['eid'],case['delivery']['deliveryId']
+    plan = wb.episode_view(eid)['kickoff']['executor_plan']
+    provider = (plan.get('expert') or plan['create'])['provider']
+    first = wb.send_free_chat(pid,'前段原帧保留绿色杯柄',provider,episode_id=eid,stage='package',delivery_id=d)
+    wb.execute_free_chat(first['turnId'],first['attemptId'])
+    ctx = wb.film_chat_context(eid,'finecut',d)
+    assert ctx['故事梗概'] and ctx['采用分镜'] and ctx['近期制作对话']
+    assert ctx['其他阶段讨论'][0]['text']=='前段原帧保留绿色杯柄'
+    turn = wb.send_free_chat(pid,'接下来怎么剪？',provider,episode_id=eid,stage='finecut',delivery_id=d)
+    wb.execute_free_chat(turn['turnId'],turn['attemptId'])
+    prompt=wb.executors[provider].calls[-1].prompt
+    assert ctx['分场剧本'] and ctx['采用分镜'][0]['action'] in prompt and '前段原帧保留绿色杯柄' in prompt
+    _,other=env.new_episode(project_id=pid,code="E07")
+    assert not wb.film_chat_context(other,'finecut')['其他阶段讨论']
+    with pytest.raises(NotFound):
+        wb.film_chat_context(other,'finecut',d)

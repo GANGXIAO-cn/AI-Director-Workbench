@@ -1,3 +1,4 @@
+import {directorText} from "./topics";
 import { useState } from "react";
 import { createPortal } from "react-dom";
 import { ModelReply } from "./ModelReply";
@@ -13,14 +14,14 @@ export function ContinuousStatus({data,error,reload}:{data:any;error:string|null
   if(!data) return error?<ErrorLine error={{message:error}}/>:null;
   const run=data.run;
   const execute=(name:string,target_stage="stress")=>act.run(async()=>{await cmd(name,run && name!=="start_continuous"?{continuous_id:run.id}:{episode_id:data.episodeId,target_stage});await reload();});
-  const stage=({assets:"07 出图",delivery:"图文交付",package:"H3 出包"} as Record<string,string>)[run?.cursor?.stage]??FILM_STAGES.find(([s])=>s===run?.cursor?.stage)?.[1]??"01 故事方向";
+  const stage=({assets:"07 出图",delivery:"交付核验",publish:"发布文案",package:"H3 出包"} as Record<string,string>)[run?.cursor?.stage]??FILM_STAGES.find(([s])=>s===run?.cursor?.stage)?.[1]??"01 故事方向";
   const progress=run?.cursor?.progress;
   const imaging=["images","image_review","image_fix"].includes(run?.cursor?.phase);
   const requests: {provider:string;model:string;state:string;n:number}[]=data.imageProgress?.requests??[];
   const channelNames:Record<string,string>={"openai-image-api":"OpenAI 图片 API"};
   const requestStates:Record<string,string>={succeeded:"已出图",submitted:"生成中",pending:"排队中",failed:"失败",unknown:"结果待核实",confirmed_not_executed:"确认未执行"};
   const switched=run?.cursor?.queue?.includes(run?.cursor?.runId)?run?.cursor?.formatSwitches?.[run?.cursor?.runId]:null;
-  const action=run?.cursor?.phase==="plan_review"?"分镜定稿独审":run?.cursor?.phase==="image_review"?"整集图片统一审核":run?.cursor?.phase==="image_fix"?"按整集审核意见修图":switched?`换 ${PROVIDER_LABEL[switched.to]??switched.to} 重试 · 正在生成`:run?.cursor?.phase==="judgment"?(run.cursor.judgmentKind || "正在判断"):run?.cursor?.waitingRun?"正在生成，完成后自动继续":run?.cursor?.phase==="images"?`素材已采用 ${data.imageProgress?.adopted??progress?.current??0}/${data.imageProgress?.total??progress?.total??0} 项`:run?.cursor?.phase==="review"?`09 独审 ${progress?.current??0}/${progress?.total??0} 段`:run?.cursor?.phase==="repair"?"返修":run?.cursor?.phase==="judgment"?(run.cursor.judgmentKind==="素材用途匹配"?"正在匹配素材用途":run.cursor.judgmentKind || "正在判断"):"起草与检查";
+  const action=run?.cursor?.phase==="verify"?"核对并写入正式图文包":run?.cursor?.phase==="plan_review"?"分镜定稿独审":run?.cursor?.phase==="image_review"?"整集图片统一审核":run?.cursor?.phase==="image_fix"?"按整集审核意见修图":switched?(switched.from===switched.to?"原模型正在修正回包":`换 ${PROVIDER_LABEL[switched.to]??switched.to} 重试 · 正在生成`):run?.cursor?.phase==="judgment"?(run.cursor.judgmentKind || "正在判断"):run?.cursor?.waitingRun?"正在生成，完成后自动继续":run?.cursor?.phase==="images"?`素材已采用 ${data.imageProgress?.adopted??progress?.current??0}/${data.imageProgress?.total??progress?.total??0} 项`:run?.cursor?.phase==="review"?`${stage}独立评审`:run?.cursor?.phase==="repair"?"返修":run?.cursor?.phase==="judgment"?(run.cursor.judgmentKind==="素材用途匹配"?"正在匹配素材用途":run.cursor.judgmentKind || "正在判断"):"起草与检查";
   // 实测 124：显示本步已用时间（阶段开始或最近一次恢复运行起算），不是从创建起的总时长。
   const since=run?Math.max(run.cursor?.stageStartedAt ?? 0, run.cursor?.resumedAt ?? 0) || run.created_at:0;
   const elapsed=run?Math.max(0,Math.floor(Date.now()/1000-since)):0;
@@ -39,27 +40,27 @@ export function ContinuousStatus({data,error,reload}:{data:any;error:string|null
         <a className="btn" href={`#/e/${data.episodeId}/assets`}>查看素材</a></div>)}
     </details>}
     {run?.mode==="fix" && run.cursor.fixStatus && <p>{run.cursor.fixStatus}</p>}
-    {run?.state==="done" && run.target_stage==="delivery"?<p>{run.reason}</p>:!run || ["done","cancelled","failed"].includes(run.state)?<>
+    {run?.state==="done" && run.target_stage==="delivery"?<p>{run.reason}</p>:!run || ["done","cancelled"].includes(run.state)?<>
       {run && <p>{run.reason}</p>}
       <b className="continuous-start-title">交给 AI 往下做</b>
       <div className="continuous-start">
         <button className="btn" disabled={act.busy} onClick={()=>execute("start_continuous")}>继续做到 06 故事审查</button>
-        <button className="btn primary" disabled={act.busy} onClick={()=>execute("start_continuous","delivery")}>继续做到图文交付</button>
+        <button className="btn primary" disabled={act.busy} onClick={()=>execute("start_continuous","delivery")}>继续到精剪</button>
       </div>
-      <p className="muted small">启动后，专家自动选稿并继续制作。</p>
+      <p className="muted small">选定目标后，专家自动选稿、审片并推进到目标阶段。</p>
       {data.methodNotice && <div><p>{data.methodNotice}</p><details><summary>查看本集方法</summary>{FILM_STAGES.slice(0,6).map(([stage])=><ProjectMethodSync key={stage} pid={data.projectId} eid={data.episodeId} stage={stage}/>)}</details></div>}
     </>:run.state==="running"?<>
-      <p>AI 正在：{stage} · {action} · 本步已用 {clock}</p>
+      <p>专家自动推进 · {stage} · {action} · 本步已用 {clock}</p>
       <div className="row continuous-actions"><button className="btn" disabled={act.busy || !!run.pause_requested} onClick={()=>execute("pause_continuous")}>{run.pause_requested?"本次调用结束后暂停":"暂停"}</button>{endButton}</div>
     </>:<>
-      <p>{run.reason}</p><ContinuousRecoveryNote run={run} all/><div className="row continuous-actions">{run.state==="paused"&&<button className="btn primary" disabled={act.busy} onClick={()=>execute("resume_continuous")}>恢复我的任务</button>}{endButton}</div>
+      <p>{run.reason}</p><ContinuousRecoveryNote run={run} all/><div className="row continuous-actions">{run.state==="failed" && <button className="btn primary" disabled={act.busy} onClick={()=>execute("resume_continuous")}>从已有稿件恢复</button>}{run.state==="paused"&&<button className="btn primary" disabled={act.busy} onClick={()=>execute("resume_continuous")}>恢复我的任务</button>}{endButton}</div>
     </>}
     {run?.cursor.kickoffAdjustment && <>
       <button className="btn ghost" onClick={()=>setShowAdjustment(true)}>查看开工调整</button>
       {showAdjustment && createPortal(<Modal onClose={()=>setShowAdjustment(false)}>
         <div className="spread"><h2>开工调整</h2><button className="btn" onClick={()=>setShowAdjustment(false)}>关闭</button></div>
         {(["before","after"] as const).map(key=><section key={key}><h3>{key==="before"?"调整前":"调整后"}</h3>
-          <p className="chat-prose">{run.cursor.kickoffAdjustment[key].replace(/\n来源：[^\n]* sha256=[a-f0-9]{64}\n原卡全文：\n\{[^\n]*\}(?=\n|$)/g,"")}</p></section>)}
+          <p className="chat-prose">{directorText(run.cursor.kickoffAdjustment[key])}</p></section>)}
       </Modal>,document.body)}
     </>}
     <ErrorLine error={act.error}/>

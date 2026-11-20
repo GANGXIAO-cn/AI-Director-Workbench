@@ -459,7 +459,7 @@ class ResourcesMixin:
             if "assets" in stages:
                 stages.append("asset_design")
             chapter = item["id"].split("-")[0]
-            stages.extend({"02":["characters"],"03":["world"],"04":["treatment"],"08":["acting"]}.get(chapter, []))
+            stages.extend({"02":["characters"],"03":["world"],"04":["treatment"],"08":["plan"]}.get(chapter, []))
             if item["id"] in ("05-C", "09-M"):
                 stages.append("stress")
             row["stages"] = list(dict.fromkeys(stages))

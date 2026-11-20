@@ -23,7 +23,7 @@ export function ExecutorPlanFields({plan,onChange,saveDefault=true}:{plan:any;on
   return <div className="col">{(['create','review','expert'] as const).map(role=>{
     const slot=plan[role] || plan.create;
     return <div key={role}><ModelPick label={{create:'起草',review:'独审',expert:'专家'}[role]} provider={slot.provider} sel={slot} catalog={catalog.data}
-      setProvider={(provider:string)=>change(role,{provider,model:null,effort:null})} setSel={(value:any)=>change(role,{...slot,...value})}/><ConnectionStatus provider={slot.provider}/></div>;
+      setProvider={(provider:string)=>change(role,{provider,model:catalog.data?.text[provider]?.models[0]?.id??null,effort:null})} setSel={(value:any)=>change(role,{...slot,...value})}/><ConnectionStatus provider={slot.provider}/></div>;
   })}{saveDefault&&<button className="btn" disabled={act.busy} onClick={()=>act.run(async()=>{await cmd('save_executor_defaults',{plan});setSaved(true);})}>{saved?'已设为默认':'设为默认'}</button>}<ErrorLine error={act.error}/>{catalog.error&&<p className="error">{catalog.error}</p>}</div>;
 }
 export function ExecutorDefaults() {

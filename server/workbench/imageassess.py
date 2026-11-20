@@ -34,7 +34,7 @@ critical 每项含 type（identity/anatomy/usage）、where、text；minor 每�
 props 是道具 ID 到实际可见状态的对象，ID 只用小写字母开头的字母、数字、下划线或连字符。不能确认的内容如实写明，不用提示词代替所见。输入的用户已接受问题仍保留原观察，不伪称修复。'''
 
 
-COARSE = """只看每张图本身是否有明显缺陷。单图只看大体主体与机位，除明确承担人物站位的大场景外，不核空间细节。九宫格整图看关键过程，不逐格扣细节。不要对照剧本、不要排名、不检查商品是否在空景。每个版本一项 JSON 数组：versionId、verdict（usable 或 blocked）；只有 blocked 须写 defect（明显缺陷的位置和影响）。"""
+COARSE = """按每张图声明的用途和时刻核对：开场图看开场，过程图与九宫格看对应镜头时刻；只看每张图是否是需要的东西、本身是否有明显缺陷（如有角色对照图，核对是否是对应角色，不核对细节完全一致）。单图只看大体主体与机位，除明确承担人物站位的大场景外，不核空间细节。九宫格整图看关键过程，不逐格扣细节。不要对照剧本、不要排名、不检查商品是否在空景。每个版本一项 JSON 数组：versionId、verdict（usable 或 blocked）；只有 blocked 须写 defect（明显缺陷的位置和影响）；usable 时可附简短 observation（画面观察）和 minor（不影响当前用途、可交给后续沿用的轻微差异数组，每项含 where 和 text）。"""
 
 
 def coarse_results(items,ids):
@@ -46,8 +46,15 @@ def coarse_results(items,ids):
         if x.get('verdict') not in ('usable','blocked') or (x['verdict']=='blocked' and not (isinstance(defect,str) and defect.strip())):
             raise Rejected('明显缺陷须说明具体影响')
         critical=[dict(type='usage',where='整图',text=defect)] if x['verdict']=='blocked' else []
-        out.append(dict(versionId=x['versionId'],verdict=x['verdict'],critical=critical,minor=[],props={},recommendRequired=False,
-                        value='',fitness='',observation='',reason=defect if critical else '基础要求符合，无明显缺陷'))
+        minor=[]
+        for m in (x.get('minor') if isinstance(x.get('minor'),list) else []):
+            if isinstance(m,dict) and isinstance(m.get('text'),str) and m['text'].strip():
+                minor.append(dict(where=str(m.get('where') or '画面').strip() or '画面',text=m['text'].strip()))
+            elif isinstance(m,str) and m.strip():
+                minor.append(dict(where='画面',text=m.strip()))
+        observation=x.get('observation').strip() if isinstance(x.get('observation'),str) else ''
+        out.append(dict(versionId=x['versionId'],verdict=x['verdict'],critical=critical,minor=minor,props={},recommendRequired=False,
+                        value='',fitness='',observation=observation,reason=defect if critical else '基础要求符合，无明显缺陷'))
     return out
 
 
@@ -95,18 +102,33 @@ class ImageAssessmentMixin:
                 else:info=dict(context or {})
                 purposes=[]
                 if episode_review:
-                    purposes=[dict(r) for r in db.execute("SELECT id AS needId,title,description,adopted_version_id AS versionId FROM asset_need WHERE episode_id=? AND removed=0",(episode_id,)) if r['versionId'] in version_ids]
+                    purposes=[dict(r) for r in db.execute("SELECT id AS needId,title,kind,description,role_id AS roleId,state_id AS stateId,scene_ids AS sceneIds,adopted_version_id AS versionId FROM asset_need WHERE episode_id=? AND removed=0",(episode_id,)) if r['versionId'] in version_ids]
                     grid_uses=(context or {}).get('gridPurposes',[])
                     for use in grid_uses:
                         av=self.asset_version(use['versionId'],db)
                         if av['episode_id']!=episode_id or not av['grid']:raise Rejected('本段九宫格版本不符')
-                        purposes.append(dict(needId=None,**use))
+                        purposes.append(dict(needId=None,kind='grid',moment='对应段镜头过程',**use))
                     if {p['versionId'] for p in purposes}!=set(version_ids):
                         raise Rejected('整集检查的素材已变化')
+                    choice_details={}
+                    for r in db.execute("SELECT c.asset_version_id,c.shot_ids,d.details FROM image_choice c LEFT JOIN required_image_details d ON d.choice_id=c.id WHERE c.episode_id=?",(episode_id,)):
+                        if r['asset_version_id'] in version_ids:
+                            detail=json.loads(r['details']) if r['details'] else {}
+                            choice_details[r['asset_version_id']]=dict(shotIds=json.loads(r['shot_ids'] or '[]'),depictsMoment=detail.get('depictsMoment') or detail.get('moment') or '')
+                    for p in purposes:
+                        cd=choice_details.get(p['versionId'],{})
+                        if cd.get('depictsMoment') and not p.get('moment'):p['moment']=cd['depictsMoment']
+                        if cd.get('shotIds'):p['shotIds']=cd['shotIds']
+                        if not p.get('moment'):
+                            cat=CATEGORIES.get(p.get('kind'),p.get('kind'))
+                            p['moment']='对应段镜头过程' if cat=='grid' else '开场基准/对应声明用途'
                     info={'purposes':purposes}
                 contract=COARSE if episode_review else CONTRACT
+                if episode_review and (context or {}).get("correction"):
+                    contract+="\n前轮结果无法读取，请按本契约补交完整结果："+context["correction"]
                 if episode_review:
-                    entries=[dict(role='request',name='基础用途',text=dumps([dict(versionId=p['versionId'],title=p['title']) for p in purposes])),dict(role='request',name='整集一次评图',text=contract)]
+                    purpose_rows=[{k:v for k,v in dict(versionId=p['versionId'],title=p['title'],kind=p.get('kind'),description=p.get('description',''),roleId=p.get('roleId'),stateId=p.get('stateId'),moment=p.get('moment'),shotIds=p.get('shotIds')).items() if v not in (None,'',[])} for p in purposes]
+                    entries=[dict(role='request',name='基础用途',text=dumps(purpose_rows)),dict(role='request',name='整集一次评图',text=contract)]
                 else:
                     script=self._adopted_content(db,episode_id,'script') or {}
                     scenes=[s for s in script.get('scenes',[]) if not info.get('sceneIds') or s.get('id') in info['sceneIds']]
@@ -121,20 +143,28 @@ class ImageAssessmentMixin:
                 role=info.get('role_id') or info.get('roleId')
                 # 实测 136：有角色的条目只附该角色；没有角色的道具、空景、商品不附角色图。
                 faceless=not role and CATEGORIES.get(info.get('kind'),info.get('kind')) in ('scene','prop','product')
-                baselines={} if faceless or episode_review else {k:v for k,v in matrix['roster'].items() if (not role or k==role) and v.get('assetVersionId')}
+                if episode_review:
+                    review_roles={p.get('roleId') for p in purposes if p.get('roleId')}
+                    has_grid=any(p.get('kind')=='grid' for p in purposes)
+                    baselines={k:v for k,v in matrix['roster'].items() if v.get('assetVersionId') and v['assetVersionId'] not in version_ids and (has_grid or not review_roles or k in review_roles)}
+                else:
+                    baselines={} if faceless else {k:v for k,v in matrix['roster'].items() if (not role or k==role) and v.get('assetVersionId')}
                 entries.append(dict(role='role_baselines',name='固定角色外观与身份基准.json',text=dumps(baselines)))
                 for key,baseline in baselines.items():
                     asset=self.asset_version(baseline['assetVersionId'],db)
                     entries.append(dict(assess_attachment('角色对照-'+key,self.store.read_blob(asset['sha256'])),role='cast_baseline_image'))
-                provider='codex'
-                if provider not in self.executors or not getattr(self.executors[provider],'reads_images',False):raise Rejected('当前 Codex 执行器不能读图')
-                plan=dict(create=dict(provider=provider),review=dict(provider=provider))
+                slot = self.episode_expert(episode_id)
+                if episode_review:
+                    selections={**self._kickoff(db,episode_id)['executor_plan'],**self._stage_executors(db,episode_id,'asset_design')}
+                    slot=self.active_selection(selections['review'])
+                provider = slot['provider']
+                plan = dict(create=slot, review=slot)
                 tid,_=self._draft_thread(db,ep['project_id'],episode_id,art['id'],'asset_design',contract,plan)
                 # Freeze the approved method even for a project whose earlier pack predates H.
                 pack,profile=self._episode_method(db,episode_id)
                 if not episode_review and not method_entries(pack,'image_assess',profile):
                     entries=method_entries(unifiedmethods.load(),'image_assess')+entries
-                rid=self._queue_run(db,tid,'image_assess',None,contract,provider=provider,entries=entries,discussion_only=True,workspace_revision=art['revision'],extra_header=dict(imageAssessment=dict(coarse=episode_review,needId=need['id'] if need else None,versionIds=version_ids,purposes=purposes)))
+                rid=self._queue_run(db,tid,'image_assess',None,contract,provider=provider,entries=entries,discussion_only=True,workspace_revision=art['revision'],extra_header=dict(imageAssessment=dict(coarse=episode_review,observationOnly=bool((context or {}).get('observationOnly')),needId=need['id'] if need else None,versionIds=version_ids,purposes=purposes)))
                 return dict(runId=rid,taskId=tid)
             return self._command(db,command_id,'prepare_image_assess',[episode_id,version_ids,need_key,context],create)
 
@@ -151,6 +181,9 @@ class ImageAssessmentMixin:
                 reply=stripped.split('\n',1)[1][:-3].strip()
         try:values=(coarse_results if spec.get("coarse") else validate_assessments)(json.loads(reply),spec["versionIds"])
         except ValueError as exc:raise Rejected('图片评估 reply 须为 JSON 数组') from exc
+        record_kind = 'observation' if spec.get('observationOnly') else 'independent_review' if spec.get('coarse') else None
+        if record_kind:
+            values = [dict(item, recordKind=record_kind) for item in values]
         with transaction(self.db_path) as db:
             if not db.execute('SELECT 1 FROM image_assessment WHERE run_id=?',(run_id,)).fetchone():
                 for item in values:

@@ -81,7 +81,7 @@ def review_content_schema(pass_name):
     location = props["issues"]["items"]["properties"]["location"]
     omit_properties(observation, "versionId")
     omit_properties(location, "versionId")
-    if pass_name != "plan":
+    if pass_name not in ("plan", "prompts", "script"):
         omit_properties(location, "objectId")
     if pass_name == "cold_read":
         omit_properties(observation, "objectId")

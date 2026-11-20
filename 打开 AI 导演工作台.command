@@ -20,7 +20,7 @@ if ! ready && lsof -nP -iTCP:"$ADW_PORT" -sTCP:LISTEN >/dev/null; then
   exit 1
 fi
 if ready && ! curl --noproxy '*' -fsS --max-time 2 "$url/api/session" |
-    python3 -c 'import json,sys; sys.exit(not {"save_stage_executor","start_repair_plan","initialize_asset_worksheet","adopt_project_stage_methods"}.issubset(json.load(sys.stdin).get("commands", [])))'; then
+    python3 -c 'import json,sys; info=json.load(sys.stdin); sys.exit(not info.get("videoGeneration") or not {"save_stage_executor","start_repair_plan","initialize_asset_worksheet","adopt_project_stage_methods"}.issubset(info.get("commands", [])))'; then
   echo '当前工作台仍在使用旧后端。请等正在执行的任务结束，在原服务终端按 Control-C，再双击本启动文件。'
   exit 1
 fi

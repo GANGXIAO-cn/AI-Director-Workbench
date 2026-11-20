@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ModelPick } from "./Project";
 import { blob, cmd } from "./api";
 import { ErrorLine, Tag, useAction, usePoll, useQuery } from "./ui";
 
@@ -43,6 +44,8 @@ function Editor({pid,source,block,done,cancel}:{pid:string;source:Source;block:B
   const [ai,setAI]=useState(false);
   const [goal,setGoal]=useState("");
   const [provider,setProvider]=useState("");
+  const [selection,setSelection]=useState({model:null as string|null,effort:null as string|null});
+  const catalog=useQuery<any>(ai?"model_catalog":null);
   const [turn,setTurn]=useState<{threadId:string;turnId:string}|null>(null);
   const providers=useQuery<{providers:string[]}>(ai?"free_chat_options":null,{project_id:pid});
   const chat=useQuery<{turns:{id:string;reply?:string;status:string;reason?:string}[]}>(turn?"free_chat":null,{project_id:pid,thread_id:turn?.threadId});
@@ -58,9 +61,9 @@ function Editor({pid,source,block,done,cancel}:{pid:string;source:Source;block:B
       <button className="btn" disabled={action.busy || text===block.text || !text.trim()} onClick={()=>action.run(async()=>setPreview(await cmd("revise_baseline",args)))}>比较修订</button>
       <button className="btn" onClick={cancel}>关闭编辑</button></div></div>
     {ai && <aside><h3>导演助手</h3><label>起草要求<input value={goal} onChange={e=>setGoal(e.target.value)}/></label>
-      <select aria-label="起草执行器" value={executor} onChange={e=>setProvider(e.target.value)}>{providers.data?.providers.map(p=><option key={p}>{p}</option>)}</select>
+      <ModelPick label="起草" provider={executor} sel={selection} catalog={catalog.data} setSel={setSelection} setProvider={(p:string)=>{setProvider(p);setSelection({model:catalog.data?.text[p]?.models[0]?.id??null,effort:null});}}/>
       <button className="btn" disabled={action.busy || !goal.trim() || !executor || (!!turn && !reply) || ["queued","running"].includes(reply?.status || "")}
-        onClick={()=>action.run(async()=>setTurn(await cmd("send_free_chat",{project_id:pid,provider:executor,
+        onClick={()=>action.run(async()=>setTurn(await cmd("send_free_chat",{project_id:pid,provider:executor,...selection,
           text:"只返回可替换此固定块的完整正文。导演的修订要求为\n"+goal,baseline:{kind:source.kind,key:block.key,revision:source.revision,sha256:source.sha256}})))}>发送原文与要求</button>
       {turn && <p><a href={`#/p/${pid}/free/${turn.threadId}`}>查看起草记录</a> {reply?.reason || ((!reply || ["queued","running"].includes(reply.status))?"等待回复":"")}</p>}
       {reply?.reply && <div><p style={{whiteSpace:"pre-wrap"}}>{reply.reply}</p><button className="btn" onClick={()=>change(reply.reply!)}>带入修订正文</button></div>}

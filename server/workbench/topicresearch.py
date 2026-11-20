@@ -115,7 +115,7 @@ def research_reply(body, citations, count):
 
 
 class TopicResearchMixin:
-    def start_topic_research(self, project_id, direction, provider, command_id, reference=None, candidate_count=None):
+    def start_topic_research(self, project_id, direction, provider, command_id, reference=None, candidate_count=None, model=None, effort=None):
         if not isinstance(direction, str) or not direction.strip() or not isinstance(provider, str) or provider not in self.executors:
             raise Rejected("请填写研究方向并选择执行器")
         if candidate_count is not None and (type(candidate_count) is not int or candidate_count < 1):
@@ -162,7 +162,7 @@ class TopicResearchMixin:
                               candidateCount=count, methodPack=pack["id"], provider=provider, sourceCodes=catalog_codes)
                 if candidate_count is not None:
                     header["chosenCount"] = candidate_count
-                header["executorConnection"] = self.run_connection(provider)
+                header["executorConnection"] = self.run_connection(provider,model,effort)
                 digest, rel = self.store.freeze(turn, header, entries)
                 db.execute("INSERT INTO free_thread VALUES(?,?,?)", (thread,project_id,direction.strip()[:48]))
                 db.execute("INSERT INTO topic_research VALUES(?,?)", (thread, project_id))
@@ -170,6 +170,7 @@ class TopicResearchMixin:
                            "VALUES(?,?,?,?,'queued',?,?,?)", (turn,thread,direction.strip(),provider,attempt,digest,rel))
                 return dict(turnId=turn, attemptId=attempt)
             payload = [project_id,direction,provider]
+            if model or effort: payload.append(dict(model=model,effort=effort))
             if reference is not None:
                 payload.append(reference)
             if candidate_count is not None:

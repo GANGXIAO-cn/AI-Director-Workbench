@@ -67,7 +67,7 @@ def default_executors():
     if os.environ.get("ADW_FAKE") == "1":   # UI walkthrough without spending executor quota
         from .executors import FakeExecutor
         return {"codex": FakeExecutor("codex"), "claude": FakeExecutor("claude"),
-                "antigravity": FakeExecutor("antigravity", isolation="unverified", reads_images=True)}
+                "antigravity": FakeExecutor("antigravity", reads_images=True)}
     return {"codex": CodexExecutor(os.environ.get("ADW_CODEX_PATH")),
             "claude": ClaudeExecutor(os.environ.get("ADW_CLAUDE_PATH")),
             "antigravity": AntigravityExecutor(os.environ.get("ADW_AGY_PATH"))}
@@ -79,15 +79,17 @@ def default_image_providers():
         return {"fake-image": FakeImageProvider("fake-image"),
                 "fake-image-unpriced": FakeImageProvider("fake-image-unpriced", price_cents=None)}
     from .apiimages import OpenAIImageAPIProvider
+    from .agyimages import AntigravityImageProvider
     from .codeximages import CodexImageProvider
     return {"codex-native":CodexImageProvider(Path(os.environ.get("ADW_DATA_DIR", REPO / "data")) / "codex-images",
                                              os.environ.get("ADW_CODEX_PATH")),
+            "antigravity-native": AntigravityImageProvider(Path(os.environ.get("ADW_DATA_DIR", REPO / "data")) / "antigravity-images"),
             "openai-image-mcp": OpenAIImageMCPProvider(),
             "openai-image-api": OpenAIImageAPIProvider(Path(os.environ.get("ADW_DATA_DIR", REPO / "data")) / "image-api")}
 
 
 COMMANDS = {
-    "storage_scan", "set_storage_cleanup", "save_executor_defaults", "save_episode_expert", "save_episode_image_channel", "accept_material_issue",
+    "storage_scan", "set_storage_cleanup", "save_executor_defaults", "save_episode_expert", "save_film_executor", "save_episode_image_channel", "accept_material_issue",
     "quick_start", "start_continuous", "pause_continuous", "resume_continuous", "cancel_continuous",
     "carry_stress_issue", "start_repair_plan", "advance_repair_plan", "initialize_asset_worksheet", "set_asset_need", "prepare_asset_batch", "adopt_asset_needs",
     "decide_supplement", "confirm_role_state", "add_decision", "revoke_decision", "replace_decision", "record_decisions", "record_message_decision",
@@ -110,11 +112,11 @@ COMMANDS = {
     "create_group", "continue_in_group", "set_task_executor", "save_stage_executor", "adopt_pack", "backup", "restore",
 }
 QUERIES = {
-    "executor_defaults", "episode_expert", "material_issues",
+    "executor_defaults", "episode_expert", "film_executors", "material_issues",
     "continuous_view", "attention_episodes", "similar_topics", "standard_goals",
     "stress_worklist", "asset_worksheet",
     "production_supplements", "director_decisions", "decision_candidates",
-    "free_chat","free_chat_options","topic_researches",
+    "free_chat","film_chat_context","free_chat_options","topic_researches",
     "episode_contact_options", "space_locks", "api_providers",
     "step_history", "prompt_scene_sources", "segment_palette_trace", "rhythm_review", "shot_reference_view",
     "project_role_assets", "historical_episodes", "historical_receipt", "historical_review_inputs", "product_placements", "project_resources", "project_section", "episode_project_sections", "available_configs", "groups", "project_knowledge",
@@ -122,7 +124,7 @@ QUERIES = {
     "project_presets", "episode_owner", "archive_items", "list_projects", "project_view", "episode_view", "episode_messages", "kickoff_preview", "read_import", "compare", "continue_check",
     "grid_bindings", "draft_prompts", "plan_preview", "adoption_preview", "impacts", "ref_frames", "episode_bookmarks", "pack_view", "trace_shot", "blocked_segments", "cast_matrix", "episode_assets",
     "asset_version", "library", "image_providers", "system_image_channel", "episode_image_channel", "batch_view", "episode_batches", "compare_cells", "image_references",
-    "prompt_signals", "prompt_review_status", "publish_settings", "compose_publish", "delivery_problems", "delivery_view", "verify_delivery",
+    "prompt_signals", "prompt_review_status", "publish_settings", "compose_publish", "delivery_checklist", "delivery_problems", "delivery_view", "verify_delivery",
     "enhancement_catalog", "closure_view", "similar", "project_baselines", "source_styles", "source_topics", "topics", "group_view", "model_catalog", "validate_selection", "regress_pack", "pack_versions", "compare_packs", "stage_methods", "custom_methods", "custom_method_text", "project_stage_methods", "script_plan_budget", "acting_review",
     "storage_status", "packager_status", "project_todos", "project_overview", "adoption_preview", "canvas_view", "ref_questions", "activity_log", "stage_checklist", "task_records", "executor_identity", "run_manifest", "run_methods", "version_sources", "version_inputs", "input_text", "probe",
 }
@@ -135,8 +137,15 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
     for name, executor in wb.executors.items():
         if not external and isinstance(executor, CliExecutor) and (path := wb.get_setting(name + "_path")):
             executor.configured = path
+    agy_images = wb.image_providers_map.get("antigravity-native")
+    if not external and agy_images and isinstance(wb.executors.get("antigravity"), AntigravityExecutor):
+        agy_images.executor = wb.executors["antigravity"]
+        agy_images.connection = lambda: wb.get_setting("connection:antigravity", {}) or {}
     worker = Worker(wb, inline=inline_worker)
     token = token or secrets.token_urlsafe(24)
+    from .videoqueue import VideoQueue
+    from .videoapi import router as video_router
+    videos = VideoQueue(wb.store.root)
     from .folderserver import FolderServers
     folders = None if external else FolderServers(wb)
     @asynccontextmanager
@@ -152,9 +161,30 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
                 try: maintain(wb)
                 except Exception: logging.exception('Storage maintenance check failed')
                 stopped.wait(86400)
+        def start_films():
+            from . import filmedit
+            from .filmauto import advance, recover_existing
+            recover_existing(wb)
+            import fcntl
+            videos.root.mkdir(parents=True, exist_ok=True)
+            with (videos.root/"start.lock").open("a") as lock:
+                while not stopped.is_set():
+                    try:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        advance(wb, videos)
+                        filmedit.advance(wb, videos)
+                    except BlockingIOError:
+                        pass
+                    except Exception:
+                        logging.exception("自动开工检查失败")
+                    stopped.wait(3)
+        film_thread=None
         storage_thread=None
         monitor_thread=None
         if not inline_worker and not external:
+            videos.start()
+            film_thread=threading.Thread(target=start_films,name="film-start",daemon=True)
+            film_thread.start()
             monitor_thread=threading.Thread(target=monitor,name='continuous-recovery',daemon=True)
             monitor_thread.start()
             storage_thread=threading.Thread(target=storage_monitor,name='storage-maintenance',daemon=True)
@@ -163,6 +193,9 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
             yield
         finally:
             stopped.set()
+            videos.stop.set()
+            videos.wake.set()
+            if film_thread:film_thread.join()
             if monitor_thread:monitor_thread.join()
             if storage_thread:storage_thread.join()
             if worker.continuous_pool:worker.continuous_pool.shutdown(wait=True)
@@ -172,6 +205,7 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
                 worker.pool.shutdown(wait=True)
 
     app = FastAPI(title="AI Director Workbench",lifespan=lifespan)
+    app.include_router(video_router(videos, external, wb))
     from starlette.middleware.gzip import GZipMiddleware
     class QueryGZipMiddleware(GZipMiddleware):
         async def __call__(self, scope, receive, send):
@@ -232,7 +266,7 @@ def create_app(wb: Workbench | None = None, inline_worker=False, token: str | No
 
     @app.get("/api/session")
     def session():
-        return {"token": token, "externalProject": external, "commands": sorted(COMMANDS)}
+        return {"token": token, "externalProject": external, "videoGeneration": not external, "automaticFilmProduction": not external, "commands": sorted(COMMANDS)}
 
     @app.get("/api/configs")
     def configs():

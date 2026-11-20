@@ -57,7 +57,7 @@ def test_catalog_keys_status_and_config_binding(tmp_path, monkeypatch):
         db_text = "\n".join(db.iterdump())
     for secret in (key, "session-only-fixture"):
         assert secret not in json.dumps(new) and secret not in db_text
-    assert not wb.session_api_keys
+    assert wb.credentials.get(p["envName"]) is None
 
 
 def test_inflight_sync_does_not_replace_reconfigured_catalog(tmp_path, monkeypatch):

@@ -35,18 +35,18 @@ for line in sys.stdin:
 ''')
     binary.chmod(0o700)
     provider = CodexImageProvider(tmp_path / "jobs", str(binary), timeout=5)
-    request = dict(local_request_id="fixture-1",model="gpt-6.1-sol",operation="generate",prompt="离线协议夹具",size="1024x1536",inputs=[])
+    request = dict(local_request_id="fixture-1",model="gpt-6-astra",operation="generate",prompt="离线协议夹具",size="1024x1536",inputs=[])
     result = provider.submit(request)
     assert result.state == "succeeded" and result.data.startswith(b"\x89PNG")
     messages = [json.loads(line) for line in log.read_text().splitlines()]
     start = next(m["params"] for m in messages if m.get("method")=="turn/start")
-    assert start["model"] == "gpt-6.1-sol" and start["effort"] == "high"
+    assert start["model"] == request["model"] and "effort" not in start
     receipt = json.loads((tmp_path / "jobs/fixture-1/receipt.json").read_text())
     assert receipt["nativeTool"] == "imageGeneration" and receipt["threadId"] == "fixture-thread"
     before = log.read_bytes()
     assert provider.submit(request).data == result.data
     assert log.read_bytes() == before
-    assert provider.submit(dict(request,model="gpt-6-astra")).state == "failed"
+    assert provider.submit(dict(request,model="gpt-6.1-sol")).state == "failed"
     assert log.read_bytes() == before
 
 

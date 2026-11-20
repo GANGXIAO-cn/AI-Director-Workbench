@@ -28,11 +28,14 @@ class CodexImageProvider:
     price_cents = None
     verified = "pending_verification"
     capabilities = dict(operations=["generate", "edit"], sizes=["1024x1536", "1536x1024", "1024x1024"],
-                        quality=["auto"], models=["gpt-6.1-sol"], effort="high",
+                        quality=["auto"], models=["gpt-6.1-sol"],
                         billingMode="subscription_usage", label="Codex 内置生图")
 
     def __init__(self, root, binary=None, timeout=600):
         self.root = Path(root).resolve()
+        from .projectops import text_catalog
+        models = [m['id'] for m in text_catalog()['codex']['models'] if m.get('id')]
+        self.capabilities = dict(type(self).capabilities, models=list(dict.fromkeys([*models, "gpt-6.1-sol"])))
         self.configured = binary
         self.timeout = timeout
 
@@ -55,13 +58,16 @@ class CodexImageProvider:
         return ImageOutcome(entry.get("state", "unknown"), error=entry.get("error", "等待核对Codex原请求"))
 
     def submit(self, req):
-        if req.get("model") != "gpt-6.1-sol":
-            return ImageOutcome("failed", error="本次图像任务仅授权Codex GPT-6.1 Sol High")
+        if not req.get("model"):
+            return ImageOutcome("failed", error="请选择 Codex 生图型号")
         binary = self.configured or shutil.which("codex")
         if not binary:
             return ImageOutcome("failed", error="未找到本机Codex")
         job = self._job(req["local_request_id"])
         if job.exists():
+            saved = job / "receipt.json"
+            if saved.is_file() and json.loads(saved.read_text()).get("inputHash") != sha256_bytes(canonical(req)):
+                return ImageOutcome("failed", error="本请求编号已绑定其他输入或型号")
             return self.inspect(req["local_request_id"]) or ImageOutcome("unknown", error="原请求已创建，须先核对")
         job.mkdir(parents=True)
         profile = job / "profile"
@@ -72,12 +78,12 @@ class CodexImageProvider:
         (profile / "auth.json").symlink_to(login.resolve())
         work = job / "work"
         work.mkdir()
-        receipt = dict(state="unknown", requestId=req["local_request_id"], model=req["model"], effort="high",
+        receipt = dict(state="unknown", requestId=req["local_request_id"], model=req["model"],
                        inputHash=sha256_bytes(canonical(req)), nativeTool="imageGeneration", events=[])
         write_atomic(job / "receipt.json", canonical(receipt))
         env = {k:os.environ[k] for k in ("PATH", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "SHELL") if k in os.environ}
         env.update(local_proxy_env(), HOME=str(job), CODEX_HOME=str(profile))
-        config = {"model_reasoning_effort":"high", "project_doc_max_bytes":0,
+        config = {"project_doc_max_bytes":0,
                   "features.image_generation":True, "features.skip_host_skill_discovery":True,
                   "features.shell_tool":False, "features.memories":False, "features.apps":False,
                   "features.plugins":False, "features.multi_agent":False, "features.skill_search":False,
@@ -143,7 +149,7 @@ class CodexImageProvider:
                               "若附有图片，严格按顺序作为编辑目标或参考。完成后只简短说明。\n工作台已确认的绘图要求：\n" + req["prompt"])
                     inputs = [dict(type="text", text=prompt)]
                     inputs.extend(dict(type="localImage",path=str(Path(p).resolve())) for p in req.get("inputs",[]))
-                    send(dict(id=3,method="turn/start",params=dict(threadId=thread_id, model=req["model"],effort="high",input=inputs)))
+                    send(dict(id=3,method="turn/start",params=dict(threadId=thread_id, model=req["model"],input=inputs)))
                     sent_turn = True
                     record("unknown")
                 method = message.get("method", "")

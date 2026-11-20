@@ -57,7 +57,7 @@ def check_scope(rules, plan, scope, selected, used):
             problems.append(dict(stage="assets", segment=None, file=rule["name"], problem="必用图的目标段或镜号已不在已采用方案中"))
         missing = sorted(expected - hits)
         if missing or not hits:
-            problems.append(dict(stage="assets", segment="、".join(missing) or None, file=rule["name"],
+            problems.append(dict(stage="assets", kind="required_reference", affectedSegments=missing, versionId=rule["versionId"], segment="、".join(missing) or None, file=rule["name"],
                                  problem="必用图未落实到要求的正式输入段：" + ("、".join(missing) or "至少一段")))
         included.append(dict(rule, requiredHere=sorted(expected), usedHere=sorted(hits)))
     return included, problems

@@ -782,6 +782,9 @@ class ProductionMixin:
         from .decisions import decision_entries
         entries = self._source_entries(db, task["episode_id"], task["stage"])
         entries += decision_entries(db,task["episode_id"],task["stage"])
+        if task["stage"] in ("script","prompts"):
+            upstream="plan" if task["stage"]=="prompts" else "treatment"
+            entries.append(dict(role="adopted_"+upstream,name="采用依据.json",text=dumps(self._adopted_content(db,task['episode_id'],upstream))))
         if task["stage"] == "plan":
             from .materialcontext import material_context, RULE
             from .progress_expert import provisional_image_issues
@@ -1481,7 +1484,7 @@ class ProductionMixin:
         elif art["stage"] == "prompts" and old:
             for seg, e in (v["content"].get("segments") or {}).items():
                 if (old.get("segments") or {}).get(seg) != e:
-                    items.append(dict(target=f"两遍独审 {seg}", reason="TXT 或参考变化，需重审该段及接点", kind="recheck"))
+                    items.append(dict(target=f"提示词本步核对 {seg}", reason="TXT 或参考变化，需重新核对该段及接点", kind="recheck"))
         dedup = []
         for it in items:
             if it not in dedup:
@@ -1524,7 +1527,7 @@ class ProductionMixin:
             return dict(artifactId=self._ensure_artifact(db, ep, stage))
 
     # ============================================================ 拉片问答：这一刻是不是切镜
-    def ask_cut(self, pack_id, at_ms, question, provider, command_id=None):
+    def ask_cut(self, pack_id, at_ms, question, provider, command_id=None, model=None, effort=None):
         """The executor looks at the frames 500 ms before/after `at_ms` and explains. Evidence frames are stored."""
         from . import contracts
         from .executors.base import ExecRequest
@@ -1551,7 +1554,7 @@ class ProductionMixin:
             path.write_bytes(self.store.read_blob(frames[k]["sha256"]))
             images.append(path)
         trailer = f"\n观察切点（毫秒）：{at_ms}。填写判断、理由及画面证据。"
-        connection = self.run_connection(provider)
+        connection = self.run_connection(provider,model,effort)
         outcome = self.executors[provider].start(ExecRequest(
             run_id=qid, purpose="ask", kind="cut_explanation", prompt=text + trailer,
             connection=connection,model=connection["model"],effort=connection["effort"],
@@ -1573,7 +1576,7 @@ class ProductionMixin:
                            (res["judgement"], res["reason"], dumps(res["evidence"]), qid))
         return dict(questionId=qid)
 
-    def ask_cut_precheck(self, pack_id, at_ms, question, provider, command_id=None):
+    def ask_cut_precheck(self, pack_id, at_ms, question, provider, command_id=None, model=None, effort=None):
         """Synchronous checks, so the HTTP layer can refuse before handing the run to the worker pool."""
         if provider not in self.executors:
             raise Rejected("未配置的执行器")

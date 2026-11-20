@@ -30,7 +30,7 @@ def test_B_T2_B_T3_B_T4_story_review(tmp_path,case,normal):
     result=env.wb.start_continuous(eid,command_id='start')
     assert result['state']=='done',result['reason']
     art=env.art(eid,'story')
-    if case=='B-T2': assert art['tasks'][0]['used_rounds']==2
+    if case=='B-T2': assert max(t['used_rounds'] for t in art['tasks'])==2
     if case=='B-T3':
         assert any(d['kind']=='waive' for d in env.wb.continuous_view(eid)['decisions'])
         assert art['tasks'][0]['used_rounds']==0
@@ -59,6 +59,7 @@ def test_B_T7_B_T8_stress_repairs(tmp_path,case,first_status):
     env=Env(tmp_path); _,eid=env.new_episode(); verify=[]; selections=[]; reports=[]
     def reply(req):
         manifest=env.wb.run_manifest(req.run_id)['manifest']
+        if manifest.get('judgmentKind')=='采用决定':return directed(req,'codex')
         if req.kind=='review': return review(req)
         meta=manifest.get('repairStep')
         if meta and meta['action']=='verify':
@@ -102,6 +103,7 @@ def test_B_T5_B_T6_B_T27_story_candidates(tmp_path,case):
     env=Env(tmp_path);_,eid=env.new_episode()
     def reviewer(req):
         manifest=env.wb.run_manifest(req.run_id)['manifest']
+        if manifest.get('judgmentKind')=='采用决定':return directed(req,'codex')
         with env.db() as db: goal=db.execute('SELECT goal FROM task WHERE id=?',(manifest['taskId'],)).fetchone()[0]
         candidate='第三种表现方式' in goal or '允许调整引发问题' in goal
         passed=candidate and case!='B-T6' and (case!='B-T27' or '允许调整引发问题' in goal)
@@ -142,6 +144,7 @@ def test_B_T16_B_T18_user_change_continues(tmp_path,case,adopt_change):
     env=Env(tmp_path);_,eid=env.new_episode();changed=[]
     def run(req):
         manifest=env.wb.run_manifest(req.run_id)['manifest']
+        if manifest.get('judgmentKind')=='采用决定':return directed(req,'codex')
         if manifest['stage']=='world' and not changed:
             art=env.art(eid,'world')
             vid=env.wb.save_manual(art['id'],None,dict(rules=[dict(id='manual',rule='用户明确的规则',choiceImpact='按新规则行动')]),'user')['versionId']
@@ -167,7 +170,9 @@ def repair_fixture(tmp_path, *, core=False, forbidden=False, reject_a=False, rej
     env.save_adopt(eid,'stress',content,'new-report')
     counts=dict(selection=0,verify=0)
     def reply(req):
-        manifest=env.wb.run_manifest(req.run_id)['manifest']; meta=manifest.get('repairStep')
+        manifest=env.wb.run_manifest(req.run_id)['manifest']
+        if manifest.get('judgmentKind')=='采用决定':return directed(req,'codex')
+        meta=manifest.get('repairStep')
         if req.kind=='review':return review(req)
         def discussion(answer):
             return dict(draft(req),kind='discussion',changes=[],directorRequest='',reply=answer if isinstance(answer,str) else json.dumps(answer))
@@ -228,8 +233,8 @@ def test_B_T23_project_methods_not_silently_adopted(tmp_path):
 
 def test_B_T24_story_format_gate_only_continuous(tmp_path):
     env=Env(tmp_path);_,eid=env.new_episode()
-    first=lambda req:draft(req,synopsis='值班员发现抽屉没关，推回并登记。',handoff='进入下一步')
-    env.codex.script=[first]
+    first=lambda req:draft(req,synopsis='值班员发现抽屉没关，推回并登记。',cast='- 非表格角色条目',handoff='进入下一步')
+    env.codex.script=[lambda req:directed(req,'codex'),lambda req:directed(req,'codex'),first]
     value=env.wb.start_continuous(eid,command_id='start')
     assert value['state']=='done',value['reason']
     assert any('按结构错误修正' in r.prompt for r in env.codex.calls)
@@ -256,7 +261,7 @@ def test_B_T17_discussion_does_not_pause(tmp_path):
             task=env.wb.create_task(eid,'story','只讨论故事优点',discussion_only=True,workspace_revision=art['revision'],command_id='user-chat')
             env.drain(task['runId'])
         return directed(req,'codex')
-    env.codex.script=[run]
+    env.codex.script=[lambda req:directed(req,'codex'),lambda req:directed(req,'codex'),run]
     value=env.wb.start_continuous(eid,command_id='start')
     assert value['state']=='done',value['reason']
 
@@ -267,7 +272,7 @@ def test_B_T19_restart_continues_pending_draft(tmp_path):
         cid=env.wb.continuous_view(eid)['run']['id']
         env.wb.pause_continuous(cid)
         return directed(req,'codex')
-    env.codex.script=[run]
+    env.codex.script=[lambda req:directed(req,'codex'),lambda req:directed(req,'codex'),run]
     value=env.wb.start_continuous(eid,command_id='start')
     assert value['state']=='paused'
     draft_id=env.art(eid,'story')['versions'][0]['id']
@@ -391,6 +396,7 @@ def test_B47_auto_dialogue_draft_is_adopted_and_continues(tmp_path):
     env=Env(tmp_path);_,eid=env.new_episode();changed=[]
     def reply(req):
         manifest=env.wb.run_manifest(req.run_id)['manifest']
+        if manifest.get('judgmentKind')=='采用决定':return directed(req,'codex')
         if manifest['stage']=='world' and not changed:
             changed.append(None)
             art=env.art(eid,'world')

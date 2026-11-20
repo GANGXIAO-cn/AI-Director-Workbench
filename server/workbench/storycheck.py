@@ -73,20 +73,24 @@ def adaptation_errors(value, sources):
 def check_story(content: dict) -> list[str]:
     """Return a list of hard errors (empty means structurally valid)."""
     errors = []
-    for name, label in (("synopsis", "故事梗概"), ("handoff", "交接说明")):
-        value = content.get(name)
-        if not isinstance(value,str) or not value.strip() or PLACEHOLDER.search(value):
-            errors.append(label + "须有实际内容，不得保留模板占位")
+    synopsis = content.get("synopsis")
+    if not isinstance(synopsis, str) or not synopsis.strip() or PLACEHOLDER.search(synopsis):
+        errors.append("故事梗概须有实际内容，不得保留模板占位")
+    handoff = content.get("handoff")
+    if handoff is not None and (not isinstance(handoff, str) or (handoff.strip() and PLACEHOLDER.search(handoff))):
+        errors.append("交接说明须为实际文本，不得保留模板占位")
     for key, title in STORY_AIDS.items():
         value = content.get(key)
         if value is not None and (not isinstance(value, str) or PLACEHOLDER.search(value)):
             errors.append(title + "须为实际文本，可留空")
     if content.get("notes") is not None and not isinstance(content["notes"],str):
         errors.append("其他开发说明须为文本")
-    try:
-        check_cast_table(content.get("cast") or "")
-    except ValueError as exc:
-        errors.append(str(exc))
+    cast = content.get("cast")
+    if cast is not None and (not isinstance(cast, str) or cast.strip()):
+        try:
+            check_cast_table(cast)
+        except ValueError as exc:
+            errors.append(str(exc))
     return errors
 
 

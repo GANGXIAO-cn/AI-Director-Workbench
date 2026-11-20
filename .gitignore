@@ -45,6 +45,8 @@ web/public/e2e-film*.mp4
 # 开发文档、设计对照及本地验收记录
 /docs/
 /*.md
+!/AGENTS.md
+!/系统基本规则.md
 /*.docx
 /*.pdf
 /修复验证_*/

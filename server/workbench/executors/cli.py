@@ -158,7 +158,7 @@ class CliExecutor(Executor):
         binary = self.binary()
         info = dict(provider=self.name, executable=str(binary) if binary else None, version=None,
                     authenticated=None, structured_result="untested", proxy=bool(env.get("HTTP_PROXY") if "HTTP_PROXY" in env else local_proxy_env()),
-                    independent_review="session_isolation")
+                    independent_review=getattr(self, "isolation", None))
         if not binary:
             info["status"] = "unavailable"
             return info
@@ -187,7 +187,7 @@ class CodexExecutor(CliExecutor):
     strict_schema = True
     name = "codex"
     isolation = "session"      # verified live 2026-11-07 (story review)
-    reads_images = True        # --image; not yet verified live
+    reads_images = True        # References are attached using --image.
     help_args = ("exec",)
     required_flags = ("--json", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--output-schema",
                       "--sandbox")
@@ -367,7 +367,7 @@ class AntigravityExecutor(CliExecutor):
     strict_schema = False
     name = "antigravity"
     union_schema = False       # verified 2026-11-07: an anyOf wrapper yields status ERROR
-    isolation = "unverified"   # review isolation flags not yet verified → required reviews wait
+    isolation = "session"      # Reviews open a fresh ACP session in a dedicated worker.
     reads_images = True
     required_flags = ("--print", "--output-format", "--json-schema", "--print-timeout", "--sandbox")
 
@@ -397,12 +397,14 @@ class AntigravityExecutor(CliExecutor):
         if req.schema is not None:
             args += ["--json-schema", json.dumps(req.schema, ensure_ascii=False)]
         stdin = ""
-        if req.images:
+        independent = req.purpose in ("review", "cold_read", "comparison", "image_assess")
+        use_acp = bool(req.images) or independent
+        if use_acp:
             prompt = req.prompt
             if req.schema:
                 prompt += "\nReturn one JSON object matching this schema:\n" + json.dumps(req.schema, ensure_ascii=False)
             args = [sys.executable, str(Path(__file__).with_name("agy_media.py")), str(binary)]
-            stdin = json.dumps(dict(prompt=prompt, model=req.model, images=[str(Path(p).resolve()) for p in req.images]))
+            stdin = json.dumps(dict(prompt=prompt, model=req.model, effort=req.effort, independent=independent, images=[str(Path(p).resolve()) for p in req.images]))
         else:
             args += ["-p", req.prompt]
         rc, out, err = invoke(args, req.workdir, stdin, req.timeout, req.run_id, extra_env=launch_env(self.name,req.connection))
@@ -415,7 +417,7 @@ class AntigravityExecutor(CliExecutor):
                                quota_resets_at=resets_at(text), **base)
         if isinstance(receipt.get("response"), str):
             (req.workdir.parent / f"raw-response-{req.attempt}.txt").write_text(receipt["response"], encoding="utf-8")
-        if (req.schema is None or req.images) and receipt.get("status") == "SUCCESS":
+        if (req.schema is None or use_acp) and receipt.get("status") == "SUCCESS":
             response = receipt.get("response")
             if not isinstance(response, str):
                 return ExecOutcome(ok=False, error_class="schema", diagnostic="回复须为 JSON 对象", **base)

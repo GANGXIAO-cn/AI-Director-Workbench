@@ -11,17 +11,18 @@ class ContinuousSupplements:
         instruction=('判断两条制作补充是否真的冲突；若冲突，继承已登记结论，不能用下游新补充替换旧事实。'
                      '结合各自场次和时间；不同场次或时间可以同时成立。reply 只返回 JSON：'
                      '{"conflict":true|false,"keep":"existing|new|both","reason":"一句话"}。'
-                     '不冲突时 keep=both，冲突时只能 existing。\n'+dumps(context))
-        for attempt in range(2):
-            try:
-                result=json.loads(self._continuous_discuss(cid,stage,instruction))
-                if (type(result.get('conflict')) is bool and isinstance(result.get('reason'),str) and result['reason'].strip()
-                    and result.get('keep') in (('existing',) if result['conflict'] else ('both',))):
-                    return result
-            except (ValueError,AttributeError,TypeError):
-                pass
-            instruction+='\n上次回复格式不合格，请按契约重回。'
-        return dict(conflict=True,keep='existing',reason='未取得有效变更依据，沿用已登记的事实')
+                     '不冲突时 keep=both，冲突时只能 existing。')
+        def validate(result):
+            if not isinstance(result,dict):return ['返回须为 JSON 对象']
+            if type(result.get('conflict')) is not bool:return ['conflict 须为布尔值']
+            if not isinstance(result.get('reason'),str) or not result['reason'].strip():return ['缺少 reason 理由']
+            allowed=('existing',) if result['conflict'] else ('both',)
+            if result.get('keep') not in allowed:return ['keep 与 conflict 不匹配']
+            return []
+        fallback=lambda:dict(conflict=True,keep='existing',reason='未取得有效变更依据，沿用已登记的事实')
+        obj_id=str(existing.get('id') or existing.get('subject') or 'supplement')+':'+str(new.get('subject') or '')
+        decision,_=self._continuous_bounded_json(cid,'制作补充冲突判断',obj_id,instruction,context,validate,stage=stage,fallback=fallback)
+        return decision
 
     def _continuous_prepare_supplements(self,cid,stage,vid):
         if stage not in supplements.STAGES:return vid

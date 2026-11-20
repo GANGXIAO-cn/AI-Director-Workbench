@@ -24,6 +24,7 @@ PARENTS = {
     "grid_cell_binding": ("asset_version_id","asset_version"),
     "stage_edit_session": ("artifact_id","artifact"),
     "free_turn": ("thread_id","free_thread"),
+    "finecut_edit": ("turn","free_turn"),
     "storage_chat": ("turn_id","free_turn"),
     "import_extraction": ("import_id", "import_record"), "topic_source": ("topic_id","topic"),
     "version": ("artifact_id","artifact"), "thread": ("task_id","task"), "message": ("thread_id","thread"),
@@ -60,7 +61,7 @@ def copy_records(source, dest, pid):
     for table in tables:
         if table in ("app_setting","api_provider","backup","command","storage_backup","storage_removed","storage_baseline"):
             continue
-        if table in ("project_series_file","topic_runtime") and not source.execute("SELECT 1 FROM sqlite_master WHERE name=?", (table,)).fetchone():
+        if table in ("project_series_file","topic_runtime","film_start_recovery") and not source.execute("SELECT 1 FROM sqlite_master WHERE name=?", (table,)).fetchone():
             continue
         rows = source.execute(f'SELECT * FROM "{table}" WHERE {ownership(table)} ORDER BY rowid',(pid,))
         marks = ",".join("?" for _ in rows.description)

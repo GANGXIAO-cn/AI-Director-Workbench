@@ -376,6 +376,14 @@ function ProjectCard({ p }: { p: any }) {
   );
 }
 
+function NewEpisodeImageChannel() {
+  const channel = useQuery<{provider:string|null}>("system_image_channel");
+  const providers = useQuery<Record<string,{capabilities:{label?:string}}>>("image_providers");
+  const id = channel.data?.provider;
+  const label = id ? providers.data?.[id]?.capabilities.label || id : "未配置";
+  return <div>生图通道　{channel.error || providers.error || (!channel.data || !providers.data ? "读取中…" : label)}</div>;
+}
+
 function Popover({ configs, listNotice, topicQuery, projectLabel, kind, close, projects, projectId, setProjectId, topics, pickTopic, addTopic, styleNote, paletteCards, saveStyle, onOriginal, chooseOwner, researchOnOpen, referenceDraft, settings }: any) {
 
   const style = { position: "static", width: "auto", margin: "0 14px 14px" } as const;
@@ -433,8 +441,9 @@ function Popover({ configs, listNotice, topicQuery, projectLabel, kind, close, p
   return <div className="pop col" style={style}><h3>本集生成设置</h3>
     <label>画幅　<select value={settings.ratio} onChange={e => settings.setRatio(e.target.value)}><option value="">沿用项目预设</option>{["9:16","16:9","1:1","2:3","3:2","3:4","4:3","21:9"].map(v => <option key={v}>{v}</option>)}</select></label>
     <ExecutorPlanFields plan={settings.executorPlan} onChange={settings.setExecutorPlan}/>
+    <NewEpisodeImageChannel/>
     <label>运行模式　<select aria-label="运行模式" value={settings.runMode} onChange={e => settings.setRunMode(e.target.value)}><option value="expert">专家</option><option value="manual">手工</option></select></label>
-    {settings.quick && <p className="muted small">{settings.runMode==="manual"?"开工后进入本集，由你逐阶段推进。":"专家：开拍后由 AI 连续往下做，自己处理审查与返修，只在需要你取舍时给你选择。"}</p>}
+    {settings.quick && <p className="muted small">{settings.runMode==="manual"?"开工后进入本集，由你逐阶段推进。":"专家自动选稿、派返修并推进到交片。开拍后可以关闭页面。"}</p>}
     {settings.advanced && <button className="btn" onClick={settings.advanced}>调整完整开工设置…</button>}
     <button className="btn primary" onClick={close}>完成</button></div>;
 }

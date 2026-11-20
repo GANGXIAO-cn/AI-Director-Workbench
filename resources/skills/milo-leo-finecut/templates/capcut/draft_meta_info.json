@@ -1,0 +1,37 @@
+{
+  "draft_is_cloud_temp_draft": false,
+  "draft_is_invisible": false,
+  "draft_new_version": "",
+  "draft_removable_storage_device": "",
+  "draft_type": "",
+  "draft_materials": [
+    {
+      "type": 0,
+      "value": []
+    },
+    {
+      "type": 1,
+      "value": []
+    },
+    {
+      "type": 2,
+      "value": []
+    },
+    {
+      "type": 3,
+      "value": []
+    },
+    {
+      "type": 6,
+      "value": []
+    },
+    {
+      "type": 7,
+      "value": []
+    },
+    {
+      "type": 8,
+      "value": []
+    }
+  ]
+}

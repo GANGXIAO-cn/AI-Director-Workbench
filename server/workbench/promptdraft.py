@@ -135,11 +135,8 @@ def draft(wb, eid, *, bindings_only=False):
             definition = ref["label"] + "：" + bound_text.get(vid, ref["role"] + "。")
             digest = assets[vid]["sha256"]
             used.setdefault(digest, set()).add(sid)
-            limits = "；".join(dict.fromkeys(limits_by_hash.get(digest, [])))
             ref['limitations']=list(dict.fromkeys(limits_by_hash.get(digest,[])))
-            if limits:
-                definition += "用途限制：" + limits
-            definitions.append(definition)
+            definitions.append(join(definition, *[limit for limit in ref['limitations'] if limit not in definition]))
         from .materialcontext import binding_context
         inherited_uses=[binding_context(ref) for ref in refs.values()]
         sound=dict(bgm=False,silent=False,ambience=[],dialogue=[cue['text'] for shot in seg['shots'] for cue in spoken.get(shot,[])])

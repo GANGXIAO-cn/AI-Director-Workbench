@@ -148,7 +148,7 @@ def check_content(stage: str, content: dict, plan: dict | None = None) -> list[s
     if stage == "plan":
         if not content.get("shots") or not content.get("segments"):
             return ["制作方案须有镜头和生成段"]
-        # Over-long segments may be saved and adopted; delivery and packaging block them until split.
+        # Drafts can be saved before splitting. The adoption gate applies the episode duration limit.
         if content.get("rhythmTable") or shotrefs.plan_enabled(content):
             try:
                 rhythm.check_alignment(rhythm.plan_rows(content), rhythm.plan_table(content))

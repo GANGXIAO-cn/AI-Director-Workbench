@@ -27,7 +27,7 @@ def test_antigravity_adapter_parses_success_receipt(tmp_path):
                                                           schema=branch_schema("draft"), session_mode="new", workdir=work,
                                                           model="gemini-3.8-flash-high"))
     assert out.ok and out.structured["runId"] == "r1" and out.reported_model == "gemini-3.8-flash-high"
-    assert AntigravityExecutor.isolation == "unverified"
+    assert AntigravityExecutor.isolation == "session"
 
 
 def test_antigravity_adapter_classifies_quota(tmp_path):

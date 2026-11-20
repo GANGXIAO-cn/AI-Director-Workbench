@@ -12,5 +12,4 @@ export const FILM_FIELDS: Record<string, [string, string][]> = {
   treatment: [["scenes", "分场事件"], ["durationBudget", "时长预算与依据"], ["notes", "说明"]],
   stress: [["retelling","冷读复述"],["scope", "审查范围"], ["diagnosis", "诊断结论"], ["issues", "问题与证据"], ["options", "返修选项"], ["notes", "作者决定"]],
   asset_design: [["strategy", "素材策略"], ["assets", "素材与状态设计"], ["notes", "实际素材说明"]],
-  acting: [["scenes", "逐场表演"], ["notes", "说明"]],
 };

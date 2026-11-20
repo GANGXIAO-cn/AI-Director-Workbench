@@ -970,7 +970,10 @@ class ImagesMixin:
         """Update one AI contribution without replacing director or other uses."""
         with transaction(self.db_path) as db:
             art = row(db, "SELECT adopted_version_id FROM artifact WHERE episode_id=? AND stage='plan'", episode_id)
-            if art['adopted_version_id'] != plan_version_id:
+            from .workflow import binding_candidate
+            working=binding_candidate.get()
+            expected_plan=working['base'] if working and working['episode']==episode_id and working['version']==plan_version_id else plan_version_id
+            if art['adopted_version_id'] != expected_plan:
                 raise Conflict('制作方案已变化，请按当前方案重新匹配素材用途')
             if need_key is not None:
                 need = db.execute('SELECT adopted_version_id FROM asset_need WHERE episode_id=? AND need_key=? AND removed=0',(episode_id,need_key)).fetchone()

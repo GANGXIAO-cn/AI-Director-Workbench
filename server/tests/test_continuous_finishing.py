@@ -1,8 +1,8 @@
 """I package: real commands, isolated storage and scripted offline executors."""
 import json,re
-from helpers import Env
+from helpers import Env, assembled_english_prompts
 from workbench.db import transaction,dumps
-from workbench.executors.fake import review,draft
+from workbench.executors.fake import review,draft,directed
 from test_image_assess import assessment,reply
 
 
@@ -30,7 +30,7 @@ def test_I_T2_observations_chain_final_review_and_adoption(tmp_path,monkeypatch)
     def images(req):
         ids=[re.search(r'候选-([a-f0-9-]+)',p.name)[1] for p in req.images if '候选-' in p.name]
         return reply([assessment(i,observation='柴犬阿福完整可见',props={}) for i in ids])(req)
-    env.codex.script=[images]*6
+    env.codex.script=[lambda req:images(req) if req.purpose=='image_assess' else directed(req,'codex')]*6
     original=wb.save_shot_observation
     def traced(version,*args,**kwargs):
         result=original(version,*args,**kwargs);saved.append((version,result['versionId']));return result
@@ -87,10 +87,11 @@ def test_I_T5_structure_splits_plan_updates_bindings_preserves_other_segment(tmp
     env,case,cid,vid=finishing_fixture(tmp_path,True);wb=env.wb;eid=case['eid'];face=case['img']['versionId']
     old=wb._continuous_version(vid);old_plan=case['plan']
     def scripted(req):
+        if req.kind=='review' or '退回写稿人' in req.prompt:return directed(req,'codex')
         if req.purpose=='image_assess':return reply([assessment(face,observation='柴犬阿福完整可见',props={})])(req)
         if '决定简化动作或拆段' in req.prompt:return reply(dict(action='split',firstShotOfSecond='S02',reason='两个动作分别完成'))(req)
-        content=promptdraft.draft(wb,eid)
-        content['segments']['G02']['txt']+='\n模型不应带来的改写。'
+        content=assembled_english_prompts(req)
+        assert 'G02' not in content['segments']
         return draft(req,segments=json.dumps(content['segments']))
     env.codex.script=[scripted]*20
     final=wb._continuous_structure(cid,vid,'G01',[dict(reason='两个动作需要拆为独立段')])
@@ -126,12 +127,13 @@ def test_I_T6_candidate_product_coverage_requires_record_mark_reference(tmp_path
     # Removing required status blocks AI adoption even after all reviews pass.
     env.review_segments(candidate,['G01','G02'],cid='product')
     wb.mark_image(eid,image,'required',enabled=False,command_id='not-required')
-    with pytest.raises(Halt):wb._continuous_adopt(cid,'prompts',candidate)
+    from workbench.continuous import UserChange
+    with pytest.raises(UserChange):wb._continuous_adopt(cid,'prompts',candidate)
     assert '商品入景覆盖不足' in wb._continuous_record(cid)['reason']
     assert env.art(eid,'prompts')['adopted_version_id']!=candidate
     wb.mark_image(eid,image,'required',['S01'],command_id='required-again')
     from test_continuous_wake import run_record
-    cid=run_record(env,eid)
+    wb._continuous_cursor(cid,nextRepair=None)
     wb._continuous_adopt(cid,'prompts',wb._continuous_prompt_checks(cid,candidate))
     assert env.art(eid,'prompts')['adopted_version_id']==candidate
 
@@ -152,13 +154,14 @@ def test_PN_T4_continuous_returns_unapplied_note_to_plan_and_finishes(tmp_path):
         db.execute('UPDATE continuous_run SET cursor=?,state=? WHERE id=?',(dumps(cursor),'running',cid))
     called=[]
     def executor(req):
+        if '退回写稿人' in req.prompt:return directed(req,'codex')
         if req.kind=='review':return review(req)
         manifest=wb.run_manifest(req.run_id)['manifest'];stage=manifest['stage']
         if req.purpose=='image_assess':return reply([assessment(face,observation='阿福可见',props={})])(req)
         called.append(stage)
         if stage=='plan':
             content=dict(case['plan'],productionNoteResponses=[dict(id='P03',reportVersionId=report,owner='plan',status='applied',where='S01')])
-        elif stage=='prompts':content=promptdraft.draft(wb,eid)
+        elif stage=='prompts':content=assembled_english_prompts(req)
         else:raise AssertionError(stage)
         return draft(req,**{k:json.dumps(v,ensure_ascii=False) if isinstance(v,(list,dict)) else v for k,v in content.items() if v!=""})
     env.codex.script=[executor]*30

@@ -15,15 +15,15 @@ PUGGY_TERMS = re.compile(r"MILO|LEO|PUGGY|女主人|puggyroom|自媒体|胖橘�
 CARWASH = "# N07 洗车店\n\nMILO 发现洗车店的泡沫枪，决定给女主人的车来一次全自动洗车。\n".encode()
 
 
-def plan(create="codex", rev="claude"):
+def plan(create="codex", rev="antigravity"):
     return {"create": {"provider": create}, "review": {"provider": rev}}
 
 
 @pytest.fixture
 def env(tmp_path):
-    codex, claude = FakeExecutor("codex"), FakeExecutor("claude")
-    wb = Workbench(tmp_path / "data", {"codex": codex, "claude": claude})
-    return wb, codex, claude
+    codex, antigravity = FakeExecutor("codex"), FakeExecutor("antigravity")
+    wb = Workbench(tmp_path / "data", {"codex": codex, "antigravity": antigravity})
+    return wb, codex, antigravity
 
 
 def drain(wb, run_id):
@@ -197,8 +197,8 @@ def violation_review(req):
 
 
 def test_j59_required_violation_cannot_be_waived_ordinary_can(env):
-    wb, codex, claude = env
-    claude.script = [violation_review]
+    wb, codex, antigravity = env
+    antigravity.script = [violation_review]
     pid, n06, n07, imp = puggy_n07(wb)
     _, task = started_story(wb, n07, imp, n06)
     story = wb.episode_view(n07)["artifacts"][0]
@@ -234,20 +234,20 @@ def test_j59_required_violation_cannot_be_waived_ordinary_can(env):
 
 
 def test_review_runs_in_new_isolated_session_with_manifest_only(env):
-    wb, codex, claude = env
+    wb, codex, antigravity = env
     pid, n06, n07, imp = puggy_n07(wb)
     _, task = started_story(wb, n07, imp, n06)
     wb.post_message(task["taskId"], "创作对话中的私下要求：别让审稿人知道", "chat-1")
     v1 = wb.episode_view(n07)["artifacts"][0]["versions"][0]["id"]
     rv = wb.submit_review(v1, "rv1")
     drain(wb, rv["runId"])
-    req = claude.calls[-1]
+    req = antigravity.calls[-1]
     assert req.purpose == "review" and req.session_mode == "ephemeral"
     m, text = manifest_text(wb, rv["runId"])
     assert m["isolationLevel"] == "session" and m["sessionMode"] == "ephemeral"
     # 01 review loads SKILL.md + story_review.md only (benchmark stress test dropped 2026-11-11)
     assert [e["role"] for e in m["inputs"]] == ["method"] * 2 + [
-        "reviewed_version", "project_settings", "requirements", "characterStandard"]
+        "reviewed_version", "project_settings", "requirements", "characterStandard","review_boundary"]
     assert [e["name"] for e in m["inputs"] if e["role"] in ("method", "project_method")] == [
         "SKILL.md", "story_review.md",
     ]
@@ -309,8 +309,8 @@ def test_hard_format_error_blocks_adoption_even_after_pass(env):
 # ---------------------------------------------------------------- rounds and messages
 
 def test_rounds_count_only_auto_revisions_and_messages_do_not_reset(env):
-    wb, codex, claude = env
-    claude.script = [lambda r: review(r, "return", [dict(reason="动机不清", anchor="第1段")])] * 3
+    wb, codex, antigravity = env
+    antigravity.script = [violation_review] * 3
     pid, n06, n07, imp = puggy_n07(wb)
     wb.start_episode(n07, "import", plan(), source_import_id=imp, relation="continue", predecessor_ids=[n06])
     task = wb.create_task(n07, "story", "写故事", auto_revise=True)
@@ -337,10 +337,8 @@ def test_rounds_count_only_auto_revisions_and_messages_do_not_reset(env):
 # ---------------------------------------------------------------- result validation and failures
 
 @pytest.mark.parametrize("bad", [
-    lambda r: dict(draft(r), runId="other-run"),
-    lambda r: dict(draft(r), inputFingerprint="0" * 64),
     lambda r: draft(r, adopted="越权字段"),
-    lambda r: dict(draft(r), baseVersionId="R99"),
+    lambda r: dict(draft(r), changes="格式错误"),
     lambda r: {"kind": "draft"},
 ])
 def test_invalid_draft_results_are_not_stored(env, bad):
@@ -354,10 +352,24 @@ def test_invalid_draft_results_are_not_stored(env, bad):
     assert status == "failed" and attempts == 1     # one same-content re-format request, then manual retry
 
 
+def test_draft_ids_are_bound_to_the_local_run(env):
+    wb, codex, _ = env
+    codex.script = [lambda r: dict(draft(r), runId="other", inputFingerprint="0"*64, baseVersionId="R99")]
+    _, previous, eid, imp = puggy_n07(wb)
+    wb.start_episode(eid, "import", plan(), source_import_id=imp, relation="continue", predecessor_ids=[previous])
+    task = wb.create_task(eid, "story", "写故事")
+    drain(wb,task["runId"])
+    version = wb.episode_view(eid)["artifacts"][0]["versions"][-1]
+    result = json.loads((wb.store.run_dir(task["runId"])/"result.json").read_text())
+    assert version["source_run_id"] == result["runId"] == task["runId"]
+    assert result["inputFingerprint"] == wb.run_manifest(task["runId"])["fingerprint"]
+    assert result["baseVersionId"] == version["base_id"]
+
+
 def test_forged_setting_id_and_missing_coverage_rejected(env):
-    wb, codex, claude = env
+    wb, codex, antigravity = env
     forged = lambda r: review(r, "return", [dict(category="setting", settingId="made-up", reason="x")])
-    claude.script = [forged, forged]
+    antigravity.script = [forged, forged]
     pid, n06, n07, imp = puggy_n07(wb)
     started_story(wb, n07, imp, n06)
     v1 = wb.episode_view(n07)["artifacts"][0]["versions"][0]["id"]
@@ -369,7 +381,7 @@ def test_forged_setting_id_and_missing_coverage_rejected(env):
 
 def test_format_retry_recovers_once(env):
     wb, codex, _ = env
-    codex.script = [lambda r: dict(draft(r), runId="x"), None]
+    codex.script = [lambda r: dict(draft(r), changes="格式错误"), None]
     pid, n06, n07, imp = puggy_n07(wb)
     started_story(wb, n07, imp, n06)
     with db(wb) as conn:
@@ -378,7 +390,7 @@ def test_format_retry_recovers_once(env):
 
 
 def test_quota_stops_at_waiting_without_switching(env):
-    wb, codex, claude = env
+    wb, codex, antigravity = env
     codex.script = [quota_exhausted]
     pid, n06, n07, imp = puggy_n07(wb)
     _, task = started_story(wb, n07, imp, n06)
@@ -386,13 +398,13 @@ def test_quota_stops_at_waiting_without_switching(env):
         run = conn.execute("SELECT id,status,quota_resets_at FROM run").fetchone()
         state = conn.execute("SELECT state FROM task").fetchone()[0]
     assert run["status"] == "waiting_quota" and state == "waiting_quota" and run["quota_resets_at"]
-    assert len(codex.calls) == 1 and claude.calls == []          # no automatic switch
-    retry = wb.retry_run(run["id"], provider="claude", command_id="retry-1")   # explicit user choice
+    assert len(codex.calls) == 1 and antigravity.calls == []          # no automatic switch
+    retry = wb.retry_run(run["id"], provider="antigravity", command_id="retry-1")   # explicit user choice
     old_m, _ = manifest_text(wb, run["id"])
     new_m, _ = manifest_text(wb, retry["runId"])
     assert [e["sha256"] for e in old_m["inputs"]] == [e["sha256"] for e in new_m["inputs"]]
     drain(wb, retry["runId"])
-    assert len(claude.calls) == 1 and wb.episode_view(n07)["artifacts"][0]["versions"]
+    assert len(antigravity.calls) == 1 and wb.episode_view(n07)["artifacts"][0]["versions"]
 
 
 def test_frozen_snapshot_detects_tampering(env):

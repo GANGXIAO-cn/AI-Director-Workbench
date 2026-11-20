@@ -12,7 +12,15 @@ def expert_provisional(req):
     candidate=data["candidates"][0]
     return dict(action="provisional",target=data["target"],versionId=candidate["versionId"],issueKeys=[i["type"]+":"+i["where"] for i in candidate["critical"]],instruction="",reason="返修后仍有问题",summary="暂用当前候选，问题保留到交付。")
 
-from test_image_assess import fixture,assessment,reply
+from test_image_assess import fixture as image_fixture,assessment,reply
+
+
+def fixture(tmp_path):
+    env,eid,vid=image_fixture(tmp_path)
+    script=env.art(eid,"script")["adopted_version_id"]
+    env.drain(env.wb.submit_review(script,"script-review-before-images")["runId"])
+    return env,eid,vid
+
 
 
 def test_state_missing_observation_reads_adopted_image_once(tmp_path,monkeypatch):
@@ -113,7 +121,9 @@ def test_H_channel_inherits_existing_07_selection_and_defaults(tmp_path):
     options=env.wb._image_options(eid,dict(provider=selected))
     assert options['provider']==selected
     assert env.wb._image_options(eid,{})['provider']==next(iter(channels))
-    assert env.wb._image_options(eid,dict(provider='removed',model='removed'))==env.wb._image_options(eid,{})
+    from workbench.errors import ExecutorUnavailable
+    with pytest.raises(ExecutorUnavailable,match='所选图像通道未配置'):
+        env.wb._image_options(eid,dict(provider='removed',model='removed'))
     env.codex.script=[image_reply]*12
     result=env.wb.start_continuous(eid,target_stage='delivery',image_options=dict(provider=selected),command_id='start')
     assert result['cursor']['imageOptions']==dict(provider=selected)
@@ -219,7 +229,7 @@ def test_H_T8_H_T9_identity_before_dependent_scene_and_state_confirmation(tmp_pa
     assert sequence==['identity','room','wet'],result['reason']
     matrix=env.wb.cast_matrix(eid)
     assert matrix['roleStates'][0]['confirmed']
-    assert '未登记' in matrix['roleStates'][0]['observation']
+    assert matrix['roleStates'][0]['observation']=='铜制门铃位于木门上'
     assert any(d['kind']=='fill_observation' for d in env.wb.continuous_view(eid)['decisions'])
 
 
@@ -259,7 +269,8 @@ def test_H_no_visual_choice_api_or_fabricated_director_decision(tmp_path):
 
 def test_H_product_catalog_input_and_actual_main_image_in_generation(tmp_path):
     from helpers import Env
-    env=Env(tmp_path);pid,eid=env.new_episode(config='puggy');env.adopt_story(eid);env.script(eid)
+    env=Env(tmp_path);pid,eid=env.new_episode(config='puggy');env.adopt_story(eid);script=env.script(eid)
+    env.drain(env.wb.submit_review(script,'script-review-before-images')['runId'])
     assert env.wb.product_placements(eid)['minimum']>0
     env.save_adopt(eid,'asset_design',dict(strategy='lightweight',assets=[dict(id='room',kind='scene',title='门厅商品入景',description='商品自然放在门厅边桌',imagePrompt='门厅边桌商品自然入景，保留主图图案',sceneIds=['场01'],productCode='15')]),'product-design')
     task=env.wb.create_task(eid,'asset_design','核对商品输入',discussion_only=True,workspace_revision=env.art(eid,'asset_design')['revision'])
@@ -315,7 +326,8 @@ def test_independent_needs_land_without_visual_review_in_07(tmp_path):
     """实测 139：图片通道允许并发时，互不依赖的条目同时出图、同时评估，各自完成采用；游标记录不互相覆盖。"""
     import threading,time
     from test_image_assess import Env
-    env=Env(tmp_path);pid,eid=env.new_episode();env.adopt_story(eid);env.script(eid)
+    env=Env(tmp_path);pid,eid=env.new_episode();env.adopt_story(eid);script=env.script(eid)
+    env.drain(env.wb.submit_review(script,'script-review-before-images')['runId'])
     env.save_adopt(eid,'asset_design',dict(strategy='lightweight',assets=[
         dict(id='bell',kind='prop',title='门铃',description='铜制门铃',imagePrompt='铜制门铃',sceneIds=['场01']),
         dict(id='lamp',kind='prop',title='台灯',description='黄铜台灯',imagePrompt='黄铜台灯',sceneIds=['场01'])]),'design')
@@ -457,7 +469,15 @@ def test_whole_review_fixes_serious_issue_without_reviewing_again(tmp_path):
     result=env.wb.start_continuous(eid,target_stage='delivery',command_id='start')
     rows=env.wb.asset_worksheet(eid)['rows']
     vid=rows[0]['adopted_version_id']
-    env.codex.script=[reply([dict(versionId=vid,verdict='blocked',defect='门铃主体缺失')])]
+    repaired='木门正中固定着一只完整的铜门铃，铃身清晰可见。'
+    from workbench.executors.fake import directed
+    def handle(req):
+        if req.purpose=='image_assess':
+            return reply([dict(versionId=vid,verdict='blocked',defect='门铃主体缺失')])(req)
+        if 'image_prompt_revision' in env.wb.run_manifest(req.run_id)['manifest'].get('judgmentKind',''):
+            return reply(dict(prompt=repaired))(req)
+        return directed(req,'codex')
+    env.codex.script=[handle]*8
     plan=env.plan86({'G01':[8000]})
     adopted,_=env.save_adopt(eid,'plan',plan,'ready-for-merged-review')
     env.wb._continuous_internal_version(result['id'],adopted)
@@ -471,3 +491,7 @@ def test_whole_review_fixes_serious_issue_without_reviewing_again(tmp_path):
     assert len(env.wb.episode_batches(eid))==2
     need=env.wb.asset_worksheet(eid)['rows'][0]
     assert need['adopted_version_id']!=result['cursor']['episodeImageReview']['selected']['bell']
+    with env.db() as db:
+        spec=json.loads(db.execute("SELECT spec FROM image_batch WHERE episode_id=? ORDER BY rowid DESC LIMIT 1",(eid,)).fetchone()[0])
+    assert spec['items'][0]['prompt'].endswith(repaired)
+    assert '门铃主体缺失' not in spec['items'][0]['prompt']

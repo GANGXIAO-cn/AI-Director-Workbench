@@ -13,7 +13,7 @@ import { ProjectPresets } from "./ProjectPresets";
 import { useProjectRoute } from "./projectNavigation";
 import {specLabels,specChoices} from "./specs";
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { blob, cmd, q, commandId, importManuscript } from "./api";
 import { ErrorLine, Modal, Pills, PROVIDER_LABEL, pickable, SegBar, Tag, fmtMs, useAction, useQuery } from "./ui";
 
@@ -276,6 +276,7 @@ export function Kickoff({ projectId, prefill, onClose, pictures=[] }: { projectI
 
 export function ModelPick({ label, provider, setProvider, sel, setSel, catalog }: any) {
   const models = catalog?.text?.[provider]?.models ?? [];
+  const modelOptions = useId();
   const m = models.find((x: any) => x.id === sel.model) ?? models[0];
   const [warn, setWarn] = useState("");
   const pickEffort = async (effort: string | null) => {
@@ -285,9 +286,9 @@ export function ModelPick({ label, provider, setProvider, sel, setSel, catalog }
   return (
     <div className="col" style={{ gap: 4 }}>
       <div className="row small">{label}
-        <select aria-label={label+"执行器"} value={provider} onChange={(e) => setProvider(e.target.value)}>{pickable(Object.keys(catalog?.text ?? { codex: 1, antigravity: 1 }),provider).map((k) => <option key={k} value={k}>{PROVIDER_LABEL[k] ?? k}</option>)}</select>
-        <select aria-label={label+"型号"} value={sel.model ?? ""} onChange={(e) => setSel({ model: e.target.value || null, effort: null })}>{models.map((x: any) => <option key={x.label} value={x.id ?? ""}>{x.label}</option>)}</select>
-        <select aria-label={label+"推理强度"} value={sel.effort ?? ""} onChange={(e) => pickEffort(e.target.value || null)}>{["", "low", "medium", "high", "xhigh", "max"].map((x) => <option key={x} value={x}>{x || "默认强度"}{x && !(m?.efforts ?? []).includes(x) ? "（不兼容）" : ""}</option>)}</select>
+        <select aria-label={label+"执行器"} value={provider} onChange={(e) => setProvider(e.target.value)}>{pickable(Object.keys(catalog?.text ?? { codex: 1, antigravity: 1 }),provider).map((k) => <option key={k} value={k}>{catalog?.text?.[k]?.label ?? PROVIDER_LABEL[k] ?? k}</option>)}</select>
+        {provider?.startsWith("api:") ? <><input list={modelOptions} aria-label={label+"型号"} placeholder="选择或填写型号" value={sel.model ?? ""} onChange={e=>setSel({model:e.target.value || null,effort:null})}/><datalist id={modelOptions}>{models.map((x:any)=><option key={x.id} value={x.id}/>)}</datalist></> : <select aria-label={label+"型号"} value={sel.model ?? ""} onChange={(e) => setSel({ model: e.target.value || null, effort: null })}>{!models.some((x:any)=>x.id==null) && <option value="">选择型号</option>}{models.map((x: any) => <option key={x.label} value={x.id ?? ""}>{x.label}</option>)}</select>}
+        <select aria-label={label+"推理强度"} value={sel.effort ?? ""} onChange={(e) => pickEffort(e.target.value || null)}>{["", "low", "medium", "high", "xhigh", "max"].map((x) => <option key={x} value={x}>{x || "默认强度"}{x && !(m?.efforts ?? []).includes(x) ? "（清单未列）" : ""}</option>)}</select>
       </div>
       {warn && <span className="error tiny">{warn}</span>}
     </div>

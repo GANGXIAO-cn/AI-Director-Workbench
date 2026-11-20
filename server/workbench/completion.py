@@ -1,4 +1,6 @@
-"""The adopted publication copy ends an episode; no external film-completion action."""
+"""Track publication completion separately from episodes still producing video and music."""
+from contextlib import closing
+import sqlite3
 import json
 from .db import dumps
 from .workflow import ORDER, OPTIONAL
@@ -19,16 +21,52 @@ def pending_completion_impacts(wb, db, eid):
                for r in db.execute("SELECT kind,target_ref FROM impact WHERE episode_id=? AND state='pending'",(eid,)))
 
 
-def current(wb, db, eid):
+def current_deliveries(db, eid, versions):
+    rows = db.execute("SELECT id,versions FROM delivery WHERE episode_id=? AND scope='full' AND state='deliverable' "
+                      "AND NOT EXISTS (SELECT 1 FROM storage_removed WHERE kind='delivery' AND owner=delivery.id AND removed_at>0) "
+                      "ORDER BY created_at DESC,rowid DESC", (eid,))
+    return [row["id"] for row in rows if all(versions.get(k)==v for k,v in json.loads(row["versions"]).items())]
+
+
+def film_progress(wb, db, eid, deliveries):
+    from .filmedit import progress
+    start = db.execute("SELECT delivery FROM film_start WHERE episode_id=?", (eid,)).fetchone()
+    did = start[0] if start else next(iter(deliveries), None)
+    if did and did in deliveries:
+        ready, finished = progress(wb.store.root, db, did)
+        if ready:
+            return True, True, finished
+    if start:
+        return True, False, None
+    # Historical film runs may predate automatic kickoff.
+    path = wb.store.root/"video-production/queue.sqlite"
+    if path.is_file():
+        episode_ids = [r[0] for r in db.execute("SELECT id FROM delivery WHERE episode_id=?", (eid,))]
+        with closing(sqlite3.connect(path.as_uri()+"?mode=ro",uri=True)) as queue:
+            if queue.execute("SELECT 1 FROM sqlite_master WHERE name='soundtrack'").fetchone():
+                if any(queue.execute("SELECT 1 FROM soundtrack WHERE delivery=?", (d,)).fetchone() for d in episode_ids):
+                    return True, False, None
+    return False, False, None
+
+
+def current(wb, db, eid, film=None):
     saved = db.execute('SELECT * FROM episode_completion WHERE episode_id=?', (eid,)).fetchone()
     if not saved or not saved['completed_at']:
         return dict(completed=False, completedAt=None)
     valid = json.loads(saved['basis']) == basis(db, eid)
     valid = valid and not pending_completion_impacts(wb,db,eid)
+    completed_at = saved["completed_at"]
+    if valid:
+        if film is None:
+            film = film_progress(wb, db, eid, current_deliveries(db, eid, json.loads(saved["basis"])))
+        producing, _, finished = film
+        if producing:
+            valid = bool(finished)
+            completed_at = finished
     if valid:
         frozen = db.execute('SELECT basis FROM version_publish_basis WHERE version_id=?', (saved['publish_version_id'],)).fetchone()
         valid = bool(frozen) and json.loads(frozen[0])['segments'] == wb._publish_basis(db, eid)['segments']
-    return dict(completed=bool(valid), completedAt=saved['completed_at'] if valid else None,
+    return dict(completed=bool(valid), completedAt=completed_at if valid else None,
                 publishVersionId=saved['publish_version_id'])
 
 

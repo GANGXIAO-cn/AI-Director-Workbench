@@ -60,7 +60,8 @@ def test_E_T3_F_T4_explicit_import_style_spec_and_attachment(tmp_path):
     assert '墨绿夜景' in frozen and '一位学徒送错蛋糕' in frozen
 
 
-def test_E_T4_E_T5_conflict_card_before_kickoff_and_adjustment_rechecked(tmp_path):
+@pytest.mark.parametrize("from_topic", [False, True])
+def test_E_T4_E_T5_conflict_card_before_kickoff_and_adjustment_rechecked(tmp_path, from_topic):
     env,pid=quick_env(tmp_path);rule='全片无对白';idea='主角说出最后一句台词。';new='主角在纸上写下最后一句话。'
     env.wb.propose_setting_change(pid,'dialogue',rule,'required','默片','rule')
     checks=[]
@@ -68,10 +69,19 @@ def test_E_T4_E_T5_conflict_card_before_kickoff_and_adjustment_rechecked(tmp_pat
         checks.append(req.prompt);conflict=len(checks)==1
         return dict(checks=[dict(key='dialogue',verdict='conflict' if conflict else 'compatible',settingQuote=rule,requestQuote=idea if conflict else new,reason='已核对原文')])
     env.codex.script=[check,lambda req:dict(idea=new),check,reply]
-    result=env.wb.quick_start(pid,idea,'start');eid=result['episodeId'];run=env.wb.continuous_view(eid)['run']
+    topic_id = env.wb.add_topic(pid, 'T01', idea)['topicId'] if from_topic else None
+    result=env.wb.quick_start(pid,'' if from_topic else idea,'start',dict(topicId=topic_id))
+    eid=result['episodeId']
+    run=env.wb.continuous_view(eid)['run']
     assert len(checks)==2
     assert env.wb.episode_view(eid)['kickoff']['idea_text']==new
-    assert run['cursor']['kickoffAdjustment']==dict(before=idea,after=new)
+    assert idea in run['cursor']['kickoffAdjustment']['before']
+    assert run['cursor']['kickoffAdjustment']['after']==new
+    if from_topic:
+        card, = env.wb.topics(pid)
+        assert card['status'] != '候选' and card['episode_id'] == eid
+        assert env.wb.episode_view(eid)['kickoff']['topic_id'] == topic_id
+        assert env.wb._direction_inputs(eid)['idea'] == new
     assert not any(p['state']=='waiting_choice' for p in run['cursor'].get('pauseHistory',[]))
 
 

@@ -1,3 +1,4 @@
+import { ModelPick } from "./Project";
 import { useState } from "react";
 import { ResourceBrowser, type Excerpt } from "./Resources";
 import { cmd } from "./api";
@@ -29,6 +30,8 @@ export function TopicResearch({projectId,poolChanged,initialBrowse=false,hidePic
   const [direction,setDirection]=useState("");
   const [countChoice,setCountChoice]=useState("");
   const [customCount,setCustomCount]=useState("");
+  const modelCatalog=useQuery<any>("model_catalog");
+  const [selection,setSelection]=useState<{model:string|null;effort:string|null}>({model:null,effort:null});
   const [provider,setProvider]=useState("");
   const [codes,setCodes]=useState<Record<string,string>>({});
   const [selected,setSelected]=useState("");
@@ -52,12 +55,11 @@ export function TopicResearch({projectId,poolChanged,initialBrowse=false,hidePic
       {[1,2,3,4,5,6,8,10].map(n=><option key={n} value={n}>{n} 个</option>)}
       <option value="custom">自定义</option></select></label>
       {countChoice==="custom" && <label>自定义数量 <input type="number" min="1" step="1" value={customCount} onChange={e=>setCustomCount(e.target.value)}/></label>}
-      <label>使用的 AI <select value={executor} onChange={e=>setProvider(e.target.value)}>
-      {providers.map(p=><option value={p} key={p}>{PROVIDER_LABEL[p] ?? p}</option>)}</select></label>
+      <ModelPick label="使用的 AI" catalog={modelCatalog.data} provider={executor} sel={selection} setSel={setSelection} setProvider={(p:string)=>{setProvider(p);setSelection({model:modelCatalog.data?.text[p]?.models[0]?.id??null,effort:null});}}/>
       <button className="btn primary" disabled={action.busy || !executor} onClick={()=>action.run(async()=>{
         const count=countChoice ? Number(countChoice==="custom" ? customCount : countChoice) : undefined;
         if (count!==undefined && (!Number.isSafeInteger(count) || count<1)) throw new Error("选题数量须为正整数");
-        const result=await send("start_topic_research",{project_id:projectId,candidate_count:count,direction:direction.trim() || (reference ? "根据所选原文片段和项目设定提出备选题，说明借鉴之处。若片段只有书目信息，请说明依据不足。" : "结合项目已有资料，自主提出不同的选题供我挑选，逐题推荐合适的篇幅和成片时长。"),provider:executor,...(reference?{reference:{path:reference.path,sha256:reference.sha256,offset:reference.offset,spanLength:Array.from(reference.text).length,reason:reference.reason}}:{})},[]);
+        const result=await send("start_topic_research",{project_id:projectId,candidate_count:count,direction:direction.trim() || (reference ? "根据所选原文片段和项目设定提出备选题，说明借鉴之处。若片段只有书目信息，请说明依据不足。" : "结合项目已有资料，自主提出不同的选题供我挑选，逐题推荐合适的篇幅和成片时长。"),provider:executor,...selection,...(reference?{reference:{path:reference.path,sha256:reference.sha256,offset:reference.offset,spanLength:Array.from(reference.text).length,reason:reference.reason}}:{})},[]);
         setSelected(result.turnId);setDirection("");await records.reload();
       })}>{reference?"参考这段内容想新题":"生成选题"}</button></div>
     {runs.length>0&&<label className="topic-history">历史研究 <select value={selected} onChange={e=>setSelected(e.target.value)}>

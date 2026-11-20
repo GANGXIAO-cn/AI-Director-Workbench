@@ -12,7 +12,7 @@ from .db import connect, dumps, new_id, transaction
 from .errors import Conflict, NotFound, Rejected, row
 from .executors.base import ExecRequest
 from .prompts import prompt_from
-from . import topicresearch
+from . import topicresearch, filmedit
 from .stages import WRITABLE
 
 REPLY_SCHEMA = {"type":"object", "properties":{"reply":{"type":"string"}}, "required":["reply"], "additionalProperties":False}
@@ -64,6 +64,10 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
                     connection = manifest.get("executorConnection") or manifest.get("creator") or {}
                     t["model"], t["effort"] = connection.get("model"), connection.get("effort")
                     t["methods"] = manifest["methodVersions"]
+                    if stage == "finecut":
+                        edit = db.execute("SELECT edits FROM finecut_edit WHERE turn=?", (t["id"],)).fetchone()
+                        t["editQueued"] = bool(edit)
+                        t["replanned"] = bool(edit and any(op["action"]=="replan" for op in json.loads(edit[0])))
                     if episode_id:
                         t["basis"] = manifest["stageBasis"]
                     t["sources"] = [i for i in manifest["inputs"] if i["role"] in {"project_method","image","canvas","baseline"}]
@@ -78,8 +82,79 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
                         "ON c.episode_id=e.id JOIN kickoff k ON k.episode_id=e.id WHERE e.project_id=? ORDER BY e.display_code",(project_id,))]
         return dict(assets=assets,canvases=canvases,providers=[p for p in self.executors if p!='claude'])
 
+    def film_chat_context(self, episode_id, stage, delivery_id=None):
+        if stage not in ("package","finecut"):
+            raise Rejected("未知制作阶段")
+        with connect(self.db_path) as db:
+            return self._film_context(db, episode_id, stage, delivery_id)
+
+    def _film_context(self, db, eid, stage, delivery_id):
+        from .videoqueue import VideoQueue
+        ep = self._episode_in(db,eid)
+        start = db.execute("SELECT state,delivery,error FROM film_start WHERE episode_id=?", (eid,)).fetchone()
+        if delivery_id or (start and start["delivery"]):
+            d = row(db,"SELECT id,segments,versions FROM delivery WHERE episode_id=? AND id=?",eid,delivery_id or start["delivery"])
+        else:
+            d = db.execute("SELECT id,segments,versions FROM delivery WHERE episode_id=? ORDER BY rowid DESC LIMIT 1",(eid,)).fetchone()
+        name = "精剪" if stage=="finecut" else "生成视频与配乐"
+        context = dict(集号=ep["display_code"],标题=ep["title"],阶段=name,自动开工=start["state"] if start else None,
+                       开工说明=start["error"] if start else "",规则="能剪就采用。每段可首发一次，另可返工最多三次。整集返工上限为分段数的三倍，首发另计。BGM一首直接使用。")
+        if d:
+            status = VideoQueue(self.store.root).view(d["id"])
+            jobs = {j["segment"]:j for j in status["jobs"]}
+            context.update(分段=[dict(段=s,进度=jobs.get(s,{}).get("state","待派发"),
+                                当前动作=jobs.get(s,{}).get("action") or jobs.get(s,{}).get("state"),返工=jobs.get(s,{}).get("round",0),审片=jobs.get(s,{}).get("review"),
+                                返工记录=jobs.get(s,{}).get("reworks",[]),
+                                错误=jobs.get(s,{}).get("error"),承接=jobs.get(s,{}).get("deps"))
+                                for s in json.loads(d["segments"])],
+                           配乐=(status["music"] or {}).get("action"),精剪动作=status["cut"].get("action") or status["cut"].get("state"),精剪已接收=bool((status["music"] or {}).get("handoff")),
+                           额度=status["budget"],暂停=status["paused"])
+        versions = json.loads(d["versions"]) if d else dict(db.execute(
+            "SELECT stage,adopted_version_id FROM artifact WHERE episode_id=?", (eid,)))
+        def content(stage):
+            value = db.execute("SELECT v.content FROM version v JOIN artifact a ON a.id=v.artifact_id "
+                               "WHERE a.episode_id=? AND a.stage=? AND v.id=?", (eid,stage,versions.get(stage))).fetchone()
+            return json.loads(value[0]) if value else {}
+        if stage=="finecut" and d:
+            context["剪辑修改记录"]=filmedit.notes(db,d["id"])
+            context["精剪成片"]=status["cut"]
+            context["支持专家重排"] = True
+            if status["cut"].get("state") == "已出片":
+                edit = self.store.root/"video-production"/d["id"]/"finecut/精剪过程/edit.json"
+                if edit.is_file():
+                    context["当前采用剪点"] = json.loads(edit.read_bytes()).get("clips", [])
+        context["交付版本"] = d["id"] if d else None
+        context["故事梗概"] = content("story").get("synopsis","")
+        script = content("script")
+        context["分段剧本"] = script.get("shootingSegments",[])
+        if not context["分段剧本"]:
+            context["分场剧本"] = script.get("scenes",[])
+        context["采用分镜"] = [{k:s[k] for k in ("id","segment","action","cut") if k in s}
+                              for s in content("plan").get("shots",[])]
+        publication = content("publish")
+        context["发布与配乐要求"] = {k:publication[k] for k in ("title","body","suno_title","suno_style","suno_exclude","cues") if k in publication}
+        context["导演决定"] = [dict(r) for r in db.execute("SELECT code,text,scope_kind,scope_value FROM director_decision "
+                                                         "WHERE episode_id=? AND state='active' ORDER BY code",(eid,))]
+        messages = self._episode_messages(db,eid,limit=24)["messages"]
+        requests = self._episode_messages(db,eid,limit=8,user_only=True)["messages"]
+        recent = {m["id"]:m for m in [*requests,*messages] if m["text"].strip()}
+        context["近期制作对话"] = [dict(role=m["role"],text=m["text"][:1400]) for m in
+                                sorted(recent.values(),key=lambda m:(m["created_at"],m["seq"]))]
+        peer = db.execute("SELECT s.stage,t.text,t.reply FROM free_turn t JOIN episode_stage_thread s ON s.thread_id=t.thread_id "
+                          "WHERE s.episode_id=? AND s.stage<>? AND t.status='succeeded' ORDER BY t.rowid DESC LIMIT 10",(eid,stage)).fetchall()
+        context["其他阶段讨论"] = [dict(stage=r["stage"],text=r["text"][:1200],reply=r["reply"][:2200]) for r in reversed(peer)]
+        return context
+
+    def _film_chat_inputs(self, db, eid, stage, delivery_id):
+        context = self._film_context(db,eid,stage,delivery_id)
+        from . import filmroles
+        expert = self.active_selection(filmroles.selections(db, eid, stage)["expert"])
+        header = dict(episodeId=eid,stage=stage,stageBasis=dict(label="本集"+context["阶段"]+"制作依据",deliveryId=context["交付版本"]),
+                      creator=expert)
+        return header,[dict(role="film_context",name="本次提问时的实际制作记录",text=dumps(context))]
+
     def send_free_chat(self, project_id, text, provider, thread_id=None, previous=None, methods=(), images=(),
-                       canvas=None, canvas_revision=None, command_id=None, baseline=None, episode_id=None, stage=None, source_version=None):
+                       canvas=None, canvas_revision=None, command_id=None, baseline=None, episode_id=None, stage=None, source_version=None, delivery_id=None, finecut_mode=None, model=None, effort=None):
         if provider=='claude':provider=self.active_selection(dict(provider=provider))['provider']
         if not isinstance(text,str) or not text.strip():
             raise Rejected("请输入对话内容")
@@ -92,10 +167,19 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
             raise Rejected("最多可附六张原图，请选择支持图片的执行器")
         payload = dict(project=project_id,thread=thread_id,previous=previous,text=text,methods=methods,images=images,
                        canvas=canvas,canvasRevision=canvas_revision,provider=provider)
+        if model or effort: payload.update(model=model, effort=effort)
         if episode_id is not None or stage is not None or source_version is not None:
-            if not episode_id or stage not in WRITABLE:
+            if not episode_id or (stage not in WRITABLE and stage not in ("package","finecut")):
                 raise Rejected("请选择本集的写作阶段")
             payload.update(episodeId=episode_id, stage=stage, sourceVersion=source_version)
+        if delivery_id is not None:
+            if stage not in ("package","finecut"):
+                raise Rejected("交付版本仅用于视频或精剪讨论")
+            payload["deliveryId"] = delivery_id
+        if finecut_mode is not None:
+            if stage != "finecut" or finecut_mode not in ("revise","discuss"):
+                raise Rejected("请选择精剪对话方式")
+            payload["finecutMode"] = finecut_mode
         if baseline is not None:
             payload["baseline"] = baseline
         with transaction(self.db_path) as db:
@@ -110,7 +194,14 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
                                           (episode_id,stage)).fetchone()
                     if (existing[0] if existing else None) != thread_id:
                         raise Conflict("本阶段的对话已变化，请刷新")
-                    stage_header, stage_entries = self._stage_chat_inputs(db, episode_id, stage, source_version, tid)
+                    if stage in ("package", "finecut"):
+                        stage_header, stage_entries = self._film_chat_inputs(db, episode_id, stage, delivery_id)
+                        if finecut_mode:
+                            stage_header["finecutMode"] = finecut_mode
+                            if finecut_mode == "revise" and not stage_header["stageBasis"]["deliveryId"]:
+                                raise Rejected("本集还没有可修改的交付版本")
+                    else:
+                        stage_header, stage_entries = self._stage_chat_inputs(db, episode_id, stage, source_version, tid)
                     if provider != stage_header["creator"]["provider"]:
                         raise Conflict("本集执行器已变化，请刷新")
                     if any("data" in e for e in stage_entries) and not self.executors[provider].reads_images:
@@ -171,7 +262,7 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
                 turn, attempt = new_id(), new_id()
                 header = dict(projectId=project_id,threadId=tid,purpose="free_chat",provider=provider,methodVersions=list(methods),
                               assetVersions=list(images),canvasEpisode=canvas,canvasRevision=canvas_revision, **stage_header)
-                choice = header.get("creator",{})
+                choice = header.get("creator",dict(model=model, effort=effort))
                 header["executorConnection"] = self.run_connection(provider,choice.get("model"),choice.get("effort"))
                 digest, rel = self.store.freeze(turn,header,entries)
                 db.execute("INSERT INTO free_turn(id,thread_id,text,provider,status,attempt,input_hash,manifest_relpath) "
@@ -224,6 +315,7 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
             if not db.execute("UPDATE free_turn SET status='running' WHERE id=? AND attempt=? AND status='queued'",(turn_id,attempt)).rowcount:
                 return
             t = row(db,"SELECT * FROM free_turn WHERE id=?",turn_id)
+        edits = []
         reply, reason, status = None, None, "failed"
         try:
             manifest,digest = self.store.load_manifest(t["manifest_relpath"])
@@ -249,7 +341,19 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
                              "结合待办、剧集状态和候选选题，给出具体可做的下一步。空项目可以先聊想法，"
                              "也可以在选题池加入候选，或在项目页新增一集。把建议与已发生的事实分清。"
                              "对话中的建议不会自动创建选题、开工或改稿。")
+            if manifest.get("stage") in ("package","finecut"):
+                guidance += "按最新制作记录回答。区分待生成、已审、已交接与已出成片。正常流程由专家自动推进。"
             schema = REPLY_SCHEMA
+            edit_delivery=manifest.get("stageBasis",{}).get("deliveryId") if manifest.get("stage")=="finecut" else None
+            mode = manifest.get("finecutMode")
+            if mode == "discuss":
+                edit_delivery = None
+                guidance += "本条只讨论，不安排改片。"
+            if edit_delivery:
+                schema=filmedit.SCHEMA
+                guidance+=filmedit.GUIDANCE
+                if mode == "revise":
+                    guidance += "导演选择了修改成片，请安排实际修改。"
             if research:
                 count = manifest.get("candidateCount") or topicresearch.requested_count(t["text"])
                 schema = topicresearch.result_schema(count)
@@ -291,7 +395,19 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
                 body = out.structured
                 if not isinstance(body,dict) or not isinstance(body.get("reply"),str) or not body["reply"].strip():
                     raise ValueError("执行器没有返回有效的对话正文")
+                if edit_delivery:
+                    basis=json.loads(next(e["text"] for e in entries if e["role"]=="film_context"))
+                    edits=filmedit.operations(body.get("edits",[]),[item["段"] for item in basis["分段"]])
+                    if mode == "revise" and not edits:
+                        if not basis.get("支持专家重排"):
+                            raise ValueError("没有生成可执行的修改，请指明希望调整的分段或声音")
+                        edits = [dict(action="replan", segment="", value=0)]
+                        body = dict(reply="将按这条反馈和采用剧本重新编排剪点。")
+                    if any(op["action"] == "replan" for op in edits) and not basis.get("支持专家重排"):
+                        raise ValueError("本项目可修复指定分段的对白、剪点、速度和音量，请指明修改位置")
                 reply,status = body["reply"],"succeeded"
+                if edits:
+                    reply += "\n\n剪辑修改已排队，素材齐备后自动渲染。"
             else:
                 status = "waiting_quota" if out.error_class=="quota" else "failed"
                 reason = out.diagnostic or out.error_class
@@ -300,8 +416,10 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
         with transaction(self.db_path) as db:
             if status == 'succeeded':
                 db.execute('UPDATE storage_chat SET ended_at=? WHERE attempt_id=?', (self.clock(),attempt))
-            db.execute("UPDATE free_turn SET status=?,reply=?,reason=? WHERE id=? AND attempt=? AND status='running'",
+            updated=db.execute("UPDATE free_turn SET status=?,reply=?,reason=? WHERE id=? AND attempt=? AND status='running'",
                        (status,reply,reason,turn_id,attempt))
+            if updated.rowcount and status=="succeeded" and edits:
+                db.execute("INSERT INTO finecut_edit VALUES(?,?,?)",(turn_id,edit_delivery,dumps(edits)))
 
     def add_reply_to_canvas(self,project_id,turn_id,episode_id,expected_revision,command_id=None):
         with transaction(self.db_path) as db:

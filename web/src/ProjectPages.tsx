@@ -1,3 +1,6 @@
+import { ModelPick } from "./Project";
+import {RunningHubWorkflows} from "./RunningHubWorkflows";
+import {RunningHubKeys} from "./RunningHubKeys";
 import { ImageAPISettings } from "./ImageAPISettings";
 import {ExecutorDefaults} from "./ExecutorDefaults";
 import { SeriesArchive } from "./SeriesArchive";
@@ -417,6 +420,8 @@ function RefFilm({ id, packId, p }: any) {
   useEffect(() => { if (cur) q("ref_frames", { pack_id: packId, around_ms: cur.start_ms }).then(setCutFrames); }, [cur?.id]);
   const asks = useQuery<any[]>("ref_questions", { pack_id: packId });
   const [askText, setAskText] = useState("");
+  const modelCatalog=useQuery<any>("model_catalog");
+  const [selection,setSelection]=useState<{model:string|null;effort:string|null}>({model:null,effort:null});
   const [askBy, setAskBy] = useState("codex");
   usePoll(!!asks.data?.some((a: any) => a.state === "running"), asks.reload);
   if (!pack.data) return null;
@@ -455,8 +460,8 @@ function RefFilm({ id, packId, p }: any) {
             {cur.start_ms > 0 && <div style={{ marginTop: 10 }}>
               <div className="row">
                 <input className="input" style={{ flex: 1 }} placeholder={`例如：${fmtMs(cur.start_ms)} 是切镜吗？`} value={askText} onChange={(e) => setAskText(e.target.value)} />
-                <select className="input" value={askBy} onChange={(e) => setAskBy(e.target.value)}>{pickable(Object.keys(PROVIDER_LABEL),askBy).map((k) => <option key={k} value={k}>{PROVIDER_LABEL[k]}</option>)}</select>
-                <button className="btn" disabled={!askText.trim()} onClick={() => act.run(async () => { await cmd("ask_cut", { pack_id: packId, at_ms: cur.start_ms, question: askText, provider: askBy }); setAskText(""); asks.reload(); })}>问模型</button></div>
+                <ModelPick label="拉片问答" catalog={modelCatalog.data} provider={askBy} sel={selection} setSel={setSelection} setProvider={(p:string)=>{setAskBy(p);setSelection({model:modelCatalog.data?.text[p]?.models[0]?.id??null,effort:null});}}/>
+                <button className="btn" disabled={!askText.trim()} onClick={() => act.run(async () => { await cmd("ask_cut", { pack_id: packId, at_ms: cur.start_ms, question: askText, provider: askBy, ...selection }); setAskText(""); asks.reload(); })}>问模型</button></div>
               {(asks.data ?? []).filter((a: any) => a.at_ms === cur.start_ms).map((a: any) => (
                 <div key={a.id} className="card" style={{ marginTop: 8 }}>
                   <div className="small"><b>问：</b>{a.question} <span className="muted tiny">· {PROVIDER_LABEL[a.provider] ?? a.provider}</span></div>
@@ -510,12 +515,12 @@ function RefFilm({ id, packId, p }: any) {
 export function SystemPage({ sub }: { sub: string }) {
   if (sub === "tasks") return <div className="page"><Tasks/></div>;
   const groups:[string,[string,string][]][] = [
-    ["执行与生成", [["executors","执行器连接与型号"],["providers","我的模型服务"],["images","图像通道"],["packager","H3 打包器"]]],
+    ["执行与生成", [["executors","执行器连接与型号"],["providers","我的模型服务"],["images","图像通道"],["runninghub","RunningHub API Key 管理"],["workflows","在线工作流"],["packager","H3 打包器"]]],
     ["制作资料", [["knowledge","剧本知识库与索引"],["palette","色卡资料位置"],["skills","方法包版本"]]],
     ["本机工作台", [["storage","服务、数据与备份"],["display","界面与快捷键"],["about","关于导演工作台"]]],
   ];
   const panels:Record<string,React.ReactNode> = {executors:<Executors/>,providers:<Providers/>,images:<ImageConnections/>,
-    packager:<PackagerStatus/>,knowledge:<ResourceBrowser kind="knowledge" settingsOnly/>,palette:<ResourceBrowser kind="palette" settingsOnly/>,
+    runninghub:<RunningHubKeys/>,workflows:<RunningHubWorkflows editable/>,packager:<PackagerStatus/>,knowledge:<ResourceBrowser kind="knowledge" settingsOnly/>,palette:<ResourceBrowser kind="palette" settingsOnly/>,
     skills:<Skills/>,storage:<Storage/>,display:<DisplaySettings/>,about:<About/>};
   const current=Object.prototype.hasOwnProperty.call(panels,sub)?sub:"executors";
   return <div className="page settings-page"><h1>设置</h1><div className="settings-layout">
@@ -562,7 +567,7 @@ function ImageConnections() {
       ? <table className="table"><thead><tr><th>通道</th><th>声明支持的操作</th><th>尺寸</th><th>验证状态</th></tr></thead>
         <tbody>{Object.entries(providers.data).map(([key,item]:any)=><tr key={key}><td>{item.capabilities.label || key}</td>
           <td>{item.capabilities.operations.map((op:string)=>({generate:"生成",edit:"编辑"}[op] || op)).join(" / ")}</td>
-          <td>{item.capabilities.sizes.join(" / ")}</td><td>{({simulated:"隔离测试通道",pending_verification:"待实际调用验证"}[item.verified] || item.verified)}</td></tr>)}</tbody></table>
+          <td>{item.capabilities.sizes.join(" / ")}</td><td>{({simulated:"隔离测试通道",pending_verification:"待实际调用验证",verified_generation:"已实测文生图"}[item.verified] || item.verified)}</td></tr>)}</tbody></table>
       : <p>当前服务未配置图像通道。</p>)}
     {Object.entries(providers.data || {}).filter(([,item]:any)=>item.settings).map(([key,item]:any)=>
       <ImageAPISettings key={key} provider={key} settings={item.settings} reload={providers.reload}/>)}
@@ -577,9 +582,9 @@ function Executors() {
 
   return (
     <div>
-      <h1>执行器连接与型号</h1><p className="muted">工作台沿用本机 CLI 的登录账号。点“验证连接”可检查登录状态，Google CLI 通过读取可用型号验证。验证不会发起生成任务。</p>
+      <h1>执行器连接与型号</h1><p className="muted">工作台沿用本机 CLI 的登录账号。点“验证连接”可检查登录状态，Google CLI 使用本机账号验证结果。验证不会发起生成任务。</p>
       <button className="btn" disabled={act.busy} onClick={() => act.run(async () => {await Promise.all([probe.reload(), cat.reload()]);})}>重新检测本机程序</button>{!probe.data&&!probe.error&&<p role="status">正在检测本机 CLI…</p>}<ErrorLine error={probe.error||cat.error?{message:probe.error||cat.error||""}:null}/>
-      <div className="grid3">{Object.entries(probe.data ?? {}).filter(([k]) => pickable([k]).length).map(([k, v]: any) => (
+      <div className="grid3">{Object.entries(probe.data ?? {}).filter(([k]) => !k.startsWith("api:") && pickable([k]).length).map(([k, v]: any) => (
         <div key={k} className={`card ${v.version ? "line" : "amber"}`}>
           <div className="spread"><b>{PROVIDER_LABEL[k] ?? k}</b><Tag tone={v.version?"green":"amber"}>{v.status==="simulated"?"模拟执行器":v.version?"已检测到程序":"程序不可用"}</Tag></div>
           <div className="small" style={{ margin: "6px 0" }}>{v.version ?? "未检测到版本"} · 代理 {v.proxy ? "已传入" : "无"}</div>
@@ -600,7 +605,7 @@ function Executors() {
       <p className="muted small">“验证连接”检查本机 CLI 的连接情况。“刷新本机型号”读取型号清单，两项操作都不会发送生成请求。</p>
       <table className="table"><thead><tr><th>执行器</th><th>型号</th><th>可选强度</th><th>型号来源</th><th>已有生成实测记录</th></tr></thead>
         <tbody>{Object.entries(cat.data?.text ?? {}).filter(([k]) => pickable([k]).length).flatMap(([prov, c]: any) => c.models.map((m: any) => (
-          <tr key={prov + m.id}><td>{PROVIDER_LABEL[prov]}</td><td>{m.label}</td><td>{m.efforts.map((e: any) => e ?? "默认").join(" / ")}</td><td className="small">{m.source}</td><td className="muted small">{m.status === "verified" ? "有实测记录" : m.status === "partially_verified" ? "部分强度有记录" : "清单未提供"}</td></tr>)))}</tbody></table>
+          <tr key={prov + m.id}><td>{c.label ?? PROVIDER_LABEL[prov] ?? prov}</td><td>{m.label}</td><td>{m.efforts.map((e: any) => e ?? "默认").join(" / ")}</td><td className="small">{m.source}</td><td className="muted small">{m.status === "verified" ? "有实测记录" : m.status === "partially_verified" ? "部分强度有记录" : "未登记实测结果"}</td></tr>)))}</tbody></table>
 
       <ErrorLine error={act.error} />
     </div>
@@ -620,7 +625,7 @@ function Skills() {
   const act = useAction();
   return (
     <div>
-      <h1>技能包与版本</h1><div className="muted small" style={{ margin: "6px 0 16px" }}>项目在单集开工时锁定方法版本。可按项目查看通用小节和项目专属小节的差异。</div>
+      <h1>技能包与版本</h1><p><a href="/api/video/skills/finecut.zip" download>下载 PUGGY ROOM 完整精剪技能包</a></p><div className="muted small" style={{ margin: "6px 0 16px" }}>项目在单集开工时锁定方法版本。可按项目查看通用小节和项目专属小节的差异。</div>
       <div className="row"><label>方法包 <select aria-label="方法包" value={ref} onChange={e => setRef(e.target.value)}>{(versions.data ?? [ref]).map((v: string) => <option key={v}>{v}</option>)}</select></label>
         <select aria-label="应用方法包的项目" value={pid} onChange={e => setPid(e.target.value)}><option value="">选择项目</option>{projects.data?.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
         {selected.data && <><span>当前 {selected.data.method_pack}</span><button className="btn" disabled={!reg.data?.ok || selected.data.method_pack === ref || act.busy}

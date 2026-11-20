@@ -14,6 +14,10 @@ class Rejected(Exception):
         self.detail = detail
 
 
+class ExecutorUnavailable(Rejected):
+    """A dispatch problem; rewriting a manuscript cannot resolve it."""
+
+
 class Conflict(Exception):
     status = 409
 

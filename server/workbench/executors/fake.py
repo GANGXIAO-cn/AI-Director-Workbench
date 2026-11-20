@@ -48,6 +48,10 @@ def review(req: ExecRequest, decision="pass", issues=()) -> dict:
         obs = [dict(objectId=vid, versionId=vid, unit="paragraph", anchor="梗概", evidence="冷读复述：阿福值夜班。")]
         obs += [dict(objectId=s, versionId=vid, unit="paragraph", anchor="梗概", evidence="已核对")
                 for s in ctx["requiredSettings"]]
+    if ctx["passName"] == "prompts":
+        segments = re.search(r"本次核对段号：([^\n]+)", req.prompt).group(1).split("、")
+        obs = [dict(objectId=s, versionId=vid, unit="segment", anchor=s, evidence="已对照镜头动作和图号") for s in segments]
+        seg = segments[0]
     out_issues = [dict(location=dict(objectId=seg or vid, versionId=vid, unit="segment" if seg else "paragraph",
                                      anchor=i.get("anchor", "第1段"),
                                      evidence=i.get("evidence", "原句")),
@@ -75,6 +79,19 @@ class FakeExecutor(Executor):
 
     def start(self, req: ExecRequest) -> ExecOutcome:
         self.calls.append(req)
+        if req.purpose == "stress_cold_read" and not getattr(self, "cold_read_script", None):
+            result = directed(req, self.name)
+            return ExecOutcome(ok=True, structured=result, session_id=f"fake-session-{len(self.calls)}",
+                               executable="fake", version="fake-1",
+                               isolation=dict(session=req.session_mode, tools="disabled"))
+        if req.purpose == "stress_cold_read" and getattr(self, "cold_read_script", None):
+            step = self.cold_read_script.pop(0)
+            result = step(req)
+            if isinstance(result, ExecOutcome):
+                return result
+            return ExecOutcome(ok=True, structured=result, session_id=f"fake-session-{len(self.calls)}",
+                               executable="fake", version="fake-1",
+                               isolation=dict(session=req.session_mode, tools="disabled"))
         step = self.script.pop(0) if self.script else None
         result = step(req) if step else directed(req, self.name)
         if isinstance(result, ExecOutcome):
@@ -146,9 +163,21 @@ def sections(prompt: str) -> dict:
 
 
 def directed(req: ExecRequest, name: str, stage_reply=True):
+    if req.purpose == "stress_cold_read":
+        return dict(retelling="冷读复述（仅依据剧本正文）：主角按场次推进并完成收束。")
+    if req.purpose == "finecut_plan":
+        return dict(reply="沿用采用素材的剪点。",edits=[])
+    if req.purpose in ("finecut_review","finecut_decision","video_decision"):
+        return dict(action=req.schema["properties"]["action"]["enum"][0],reason="已对照此版实际画面及剪辑意见。")
     p = req.prompt
     sec = sections(p)
     request = sec.get("request", "")
+    if '独立评审。reply 按每个 versionId' in sec.get('judgment_instruction',''):
+        rows=_json.loads(sec['judgment_materials'])
+        decisions={r['versionId']:dict(action='repair' if r['critical'] else 'use',reason=r['reason']) for r in rows}
+        return dict(draft(req),kind='discussion',changes=[],directorRequest='',reply=_json.dumps(decisions))
+    if '采用决定' in sec.get('judgment_instruction','') or ('judgment_instruction' in sec and '退回写稿人' in p):
+        return dict(draft(req),kind='discussion',changes=[],directorRequest='',reply=_json.dumps(dict(action='adopt',reason='已核对本版与本轮意见。')))
     if MARK_QUOTA in request and name == "codex":
         return quota_exhausted(req)
     if req.purpose=='image_assess' and '只有 blocked 须写 defect' in p:

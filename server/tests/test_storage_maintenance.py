@@ -11,7 +11,10 @@ from workbench.apiimages import OpenAIImageAPIProvider
 
 def complete(tmp_path):
     env = Env(tmp_path)
-    case = env.full_episode(segments={'G01':[4000,4000],'G02':[8000]}, deliver=False)
+    # Model an already completed copy-only episode predating automatic film production.
+    from unittest.mock import patch
+    with patch("workbench.filmauto.register"):
+        case = env.full_episode(segments={'G01':[4000,4000],'G02':[8000]}, deliver=False)
     return env, case
 
 
@@ -142,7 +145,8 @@ def test_expert_finishes_publication_without_repeating_images(tmp_path):
     assert wb._continuous_delivery(cid)
     assert wb._continuous_record(cid)['state']=='done'
     assert wb._continuous_record(cid)['cursor']['stage']=='publish'
-    assert wb.episode_view(eid)['completion']['completed']
+    assert wb.episode_view(eid)['filmStart']['state']=='待开工'
+    assert not wb.episode_view(eid)['completion']['completed']
     assert env.images.sent==sent
 
 

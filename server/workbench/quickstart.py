@@ -123,12 +123,11 @@ class QuickStartMixin:
         value=self._continuous_record(cid);cursor=value['cursor'];args=cursor['startArgs'];source=self._kickoff_source(args)
         check=self.kickoff_check_view(source)
         if check['settings']:
-            slot=args['executor_plan']['create']
+            slot=args['executor_plan'].get('expert') or args['executor_plan']['create']
             # 实测 111：上次核对失败时换新的核对令牌，导演重新登录后点“继续”会真正重跑核对。
             retry=cursor.setdefault('attempts',{}).get('kickoff',0)
             if check['state']=='failed':
                 retry+=1;cursor['attempts']['kickoff']=retry;self._continuous_update(cid,cursor=cursor)
-            if retry:slot=args['executor_plan'].get('expert') or slot
             check=self.kickoff_check_run(source,check['basis'],slot['provider'],slot.get('model'),slot.get('effort'),cid+':kickoff:'+check['basis']+(f':{retry}' if retry else ''))
             self._continuous_checkpoint(cid)  # The director may have cancelled during the external call.
             if check['state']!='done':
@@ -192,6 +191,7 @@ class QuickStartMixin:
             kickoff=self._kickoff(db,eid);plan={**kickoff['executor_plan'],**self._stage_executors(db,eid,'story')}
             if expert:
                 plan['create']=self.episode_expert(eid)
+                plan['creationRole']='expert'
             label = '专家定案并交给写稿人' if expert else '写稿人分析创意并提出讲法'
             tid,thread=self._draft_thread(db,ep['project_id'],eid,art['id'],'story',label,plan)
         for hit in ([] if expert else context['knowledge']):
@@ -254,5 +254,7 @@ class QuickStartMixin:
         count=cursor.setdefault('attempts',{}).get('kickoffAdjustment',0)+1
         cursor['attempts']['kickoffAdjustment']=count
         if count>2:raise RuntimeError('必守设定核对在定向改写后仍返回明确冲突：'+dumps(conflicts))
+        if args.get('topic_id'):
+            args['origin_topic_id'] = args['topic_id']
         args.update(source_type='idea',idea_text=new,topic_id=None,source_import_id=None)
         self._continuous_update(cid,cursor=cursor,choice=None,reason=None)

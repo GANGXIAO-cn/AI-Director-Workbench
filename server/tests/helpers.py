@@ -150,3 +150,11 @@ class Env:
         if deliver:
             result["delivery"] = self.wb.deliver(eid, "full", f"{eid}deliver")
         return result
+
+
+def assembled_english_prompts(request):
+    """Use the same current English draft and frozen references as the offline writer."""
+    from workbench.executors.fake import directed
+    result=directed(request,"codex")
+    fields={item["field"]:json.loads(item["value"]) for item in result["changes"] if item["field"]=="segments"}
+    return fields

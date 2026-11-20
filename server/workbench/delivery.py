@@ -212,7 +212,34 @@ class DeliveryMixin:
                     cues=cues, englishTitle=english_title, website=cfg.get("website"))
 
     # ============================================================ delivery checks
-    def delivery_problems(self, episode_id, scope="full", segments=None, require_publish=True):
+    def _role_receipts(self, db, episode_id):
+        rows=db.execute("""SELECT a.stage,a.adopted_version_id AS version,
+                (SELECT display_no FROM version v WHERE v.id=a.adopted_version_id) AS number,
+                (SELECT r.id FROM review r WHERE r.version_id=a.adopted_version_id AND r.scope=''
+                 AND r.pass=a.stage ORDER BY r.rowid DESC LIMIT 1) AS review,
+                (SELECT reason FROM ai_decision d WHERE d.episode_id=a.episode_id AND d.ref=a.adopted_version_id
+                 AND d.kind='expert_judgment' AND d.reverted_at IS NULL ORDER BY d.rowid DESC LIMIT 1) AS ruling
+            FROM artifact a WHERE a.episode_id=? AND a.stage IN ('story','script','stress','plan','prompts','publish')
+            AND a.adopted_version_id IS NOT NULL ORDER BY a.rowid""",(episode_id,))
+        return [dict(rec) for rec in rows]
+
+    def delivery_checklist(self, episode_id, scope="full", segments=None):
+        checked=set()
+        evidence={}
+        problems, _=self.delivery_problems(episode_id,scope,segments,False,_checked=checked,_evidence=evidence)
+        groups=(("稿件与待复核的修改",{"story","characters","world","treatment","script","stress","asset_design","publish","recheck"}),
+                ("分段、时长与角色",{"plan","spec","cast"}),
+                ("提示词、参考文件与必用图",{"prompts","assets","space","review"}))
+        rows=[]
+        for title, stages in groups:
+            issues=[p for p in problems if p['stage'] in stages]
+            state='有问题' if issues else '已核验' if title in checked else '尚未核验'
+            rows.append(dict(title=title,state=state))
+        receipts=evidence.pop("receipts")
+        return dict(groups=rows,problems=problems,roleReceipts=receipts,evidence=evidence,segments=evidence.get("segments", []),
+                    includesPublish=scope=='full' and any(rec['stage']=='publish' for rec in receipts))
+
+    def delivery_problems(self, episode_id, scope="full", segments=None, require_publish=True, *, _checked=None, _evidence=None):
         from .workflow import ORDER, OPTIONAL
         if scope not in ("full", "trial"):
             raise Rejected("scope须为full或trial")
@@ -238,6 +265,8 @@ class DeliveryMixin:
                 unconfirmed=db.execute("SELECT count(*) FROM production_supplement WHERE episode_id=? AND state='proposed'",(episode_id,)).fetchone()[0]
                 if unconfirmed:
                     problems.append(dict(stage="space",segment=None,file=None,problem=f"有 {unconfirmed} 条制作补充未经导演确认"))
+            if _evidence is not None:
+                _evidence["receipts"] = self._role_receipts(db, episode_id)
             if not adopted["plan"]:
                 return problems, None
             plan = self._adopted_content(db, episode_id, "plan")
@@ -258,8 +287,13 @@ class DeliveryMixin:
                 for item in pending:
                     if item["kind"] in ("workflow_change","decision_change","supplement_change","palette_change"):
                         problems.append(dict(stage="recheck", segment=None, file=None, problem="待复核：" + item["reason"]))
+        if _checked is not None:
+            _checked.add("稿件与待复核的修改")
         lay = timeline.layout(plan)
         segs = [s for s in lay["segments"] if scope == "full" or s["id"] in (segments or [])]
+        if _evidence is not None:
+            _evidence.update(segments=[s["id"] for s in segs], durationMs=sum(s["duration_ms"] for s in segs),
+                             shots=sum(len(s["shots"]) for s in segs))
         if scope == "trial" and (not segments or len(segs) != len(set(segments))):
             problems.append(dict(stage="plan", segment=None, file=None, problem="试验范围须选择存在的生成段"))
         try:
@@ -270,7 +304,7 @@ class DeliveryMixin:
         if scope == "full" and spec.get("targetDuration") == "over_60" and lay["total_ms"] <= 60000:
             problems.append(dict(stage="plan", segment=None, file=None, problem="本集目标时长要求严格超过 60 秒"))
         for seg in segs:
-            if maximum < 15 and seg["duration_ms"] > maximum * 1000:
+            if seg["duration_ms"] > maximum * 1000:
                 problems.append(dict(stage="plan", segment=seg["id"], file=None, problem=f"超过本集设定的 {maximum} 秒上限"))
         for p in timeline.check(plan):
             if p["segment"] is None or any(s["id"] == p["segment"] for s in segs):
@@ -291,6 +325,8 @@ class DeliveryMixin:
         except Rejected as exc:
             problems.append(dict(stage="cast", segment=None, file=None, problem=str(exc)))
         blocked = self.blocked_segments(episode_id)
+        if _checked is not None:
+            _checked.add("分段、时长与角色")
         if not adopted["prompts"]:
             return problems, None
         with connect(self.db_path) as db:
@@ -352,6 +388,11 @@ class DeliveryMixin:
                 self.store.read_blob(rule["sha256"])
             except (ValueError, OSError):
                 problems.append(dict(stage="assets", segment=None, file=rule["name"], problem="必用原版本不存在或原图指纹不符"))
+        if _evidence is not None:
+            _evidence.update(promptSegments=list(scoped), readableImages=sum(decoded_images.values()),
+                             requiredImages=[dict(name=r["name"], used=r["usedHere"]) for r in frozen])
+        if _checked is not None:
+            _checked.add("提示词、参考文件与必用图")
         return problems, dict(workflowDocuments=workflow_documents, skippedStages=skipped_stages, requiredImages=frozen, allRequirements=required, ep=ep, adopted=adopted, story=story, directions=directions, script=script, plan=plan, prompts=pr, lay=lay, segs=segs, spec=spec, cast=cast,
                               rhythm=rhythm_result,placements=[p for p in placements["records"] if not p["issue"] and p["segment"] in {s["id"] for s in segs}])
 

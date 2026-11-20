@@ -118,7 +118,7 @@ class KickoffChecks:
             db.execute("UPDATE kickoff_check SET state='running',token=?,provider=?,model=?,error='',error_class=NULL WHERE basis=?",
                        (token, provider, connection["model"] or "", basis))
         checks, error, cls = [], "", None
-        reported_model = connection["model"] or ""
+        reported_model = ""
         try:
             run_id = new_id()
             work = self.store.run_dir(run_id) / "work"
@@ -137,7 +137,7 @@ class KickoffChecks:
                     label = f"{PROVIDER_NAMES.get(provider, provider)} 登录已失效，请在终端重新登录后点“继续”"
                 raise Rejected(label or result.diagnostic or "CLI 检查失败")
             checks = validated(result.structured, item)
-            reported_model = result.reported_model or reported_model
+            reported_model = result.reported_model or ""
         except Exception as exc:
             error = redact(str(exc), 500) or "检查未完成"
         with transaction(self.db_path) as db:

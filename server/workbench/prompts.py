@@ -111,6 +111,12 @@ def review_inputs(pack: dict, settings_text: str, kickoff_text: str, story_text:
                 dict(role="reviewed_version", name="分镜.json", text=story_text),
                 dict(role="project_settings", name="settings.txt", text=settings_text),
                 dict(role="requirements", name="kickoff.txt", text=kickoff_text)]
+    if stage in ("prompts","script"):
+        purpose="逐段对照已采用分镜，核对动作、方向、声音、画面文字与参考图号，意见标明段和镜。" if stage=="prompts" else "核对分场因果、角色动机、拍摄段和对白。"
+        return [dict(role="review_boundary",name="本步独审职责",text=purpose),
+                dict(role="reviewed_version",name=stage+".json",text=story_text),
+                dict(role="project_settings",name="settings.txt",text=settings_text),
+                dict(role="requirements",name="kickoff.txt",text=kickoff_text)]
     settings_text = stage_settings(pack, "story_review", profile, settings_text)
     return [*method_entries(pack, "story_review", profile),
             dict(role="reviewed_version", name="story.md", text=story_text),
@@ -171,6 +177,10 @@ def draft_trailer(stage, entries=(), mode="changes", dialogue=False) -> str:
 
 
 def review_trailer(required_keys, stage="story") -> str:
+    if stage == "script":
+        return "遍次：script\n核对采用故事和分场、剧本动作、对白和制作可行性。观察定位场号或段号，问题须给出原句和影响。"
+    if stage == "prompts":
+        return "遍次：prompts\n整集一次审阅。逐段对照分镜、引用图、对白、画面文字和动作方向，observations 每个实际段号至少一条。objectId 为段号。意见写明涉及的镜号、原句和修订依据。"
     if stage == "plan":
         return (f"遍次：plan\n"
                 "observations记录分镜实际观察，"

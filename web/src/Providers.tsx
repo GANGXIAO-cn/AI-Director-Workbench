@@ -52,9 +52,9 @@ function ProviderCard({p, reload}: {p: Provider; reload: () => Promise<void>}) {
     {open && <div className="provider-config">
       <button className="btn" onClick={() => setEdit(!edit)}>编辑服务商</button>
       {edit && <ProviderForm current={p} done={reload} cancel={() => setEdit(false)}/>}
-      {p.auth === "bearer" && <div><label>当前服务进程密钥<input type="password" autoComplete="new-password" value={key} onChange={e => setKey(e.target.value)}/></label>
-        <button className="btn" disabled={!key || act.busy} onClick={() => act.run(async () => {await setProviderKey(p.id, p.revision, key); setKey(""); await reload();})}>应用密钥</button>
-        <p className="small muted">重启后可重新输入，或在启动工作台前配置专用环境变量 <code>{p.envName}</code>。</p></div>}
+      {p.auth === "bearer" && <div><label>API 密钥（保存到本机配置文件）<input type="password" autoComplete="new-password" value={key} onChange={e => setKey(e.target.value)}/></label>
+        <button className="btn" disabled={!key || act.busy} onClick={() => act.run(async () => {const saved=await setProviderKey(p.id, p.revision, key); setKey(""); if(!saved.savedToConfig) throw new Error("当前运行的是旧服务，本次密钥仅在内存中。新版服务启动后可保存到配置文件。"); await reload();})}>应用密钥</button>
+        <p className="small muted">工作台重启后自动读取。也可使用环境变量 <code>{p.envName}</code>。</p></div>}
       {p.models.length > 0 && <><div className="row"><label>查找型号<input value={search} onChange={e => setSearch(e.target.value)}/></label>
         <label>筛选分类<select value={filter} onChange={e => setFilter(e.target.value)}><option value="all">全部</option>
           {categories.map(c => <option key={c} value={c}>{kinds[c]}</option>)}<option value="unknown">未分类</option></select></label></div>
@@ -73,7 +73,7 @@ export function Providers() {
   const [add, setAdd] = useState(false);
   const policy = useQuery<{quotaRetryPolicy:string}>("model_catalog");
   const change = useAction();
-  return <section className="providers"><h1>我的模型服务</h1><p>独立计费 API 的模型目录。测试和拉取只读取目录，生成权限与价格需另行核实。CLI 限流时任务暂停，可在任务中手工重试。</p>
+  return <section className="providers"><h1>我的模型服务</h1><p>拉取型号后，可在分工中选择兼容 Chat Completions 接口的模型。连接测试只读取目录。</p>
     {policy.data && <p><label>CLI 限流后<select disabled={change.busy} value={policy.data.quotaRetryPolicy} onChange={e => {
       const mode=e.target.value;
       change.run(async () => {await cmd("set_quota_retry_policy",{policy:mode}); await policy.reload();});

@@ -1,3 +1,6 @@
+import {RunningHubWorkflows} from "./RunningHubWorkflows";
+import {ProductionChat} from "./ProductionChat";
+import {VideoProduction,FilmStatusScope,SharedFilmProgress} from "./VideoProduction";
 import {TopicRuntimeTag} from "./TopicRuntime";
 import {PreKickoffWorkspace} from "./Directions";
 import { RepairProgress } from "./RepairProgress";
@@ -29,7 +32,6 @@ import { ModelPick } from "./Project";
 import { ProjectLibrary } from "./ProjectLibrary";
 import { EpisodePaletteSettings, PaletteTrace, StepRequirements, VersionSourceText } from "./Resources";
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createPortal } from "react-dom";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { blob, cmd, deliveryFile, q, upload } from "./api";
 import Assistant, { Selection, artifactFor } from "./Assistant";
@@ -66,10 +68,10 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
   const { focusChat, setFocusChat } = useDisplay();
   const canvasMode = stage === "assets" && new URLSearchParams(hash.split("?")[1]).get("tab") === "canvas";
   const worksheet = stage==="worksheet";
-  const chatOnly = focusChat && !canvasMode && !["package","worksheet","shot_assets"].includes(stage);
+  const productionPage = stage==="package" || stage==="finecut";
+  const chatOnly = focusChat && !canvasMode && !["package","finecut","worksheet","shot_assets"].includes(stage);
   const [previewId,setPreviewId]=useState("");
   useEffect(()=>setPreviewId(""),[id,stage,chatOnly]);
-  const [packagePanel,setPackagePanel]=useState<HTMLElement|null>(null);
   useEffect(() => {
     if (!active || !chatOnly) return;
     const exit = (e:KeyboardEvent) => {
@@ -123,7 +125,7 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
   const busy = view.data?.artifacts.some((a: any) => a.tasks.some((t: any) => t.runs.some((r: any) => ["queued", "running"].includes(r.status))));
   const reload = async () => { await Promise.all([view.reload(), assets.reload(), batches.reload(), decisions.reload()]); };
   const imagesRunning=batches.data?.some(b=>["authorized","running"].includes(b.state));
-  usePoll(!!busy || !!imagesRunning || !!view.data?.deliveryInProgress, reload);
+  usePoll(!!busy || !!imagesRunning || !!view.data?.deliveryInProgress || (DELIVERY_STEPS.some(([k])=>k===stage) && ["待开工","等待自动重试"].includes(view.data?.filmStart?.state)), reload);
   if (!view.data) return <div className="page">{view.error ?? "读取中…"}</div>;
   const v = view.data;
   if (!v.kickoff) return <PreKickoffWorkspace eid={id} pid={v.episode.project_id} episode={v.episode} reload={view.reload}/>;
@@ -142,6 +144,9 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
   })));
   const preview=chatOnly && previews.find((item:any)=>item.version.id===previewId);
   const adopted = (s: string) => !!v.artifacts.find((a: any) => a.stage === s)?.adopted_version_id;
+  const mediaDelivery=v.filmStart?.delivery || v.filmStart?.pendingDelivery || null;
+  const viewedDelivery=productionPage ? routeParams.get("delivery") : null;
+  const sharedDelivery=DELIVERY_STEPS.some(([k])=>k===stage) && (!viewedDelivery || viewedDelivery===mediaDelivery) ? mediaDelivery : null;
   const status = (s: string) => {
     const map: Record<string, boolean> = { story: adopted("story"), script: adopted("script"), plan: adopted("plan"),
       ...v.productionStatus, prompts: adopted("prompts"),
@@ -149,6 +154,7 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
     return (map[s] || adopted(s)) ? "done" : s === stage ? "now" : "";
   };
   return (
+    <FilmStatusScope delivery={sharedDelivery}>
     <LocateStory.Provider value={stage==="story"?setLocation:null}><div className="app episode-workspace">
       {!worksheet && stage!=="stress" && <RepairProgress view={v} stage={stage} reload={reload}/>}
       {!worksheet && <ProjectMethodSync key={id+stage} pid={v.episode.project_id} eid={id} stage={canUseUploadedMethods(stage)?stage:undefined}/>}
@@ -162,7 +168,8 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
         {chatOnly && previews.length>0 && <select className="preview-picker" aria-label="预览成果物" value={previewId} onChange={e=>setPreviewId(e.target.value)}>
           <option value="">预览成果物</option>{previews.map((item:any)=><option key={item.version.id} value={item.version.id}>{item.label}</option>)}</select>}
       </nav>
-      <div className={"ws"+(preview?" with-preview":"")+(chatOnly?" chat-only":"")+(canvasMode?" canvas-only":"")} style={{flex:1, gridTemplateColumns: preview ? "minmax(0, 3fr) minmax(0, 2fr)" : canvasMode || chatOnly ? "minmax(0, 1fr)" : `${cols[0]}px minmax(0, 1fr) ${cols[1]}px`}}>
+      <SharedFilmProgress/>
+      <div className={"ws"+(productionPage?" film-workspace":"")+(preview?" with-preview":"")+(chatOnly?" chat-only":"")+(canvasMode?" canvas-only":"")} style={{flex:1, gridTemplateColumns: preview ? "minmax(0, 3fr) minmax(0, 2fr)" : canvasMode || chatOnly ? "minmax(0, 1fr)" : `${cols[0]}px minmax(0, 1fr) ${cols[1]}px`}}>
         {!canvasMode && <div className="catalog">
           <div className="spread" style={{ padding: "0 8px 12px" }}><b>目录</b><a className="muted" href={`#/p/${v.episode.project_id}`}>⇤</a></div>
           <EpisodeCooperation eid={id} mode={v.cooperationMode} reload={view.reload}/>
@@ -180,10 +187,10 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
         <div className="center" ref={documentPanel} tabIndex={-1}>
           <header className="document-toolbar">
           <div className="topbar">
-            {!worksheet && !canvasMode && !hasRequirements && stage!=="package" && <button className="btn narrow-chat" onClick={()=>setFocusChat(true)}>专注对话</button>}
+            {!worksheet && !canvasMode && !hasRequirements && !productionPage && <button className="btn narrow-chat" onClick={()=>setFocusChat(true)}>专注对话</button>}
             <button className="btn" onClick={()=>setShowDecisions(true)}>导演决定 {decisions.data?.filter(d=>d.state==="active").length??0}</button>
             {["assets","prompts"].includes(stage) && <button className="btn" onClick={() => setShowPalettes(true)}>本集色卡</button>}
-            {stage !== "package" && <button className="btn" onClick={() => setShowMethod(true)}>制作方法</button>}
+            {!productionPage && <button className="btn" onClick={() => setShowMethod(true)}>制作方法</button>}
             {canvasMode && <button className="btn" onClick={()=>setRequirements(true)}>{needsLabel}</button>}
             <span className="title">{v.episode.display_code} · {v.episode.title || "未命名"}</span>
             <span className="muted small">{frameOrientation(v.kickoff.spec.aspectRatio)}</span>
@@ -197,11 +204,12 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
           {routeParams.get("report") && <StressRepair ctx={ctx} stage={stage} reportId={routeParams.get("report")!} optionIndex={routeParams.get("option")}/>}
           {stageArtifact && inputVersion && <StageInputs key={inputVersion} versionId={inputVersion} records={decisions.data??[]} art={stageArtifact} onSave={async vid=>{await reload();setFocus(vid);}}/>}
           {(["space","cast"].includes(stage) || OPTIONAL_FILM_STAGES.has(stage)) && <OptionalStage key={id+stage} eid={id} stage={stage} skippedReason={v.skippedStages[stage] || ""} reload={view.reload}/>}
-          {stage==="package"?<PackageView ctx={ctx} panel={packagePanel}/>:!v.skippedStages[stage] && <StageView key={id+stage+String(ctx.locked)} stage={stage} ctx={ctx} />}
+          {productionPage?<PackageView ctx={ctx} finecut={stage==="finecut"}/>:!v.skippedStages[stage] && <StageView key={id+stage+String(ctx.locked)} stage={stage} ctx={ctx} />}
         </div>
-        {stage==="package" && <aside className="assistant package-aside" aria-label="出包设置" ref={setPackagePanel}/>}
         {/* 实测 122：备图工作单也保留导演助手，切换素材页签时对话不消失。 */}
-        {!canvasMode && stage!=="package" && <Assistant key={id + ":" + stage} composeRef={composeRef} openTrial={ctx.openTrial} openRequirements={()=>setRequirements(true)} view={v} stage={stage} sel={sel} setSel={setSel} reload={reload} focus={focus} batches={ctx.batches} onOpenBatch={setBatch} />}
+        {productionPage && <ProductionChat key={id+stage} view={v} reload={reload} project={v.episode.project_id} episode={id} stage={stage}
+          delivery={routeParams.get("delivery")}/>}
+        {!canvasMode && !productionPage && <Assistant key={id + ":" + stage} composeRef={composeRef} openTrial={ctx.openTrial} openRequirements={()=>setRequirements(true)} view={v} stage={stage} sel={sel} setSel={setSel} reload={reload} focus={focus} batches={ctx.batches} onOpenBatch={setBatch} />}
         {preview && <aside className="focus-preview" aria-label="成果预览">
           <header className="spread"><strong>{preview.label}</strong><button className="btn" onClick={()=>setPreviewId("")}>关闭预览</button></header>
           {Object.entries(preview.version.content).map(([field,value])=><section key={field}>
@@ -221,7 +229,7 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
       {showMethod && <StageMethods key={id+stage} pid={v.episode.project_id} eid={id} stage={stage} close={() => setShowMethod(false)} />}
       {requirements && <StepRequirements key={stage} pid={v.episode.project_id} eid={id} stage={["space","cast"].includes(stage)?"assets":versionStage} close={()=>{setRequirements(false); void reload();}} toComposer={stage==="review"?undefined:text=>{composeRef.current?.(text); if (window.matchMedia("(max-width: 1120px)").matches) setFocusChat(true);}}/>}
       {batch && <BatchModal batch={batch} assets={ctx.assets} close={() => { setBatch(null); reload(); }} />}
-    </div></LocateStory.Provider>
+    </div></LocateStory.Provider></FilmStatusScope>
   );
 }
 
@@ -254,6 +262,8 @@ function StageMethods({ pid, eid, stage, close }: { pid:string; eid: string; sta
 
 function StageView({ stage, ctx }: { stage: string; ctx: Ctx }) {
   const {hash} = useProjectRoute();
+  if (stage === "acting") return <PlanView ctx={ctx} />;
+  if (stage === "spec") return <StoryResult ctx={ctx} />;
   if (FILM_FIELDS[stage]) return <FilmDocument stage={stage} ctx={ctx}/>;
   switch (stage) {
     case "story": return <StoryResult ctx={ctx} />;
@@ -336,6 +346,7 @@ function AdoptBar({ ctx, art, version, hint, next }: { ctx: Ctx; art: any; versi
   const [confirmed,setConfirmed]=useState<string|null>(null);
   if (!version) return null;
   const adoptedHere = art.adopted_version_id === version.id;
+  if(ctx.view.expertAdvancing || ctx.view.cooperationMode==="expert") return <div className="actionbar"><span>{adoptedHere ? "本版已采用" : ctx.view.expertAdvancing ? "专家自动处理本版的采用与返修" : "本版待专家处理"}</span>{version.expertReason && <span className="small muted">专家决定 · {version.expertReason}</span>}<DecisionMessageSummary art={art} eid={ctx.eid} reload={ctx.reload}/></div>;
   const remainder=version.gate.sourceRemainder?.trim();
   const adoption = {art,version,eid:ctx.eid,scenes:episodeScenes(ctx.view),disabled:!version.gate.adoptable || (!!remainder && confirmed!==version.id)};
   return (
@@ -343,7 +354,7 @@ function AdoptBar({ ctx, art, version, hint, next }: { ctx: Ctx; art: any; versi
       <span className="muted small">{art.stage==="story" ? storyAdoptionHint(version,adoptedHere) : art.stage==="asset_design" ? "当前素材清单 "+rno(version.display_no) : hint}</span>
       <DecisionMessageSummary art={art} eid={ctx.eid} reload={ctx.reload}/>
       {!adoptedHere && art.adopted_version_id && <button className="btn" onClick={() => ctx.setFocus(art.adopted_version_id)}>对比 {rno(art.versions.find((v: any) => v.id === art.adopted_version_id)?.display_no)}</button>}
-      {["story","plan"].includes(art.stage) && !version.gate.review && <button className="btn primary" onClick={() => act.run(async () => { await cmd("submit_review", { version_id: version.id }); ctx.reload(); })}>发起独立审查</button>}
+      {["story","script","plan"].includes(art.stage) && !version.gate.review && <button className="btn primary" onClick={() => act.run(async () => { await cmd("submit_review", { version_id: version.id }); ctx.reload(); })}>发起独立审查</button>}
       {!adoptedHere && remainder && <section><h4>以下原文没有归入任何场次</h4><pre>{version.gate.sourceRemainder}</pre><label><input type="checkbox" checked={confirmed===version.id} onChange={e=>setConfirmed(e.target.checked?version.id:null)}/>已核对剩余原文</label></section>}
       {!adoptedHere && <>
         <DecisionAdoption {...adoption} onDone={async vid=>{await ctx.reload();ctx.setFocus(vid);}}>{art.stage==="stress"?"只采用报告":"只采用"}</DecisionAdoption>
@@ -1834,7 +1845,7 @@ function PublishView({ ctx }: { ctx: Ctx }) {
   const composed = useQuery<any>(current ? "compose_publish" : null, { episode_id: ctx.eid, version_id: current?.id }, [current?.id]);
   const act = useAction();
   useEffect(() => { setForm(current?.content ?? { title: "", body: "", tags: [], extraFields: {}, cues: [] }); }, [current?.id]);
-  if (!art) return <div className="empty"><p>正式发布包会引用已采用的提示词。</p>{artifactFor(ctx.view,"prompts")?.adopted_version_id &&
+  if (!art) return <div className="empty"><p>正式发布包会引用已采用的提示词。</p>{!ctx.view.expertAdvancing && ctx.view.cooperationMode!=="expert" && artifactFor(ctx.view,"prompts")?.adopted_version_id &&
     <button className="btn primary" disabled={act.busy} onClick={()=>act.run(async()=>{await cmd("open_stage",{episode_id:ctx.eid,stage:"publish"});await ctx.reload();})}>开始写发布文案</button>}<ErrorLine error={act.error}/><button className="btn" onClick={ctx.openTrial}>先试写本阶段</button></div>;
   if (!form) return null;
   const copy = (t: string) => navigator.clipboard.writeText(t).catch(() => alert("复制失败，请手动选取原文"));
@@ -1847,8 +1858,8 @@ function PublishView({ ctx }: { ctx: Ctx }) {
   const f = composed.data?.fields;
   return (
     <div>
-      {ctx.view.completion?.completed && <div className="ok small">本集项目已完成 · 中间文件按完成后 10 天规则管理</div>}
-      <div className="stagehead"><div><h1>发布文案</h1><div className="muted small">最后一步：完成并采用发布文案后，本集项目制作完成</div></div>
+      {ctx.view.completion?.completed && <div className="ok small">本集发布文案已采用</div>}
+      <div className="stagehead"><h1>发布文案</h1>
         {current && <VersionTabs ctx={ctx} art={art} current={current} />}</div>
       <div className="grid2">
         <fieldset disabled={ctx.locked} className="col edit-fields">
@@ -1913,14 +1924,17 @@ function SelectedDelivery({ctx,id}:{ctx:Ctx;id:string}) {
 function DeliveryView({ ctx }: { ctx: Ctx }) {
   const { hash, go }=useProjectRoute();
   const params=new URLSearchParams(hash.split("?")[1]);
-  const scope=params.get("scope") || (ctx.view.kickoff.spec.packaging==="trial" ? "trial" : "full");
+  const automatic=ctx.view.expertAdvancing || ctx.view.cooperationMode==="expert";
+  const scope=automatic ? "full" : params.get("scope") || (ctx.view.kickoff.spec.packaging==="trial" ? "trial" : "full");
+  const adopted=Object.fromEntries(ctx.view.artifacts.map((a:any)=>[a.stage,a.adopted_version_id]));
+  const adoptionKey=JSON.stringify(adopted);
   const segs=params.getAll("segment");
   function setScope(value:string) {params.set("scope",value);go(hash.split("?")[0]+"?"+params);}
   function setSegs(values:string[]) {
     params.delete("segment");values.forEach(id=>params.append("segment",id));go(hash.split("?")[0]+"?"+params);
   }
   const choosingSegments = scope === "trial" && segs.length === 0;
-  const problems = useQuery<any>(choosingSegments ? null : "delivery_problems", { episode_id: ctx.eid, scope, segments: scope === "trial" ? segs : null, require_publish: false }, [scope, segs.join()]);
+  const problems = useQuery<any>(choosingSegments ? null : "delivery_checklist", { episode_id: ctx.eid, scope, segments: scope === "trial" ? segs : null }, [scope, segs.join(), adoptionKey,ctx.view.expertAdvancing]);
   const [deliveries, setDeliveries] = useState<any[]>([]);
   const act = useAction();
   const plan = artifactFor(ctx.view, "plan");
@@ -1937,15 +1951,35 @@ function DeliveryView({ ctx }: { ctx: Ctx }) {
     const ep = ov.episodes.find((e: any) => e.id === ctx.eid);
     setDeliveries(await Promise.all((ep?.deliveries ?? []).map((d: any) => q("delivery_view", { delivery_id: d.id }))));
   };
-  useEffect(() => { load(); }, [ctx.eid]);
-  const list = problems.data?.[0] ?? [];
+  useEffect(() => { load(); }, [ctx.eid,adoptionKey,ctx.view.productionStatus?.delivery,ctx.view.expertAdvancing]);
+  const list = problems.data?.problems ?? [];
+  const matching=deliveries.filter(d=>d.scope==="full" && d.state==="deliverable" && d.versions?.publish && !d.cleanedAt && Object.entries(d.versions).every(([k,v])=>adopted[k]===v));
+  const registered=scope==="full" && (matching.find(d=>d.id===ctx.view.filmStart?.delivery) || matching.at(-1));
+  const purpose=scope==="trial"?"选段试验包":artifactFor(ctx.view,"publish")?.adopted_version_id?"正式图文包":"制作材料交接包";
   const byStage: Record<string, any[]> = {};
-  list.forEach((p: any) => { (byStage[p.stage] ??= []).push(p); });
+  list.forEach((p: any) => {
+    const target=p.kind==="required_reference" || p.stage==="recheck" || p.stage==="review" ? "prompts" : p.stage;
+    (byStage[target] ??= []).push(p);
+  });
+  let next="";
+  if(list.length) next=automatic?"下一步由专家安排返修，修复后自动复核。":"按下面的问题返回对应步骤修复。";
+  else if(registered) next=ctx.view.filmStart?.delivery===registered.id && ctx.view.filmStart?.state==="已开工"
+    ? "本版正式包已交给视频与配乐制作。" : "本版正式包已登记，下一步由工作台安排视频与配乐。";
+  else if(automatic) next=ctx.view.expertAdvancing?"后台正在准备正式交付。":"专家启动后会自动完成正式交付。";
+  else if(problems.data) next=scope==="trial"
+    ? "下一步：由导演点击生成选段试验包。"
+    : problems.data.includesPublish
+      ? "下一步：由导演点击生成正式图文包，登记后自动交给视频与配乐。"
+      : "下一步：可先生成制作材料交接包，或先完成并采用发布文案后再登记正式图文包。";
   return (
     <div>
-      <div className="stagehead"><div><h1>交付核验</h1><div className="muted small">核验实际读取文件、指纹和内容；只有核验通过且文件完整落盘才登记交付号</div></div>
-        <Pills value={scope} onChange={setScope} options={[["full", "整集完整交付"], ["trial", "限定试验范围"]]} /></div>
+      <div className="stagehead"><div><h1>交付核验</h1><div className="muted small">核对本次交付所用的稿件、时长与参考文件，完成后登记交付号</div></div>
+        {automatic ? <Tag>整集</Tag> : <Pills value={scope} onChange={setScope} options={[["full", "整集"], ["trial", "限定试验范围"]]} />}</div>
       {scope === "trial" && <div className="row">{lay.segments.map((s: any) => <button key={s.id} className={`pill ${segs.includes(s.id) ? "on" : ""}`} onClick={() => setSegs(segs.includes(s.id) ? segs.filter((x) => x !== s.id) : [...segs, s.id])}>{s.id}</button>)}<span className="muted small">{choosingSegments ? "请选择要核验的拍摄段。" : "试验范围从零计时，不更新整集完成状态"}</span></div>}
+      {problems.error ? <ErrorLine error={{message:problems.error}}/> : !choosingSegments && !problems.data ? <p>正在核验本次材料…</p> : problems.data && <div className="card"><b>本次核验 · {purpose}</b>{problems.data.groups.map((g:any)=><p className="small" key={g.title}>{g.title} · {g.state}</p>)}{problems.data.evidence?.segments && <p>本次核对 {problems.data.evidence.segments.join("、")} · {problems.data.evidence.shots} 镜 · 共 {problems.data.evidence.durationMs/1000} 秒</p>}
+        {problems.data.roleReceipts?.filter((r:any)=>["plan","prompts"].includes(r.stage)).map((r:any)=><a key={r.stage} className="btn ghost" href={`#/e/${ctx.eid}/${r.stage}?v=${r.version}`}>{r.stage==="plan"?"分镜":"提示词"} · 第 {r.number} 版</a>)}
+        {problems.data.evidence?.promptSegments && <p className="small">已核对 {problems.data.evidence.promptSegments.length} 段提示词，成功读取 {problems.data.evidence.readableImages} 张不同版本的参考图。{problems.data.evidence.requiredImages.map((r:any)=>r.name+" · "+(r.used.join("、") || "尚未落实到输入段")).join("；")}</p>}
+        {problems.data.roleReceipts?.length>0 && <details><summary>查看采用稿的评审与决定</summary>{problems.data.roleReceipts.map((r:any)=><p className="small" key={r.stage}>{({story:"故事",script:"剧本",stress:"故事诊断",plan:"分镜",prompts:"分段提示词",publish:"发布文案"} as Record<string,string>)[r.stage]} · {r.stage==="prompts" ? "按段写作与校验" : r.review ? "有本版独审" : r.stage==="stress" ? "诊断稿" : "无单独独审记录"} · {r.stage==="prompts" ? "已采用" : r.ruling || "无专家决定记录"}</p>)}</details>}</div>}
       {missingFrames.length > 0 && <details className="card">
         <summary>未单独绑定起落幅 · {missingFrames.length} 个动作窗口（可选）</summary>
         <p className="small">{missingFrames.join("；")}</p>
@@ -1955,10 +1989,11 @@ function DeliveryView({ ctx }: { ctx: Ctx }) {
         <div className="card red" style={{ marginTop: 14 }}>
           <b className="error">结构阻断 · {list.length} 项</b><span className="muted small"> · 不能放行，逐条定位到出错的阶段</span>
           {Object.entries(byStage).map(([stg, ps]) => (
-            <div key={stg} style={{ marginTop: 10 }}><div className="row"><Tag tone="red">{stg}</Tag><a className="btn ghost" href={`#/e/${ctx.eid}/${stg === "recheck" || stg === "review" ? "prompts" : stg === "assets" ? "assets" : stg === "space" ? "space" : stg}`}>去修复</a></div>
-              {ps.slice(0, 8).map((p: any, i: number) => <div key={i} className="small" style={{ margin: "3px 0" }}>{p.segment ?? ""} {p.file ? `· ${p.file}` : ""} · {p.problem}</div>)}</div>))}
-        </div>) : problems.data && <div className="card" style={{ marginTop: 14, background: "#13261f" }}><Tag tone="green">核验通过</Tag> <span className="small">可以写入交付目录（先写临时目录，校验后改名）。</span></div>}
-      <button className="btn primary" style={{ marginTop: 12 }} disabled={!problems.data || !!problems.error || list.length > 0 || act.busy} onClick={() => act.run(async () => { await cmd("deliver", { episode_id: ctx.eid, scope, segments: scope === "trial" ? segs : null, pre_publication: true }); await load(); ctx.reload(); problems.reload(); })}>生成图文交付</button>
+            <div key={stg} style={{ marginTop: 10 }}><div className="row"><Tag tone="red">{FILM_STAGES.find(([k])=>k===stg)?.[1] || ({assets:"参考素材",cast:"角色绑定",spec:"本集规格",space:"制作补充",publish:"发布文案"} as Record<string,string>)[stg] || stg}</Tag><a className="btn ghost" href={stg==="spec"?`#/p/${ctx.view.episode.project_id}/settings`:`#/e/${ctx.eid}/${stg}`}>{stg==="spec" ? "查看项目规格" : automatic ? "查看来源" : "去修复"}</a></div>
+              {ps.map((p: any, i: number) => <div key={i} className="small" style={{ margin: "3px 0" }}>{p.segment ?? ""} {p.file ? `· ${p.file}` : ""} · {p.problem}</div>)}</div>))}
+        </div>) : problems.data && <div className="card" style={{ marginTop: 14, background: scope==="full" && !problems.data.includesPublish ? "#262113" : "#13261f" }}><Tag tone={scope==="full" && !problems.data.includesPublish ? "amber" : "green"}>{scope==="trial" ? "试验范围通过" : problems.data.includesPublish ? "正式包可登记" : "材料可交接"}</Tag> <span className="small">{scope==="trial" ? "所选试验段材料齐备，可生成选段试验包。" : !problems.data.includesPublish ? "制作材料齐备，待采用发布文案后可登记正式图文包。" : "本次材料齐备，可登记正式交付。"}</span></div>}
+      {problems.data && next && <p className="small">{next}</p>}
+      {!automatic && <button className="btn primary" style={{ marginTop: 12 }} disabled={!problems.data || !!problems.error || list.length > 0 || act.busy} onClick={() => act.run(async () => { await cmd("deliver", { episode_id: ctx.eid, scope, segments: scope === "trial" ? segs : null, pre_publication: true }); await load(); ctx.reload(); problems.reload(); })}>生成{purpose}</button>}
       <h2 style={{ marginTop: 24 }}>已登记的交付</h2>
       {deliveries.length === 0 && <div className="muted">尚无。</div>}
       {deliveries.map((d) => (
@@ -1985,14 +2020,7 @@ function packageOverrides(params:typeof emptyPackageParams) {
     return overrides;
   }
 
-function PackageView({ ctx,panel }: { ctx: Ctx; panel?:HTMLElement|null }) {
-  const [wide,setWide]=useState(()=>matchMedia("(min-width:1121px)").matches);
-  useEffect(()=>{
-    const media=matchMedia("(min-width:1121px)");
-    const changed=()=>setWide(media.matches);
-    media.addEventListener("change",changed);
-    return ()=>media.removeEventListener("change",changed);
-  },[]);
+function PackageView({ ctx, finecut=false }: { ctx: Ctx; finecut?:boolean }) {
   const { hash, go } = useProjectRoute();
   const [deliveries, setDeliveries] = useState<any[]>([]);
   const [did, setDid] = useState("");
@@ -2007,7 +2035,7 @@ function PackageView({ ctx,panel }: { ctx: Ctx; panel?:HTMLElement|null }) {
   const inputKey=JSON.stringify([ctx.eid,did,segs,batch,individual]);
   const result=preview?.inputKey===inputKey?preview:null;
   const act = useAction();
-  const requestedDelivery = new URLSearchParams(hash.split("?")[1]).get("delivery");
+  const requestedDelivery = new URLSearchParams(hash.split("?")[1]).get("delivery") || ctx.view.filmStart?.delivery;
   useEffect(() => { let active = true; (async () => {
     const ov = await q("project_overview", { project_id: ctx.view.episode.project_id });
     const ds = await Promise.all((ov.episodes.find((e: any) => e.id === ctx.eid)?.deliveries ?? []).map((d: any) => q("delivery_view", { delivery_id: d.id })));
@@ -2021,6 +2049,7 @@ function PackageView({ ctx,panel }: { ctx: Ctx; panel?:HTMLElement|null }) {
     return {delivery_id:did,segments:segs,overrides:packageOverrides(batch),segment_overrides:Object.fromEntries(entries)};
   }
   const [copied,setCopied]=useState("");
+  if(finecut) return <section><div className="spread"><h1>精剪</h1><a className="btn" href="#/sys/settings/runninghub">RunningHub API Key 管理</a></div>{d && !d.cleanedAt ? <VideoProduction key={did} automatic={ctx.view.cooperationMode==="expert" || ctx.view.expertAdvancing} onProgress={ctx.reload} delivery={did} episode={ctx.eid} finecut/> : <p>等待本集采用的视频和配乐。</p>}</section>;
   const controls=d && d.state!=="needs_recheck" && <div className="package-controls">
     <h2>交给 H3 打包工具</h2>
     <p>{d.scope==="full"?"整集交付":"试验交付"} · 本次选择 {segs.length} / {d.segments.length} 段</p>
@@ -2048,14 +2077,18 @@ function PackageView({ ctx,panel }: { ctx: Ctx; panel?:HTMLElement|null }) {
   </div>;
   return (
     <div>
-      <div className="stagehead"><div><h1>H3 出包</h1><div className="muted small">交给本地打包器离线导出 ZIP；更换清单、素材或范围后重新验包</div></div></div>
+      <div className="spread"><h1>生成视频 + BGM</h1><a className="btn" href="#/sys/settings/runninghub">RunningHub API Key 管理</a></div>
+      <RunningHubWorkflows/>
+      {ctx.view.filmStart?.state==="开工受阻" && <p className="error">自动开工受阻 · {ctx.view.filmStart.error}</p>}
       {!d ? <div className="muted">{requestedDelivery ? "未找到指定交付，请从本集交付记录重新选择。" : "先完成图文交付。"}</div> : d.cleanedAt ? <div className="muted">这份中间交付文件已清理，请返回交付记录选择最终版本。</div> : <>
         <div className="row"><select aria-label="选择交付版本" value={did} onChange={e=>go(`#/e/${ctx.eid}/package?delivery=${encodeURIComponent(e.target.value)}`)}>{deliveries.map((x) => <option key={x.id} value={x.id}>{x.scope === "full" ? "整集" : "试验"} {x.id.slice(0, 8)}</option>)}</select>
           <button className="btn" onClick={()=>act.run(()=>navigator.clipboard.writeText(d.html))}>复制图文页路径</button>
           <details className="small"><summary>图文页位置</summary><code>{d.html}</code></details></div>
         <p>{d.state==="needs_recheck"?"待复核":d.scope==="full"?(d.versions?.publish ? "整集图文已交付" : "H3 交接已就绪 · 待完成发布文案"):"试验图文已交付"} · {d.segments.length} 段</p>
+        {d.state==="deliverable" && <VideoProduction key={did} automatic={ctx.view.cooperationMode==="expert" || ctx.view.expertAdvancing} onProgress={ctx.reload} delivery={did} episode={ctx.eid} full={d.scope==="full" && Boolean(d.versions?.publish)}/>}
+        <details><summary>导出 H3 包</summary>
         {!!d.packages?.length && <section aria-label="已生成的 H3 包"><h3>已生成的 H3 包</h3>{d.packages.map((p:any)=><p key={p.id}>{p.cleanedAt ? <span className="muted">{p.filename} · 旧包已清理</span> : <a download href={"/api/package-download/"+encodeURIComponent(p.id)}>下载 {p.filename}</a>}</p>)}</section>}
-        {panel && wide ? createPortal(controls,panel):controls}
+        {controls}
         <div className="row package-links">{["00_图文对照.html","01_发布包.md","03_精剪交接.md","episode.json"].filter(file=>d.files[file]).map(file=>
           <a key={file} href={deliveryFile(did,encodeURIComponent(file))} target="_blank" rel="noreferrer">{file}</a>)}</div>
         {result && <section className="card" aria-label="出包预览">
@@ -2082,6 +2115,7 @@ function PackageView({ ctx,panel }: { ctx: Ctx; panel?:HTMLElement|null }) {
           <div className="small" style={{ marginTop: 6 }}>project.json schemaVersion {out.project.schemaVersion} · {out.project.scope} · {out.project.segments.length} 段 · {out.project.assets.length} 项素材</div>
           <div className="small">角色素材：{out.project.assets.some((a: any) => a.fixedRole) ? "含固定角色 fixedRole" : "均为普通资产（未伪装成 fixedRole）"}</div>
           {out.project.segments.map((s: any) => <div key={s.id} className="muted tiny">{s.id} · {Object.entries(s.params).map(([k, v]) => `${k}=${v}`).join(" ")}</div>)}</div>}
+        </details>
       </>}
       <ErrorLine error={act.error} />
     </div>

@@ -85,6 +85,16 @@ def catalog_ids(base_url, key, all_pages):
 
 
 class ProvidersMixin:
+    def register_api_executors(self):
+        from .executors.chat_api import ChatAPIExecutor
+        owner = getattr(self, 'parent', self)
+        with connect(owner.db_path) as db:
+            ids = [r[0] for r in db.execute("SELECT id FROM api_provider")]
+        for ident in ids:
+            name = "api:" + ident
+            if name not in self.executors:
+                self.executors[name] = ChatAPIExecutor(owner.db_path, ident, owner.credentials)
+
     def api_providers(self):
         with connect(self.db_path) as db:
             providers = []
@@ -93,7 +103,7 @@ class ProvidersMixin:
                 env_name = credential_var(p)
                 providers.append(dict(id=p["id"], name=p["name"], address=p["base_url"], auth=p["auth"],
                                       revision=p["revision"], envName=env_name,
-                                      keyConfigured=p["auth"] == "bearer" and bool(self.session_api_keys.get(env_name) or os.environ.get(env_name)),
+                                      keyConfigured=p["auth"] == "bearer" and bool(self.credentials.get(env_name) or os.environ.get(env_name)),
                                       models=[dict(id=m, categories=labels.get(m, [])) for m in models],
                                       checkedAt=p["checked_at"], syncedAt=p["synced_at"], diagnostic=p["diagnostic"]))
         return providers
@@ -115,11 +125,13 @@ class ProvidersMixin:
                 if (p["base_url"], p["auth"]) != (address, auth):
                     db.execute("UPDATE api_provider SET binding=?,models='[]',labels='{}',checked_at=NULL,synced_at=NULL,diagnostic=NULL WHERE id=?",
                                (new_id(), provider_id))
-                    self.session_api_keys.pop(credential_var(p), None)
+                    self.credentials.forget(credential_var(p))
                 db.execute("UPDATE api_provider SET name=?,base_url=?,auth=?,revision=revision+1 WHERE id=?",
                            (name.strip(), address, auth, provider_id))
                 return {"id": provider_id}
-            return self._command(db, command_id, "save_provider", [provider_id, revision, name, address, auth], save)
+            result = self._command(db, command_id, "save_provider", [provider_id, revision, name, address, auth], save)
+        self.register_api_executors()
+        return result
 
     def set_provider_key(self, provider_id, revision, key):
         if not isinstance(key, str) or not 1 <= len(key) <= 8192 or not key.isascii() or not all(33 <= ord(c) <= 126 for c in key):
@@ -128,9 +140,9 @@ class ProvidersMixin:
             p = row(db, "SELECT * FROM api_provider WHERE id=?", provider_id)
             if p["revision"] != revision or p["auth"] != "bearer":
                 raise Conflict("服务商配置已变更，请刷新")
-            self.session_api_keys[credential_var(p)] = key
+            self.credentials.set(credential_var(p), key)
             db.execute("UPDATE api_provider SET revision=revision+1,checked_at=NULL,diagnostic=NULL WHERE id=?", (provider_id,))
-        return {"configured": True}
+        return {"configured": True, "savedToConfig": True}
 
     def read_provider_models(self, provider_id, revision, sync=False):
         with transaction(self.db_path) as db:
@@ -141,7 +153,7 @@ class ProvidersMixin:
             db.execute("UPDATE api_provider SET probe_seq=? WHERE id=?", (seq, provider_id))
             key = None
             if p["auth"] == "bearer":
-                key = self.session_api_keys.get(credential_var(p)) or os.environ.get(credential_var(p))
+                key = self.credentials.get(credential_var(p)) or os.environ.get(credential_var(p))
         try:
             if p["auth"] == "bearer" and not key:
                 raise Rejected("密钥未配置")

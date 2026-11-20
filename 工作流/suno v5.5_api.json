@@ -1,0 +1,40 @@
+{
+  "43": {
+    "inputs": {
+      "description": [
+        "47",
+        0
+      ],
+      "title": "",
+      "make_instrumental": "true",
+      "skip_error": false,
+      "seed": 1980781209
+    },
+    "class_type": "RH_RhartAudioSunoV55Single",
+    "_meta": {
+      "title": "RH Suno Single V5.5"
+    }
+  },
+  "47": {
+    "inputs": {
+      "text": "112 BPM，4/4 拍，拨弦和木琴跟着轻快的脚步交替推进，结尾用一个短促的重拍收住。"
+    },
+    "class_type": "JjkText",
+    "_meta": {
+      "title": "一句话生成 BGM · 粘贴导演工作台的 Style of Music"
+    }
+  },
+  "49": {
+    "inputs": {
+      "filename_prefix": "audio1/ComfyUI",
+      "audio": [
+        "43",
+        0
+      ]
+    },
+    "class_type": "SaveAudio",
+    "_meta": {
+      "title": "保存纯音乐"
+    }
+  }
+}
