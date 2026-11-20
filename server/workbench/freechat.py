@@ -57,6 +57,12 @@ class FreeChatMixin(topicresearch.TopicResearchMixin):
             if thread_id:
                 turns = [dict(r) for r in db.execute("SELECT id,text,reply,status,reason,provider,input_hash,attempt,manifest_relpath "
                                                      "FROM free_turn WHERE thread_id=? ORDER BY rowid",(thread_id,))]
+                if stage in ("package", "finecut"):
+                    times = {r[0]:r[1:] for r in db.execute(
+                        "SELECT s.turn_id,MIN(s.created_at),MAX(s.ended_at) FROM storage_chat s "
+                        "JOIN free_turn t ON t.id=s.turn_id WHERE t.thread_id=? GROUP BY s.turn_id", (thread_id,))}
+                    for turn in turns:
+                        turn["createdAt"], turn["endedAt"] = times.get(turn["id"], (None, None))
                 for t in turns:
                     manifest, digest = self.store.load_manifest(t.pop("manifest_relpath"))
                     if digest != t["input_hash"]:

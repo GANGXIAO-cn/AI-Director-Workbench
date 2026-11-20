@@ -346,6 +346,9 @@ def media_verdict(data, delivery, role, purpose, folder, prompt, schema, images=
     except ValidationError as exc:
         raise ValueError("评审或决定格式错误："+exc.message) from exc
     record = dict(basis=basis, role=role, selection=slot, result=result.structured)
+    if stage=="finecut":
+        from .filmconversation import keep_previous_reply
+        keep_previous_reply(path)
     write_atomic(path, canonical(record))
     return record
 

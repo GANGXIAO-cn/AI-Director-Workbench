@@ -71,7 +71,7 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
   const canvasMode = stage === "assets" && new URLSearchParams(hash.split("?")[1]).get("tab") === "canvas";
   const worksheet = stage==="worksheet";
   const productionPage = stage==="package" || stage==="finecut";
-  const chatOnly = focusChat && !canvasMode && !["package","finecut","worksheet","shot_assets"].includes(stage);
+  const chatOnly = focusChat && !canvasMode && !["worksheet","shot_assets"].includes(stage);
   const [filmSelection,setFilmSelection]=useState<FilmSelection|null>(null);
   const [previewId,setPreviewId]=useState("");
   useEffect(()=>setPreviewId(""),[id,stage,chatOnly]);
@@ -161,7 +161,7 @@ export default function Workspace({ id, stage }: { id: string; stage: string }) 
     return (map[s] || adopted(s)) ? "done" : s === stage ? "now" : "";
   };
   return (
-    <FilmStatusScope delivery={sharedDelivery}>
+    <FilmStatusScope delivery={sharedDelivery} conversation={productionPage?stage:undefined}>
     <LocateStory.Provider value={stage==="story"?setLocation:null}><div className="app episode-workspace">
       {!worksheet && stage!=="stress" && <RepairProgress view={v} stage={stage} reload={reload}/>}
       {!worksheet && <ProjectMethodSync key={id+stage} pid={v.episode.project_id} eid={id} stage={canUseUploadedMethods(stage)?stage:undefined}/>}

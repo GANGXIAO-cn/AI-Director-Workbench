@@ -30,4 +30,9 @@ def read_step(folder):
 
 
 def save_step(folder, label):
-    write_atomic(folder / "work-step.json", canonical(dict(label=label, since=time.time())))
+    previous = read_step(folder)
+    if previous.get("label") == label:
+        return
+    entry = dict(label=label, since=time.time())
+    history = previous.get("history", [previous] if previous else [])
+    write_atomic(folder / "work-step.json", canonical(dict(**entry, history=[*history, entry])))

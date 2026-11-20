@@ -226,6 +226,7 @@ def advance(wb, queue):
         try:
             def report(label):
                 queue.check_dispatch(delivery)
+                production_steps.save_step(folder, label)
                 record("渲染中", published=last, action=label)
             with production_steps.observe(report):
                 inputs=json.loads(source.read_bytes())

@@ -71,7 +71,7 @@ def router(queue, external, wb=None):
         return {"ok": True, "savedKeyToConfig": bool(body.key)}
 
     @api.get("/{delivery}")
-    def status(delivery: str):
+    def status(delivery: str, conversation: Literal["package", "finecut"] | None = None):
         from .db import connect
         view=call(queue.view, delivery)
         if wb and not view["music"]:
@@ -82,6 +82,9 @@ def router(queue, external, wb=None):
                                "AND d.id=(SELECT id FROM delivery WHERE episode_id=f.episode_id AND scope='full' AND state='deliverable' "
                                "AND json_extract(versions,'$.publish')=f.publish ORDER BY rowid DESC LIMIT 1)))",(delivery,)).fetchone()
             view["start"]=dict(row) if row else None
+        if conversation:
+            from .filmconversation import messages
+            view["messages"] = call(messages, queue, call(safe_id, delivery), conversation, view)
         return view
 
     @api.get("/{delivery}/references")

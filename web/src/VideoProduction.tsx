@@ -33,36 +33,39 @@ type Job = {action?:string;cloud?:Timing;reworks?:Rework[];changes?:string[];seg
 type Profile = {name:string;site:string;instance:string;capacity:number;pool:string;poolCapacity:number;connected:boolean};
 type Music = {action?:string;cloud?:Timing;state:string;error:string;audio:string|null;handoff:string|null};
 type CutInputs = {clips:{segment:string;review:{usableStart:number;usableEnd:number;cutAdvice?:string}}[]};
-type Status = {cut?:Timing & {action?:string;state?:string;published?:string;error?:string;feedbackReview?:string;finalReview?:{review:{reason:string};decision:{reason:string};audio:string}};start?:{state:string;error:string};budget?:{used:number;limit:number;reworkUsed?:number;reworkLimit?:number;reserved?:number;counts?:Record<string,number>}|null;music?:Music|null;jobs:Job[];accounts:Profile[];paused:boolean};
+export type FilmMessage = {id:string;at:number;role:string;title:string;text:string;provider?:string;requestedModel?:string};
+type Status = {messages?:FilmMessage[];cut?:Timing & {action?:string;state?:string;published?:string;error?:string;feedbackReview?:string;finalReview?:{review:{reason:string};decision:{reason:string};audio:string}};start?:{state:string;error:string};budget?:{used:number;limit:number;reworkUsed?:number;reworkLimit?:number;reserved?:number;counts?:Record<string,number>}|null;music?:Music|null;jobs:Job[];accounts:Profile[];paused:boolean};
 
 const emptyStatus:Status={jobs:[],accounts:[],paused:false};
-function useFilmStatus(delivery:string|null) {
+function useFilmStatus(delivery:string|null,conversation?:string) {
   const {active}=useProjectRoute();
-  const [snapshot,setSnapshot]=useState<{delivery:string;data:Status}|null>(null);
+  const path=delivery ? encodeURIComponent(delivery)+(conversation?"?conversation="+conversation:"") : null;
+  const [snapshot,setSnapshot]=useState<{path:string;data:Status}|null>(null);
   const [error,setError]=useState("");
   const sequence=useRef(0);
-  const setStatus=(data:Status)=>{sequence.current++;if(delivery)setSnapshot({delivery,data});};
+  const setStatus=(data:Status)=>{sequence.current++;if(path)setSnapshot(old=>({path,data:{...data,messages:data.messages ?? (old?.path===path?old.data.messages:undefined)}}));};
   useEffect(()=>{
     setError("");
-    if(!active || !delivery)return;
+    if(!active || !path)return;
     let live=true;
     let timer:number;
     const refresh=async()=>{
       const order=++sequence.current;
       try {
-        const data=await videoApi<Status>("GET",encodeURIComponent(delivery));
-        if(live && order===sequence.current){setSnapshot({delivery,data});setError("");}
+        const data=await videoApi<Status>("GET",path);
+        if(live && order===sequence.current){setSnapshot({path,data});setError("");}
       } catch(e){if(live)setError(String(e));}
       if(live)timer=window.setTimeout(refresh,5000);
     };
     void refresh();
     return ()=>{live=false;clearTimeout(timer);};
-  },[delivery,active]);
-  return {delivery,status:snapshot?.delivery===delivery?snapshot?.data:undefined,setStatus,error};
+  },[path,active]);
+  return {delivery,status:snapshot?.path===path?snapshot?.data:undefined,setStatus,error};
 }
 const FilmContext=createContext<ReturnType<typeof useFilmStatus>|null>(null);
-export function FilmStatusScope({delivery,children}:{delivery:string|null;children:ReactNode}) {
-  const session=useFilmStatus(delivery);
+export function useFilmMessages(){return useContext(FilmContext)?.status?.messages;}
+export function FilmStatusScope({delivery,conversation,children}:{delivery:string|null;conversation?:string;children:ReactNode}) {
+  const session=useFilmStatus(delivery,conversation);
   return <FilmContext.Provider value={session}>{children}</FilmContext.Provider>;
 }
 
@@ -71,20 +74,21 @@ function FilmProgress({status,run,busy}:{status:Status;run:(path:string)=>void;b
   const produced=jobs.filter(j=>(status.budget?.counts?.[j.segment]??0)>0).length;
   const adopted=jobs.filter(j=>j.state==="已采用" || j.state==="已出片待选剪").length;
   const working=jobs.filter(j=>j.state!=="已采用" && j.state!=="已出片待选剪" && (j.state!=="排队中" || j.deps.length>0 || j.error));
-  if(!jobs.length && !music && !status.start)return null;
+  const active=working.find(j=>["生成中","审片中"].includes(j.state)) ?? working[0];
+  if(!jobs.length && !music && !status.start && !cut?.state)return null;
   const cutAction=cut?.action || (cut?.state==="渲染中"?"工作台正在处理精剪":cut?.state);
-  return <section className="film-progress" aria-label="本集交付进度">
-    <div className="spread"><strong>{status.paused?"已暂停新派发":cutAction || (music?.handoff?"精剪已收到素材":status.start?.state==="待开工"?"工作台正在安排视频与配乐":"本集制作进度")}</strong>
-      {cut?.state!=="已出片" && <button className="btn" disabled={busy} onClick={()=>run("pause/"+!status.paused)}>{status.paused?"恢复本集派发":"暂停本集派发"}</button>}</div>
-    {!music && status.start && status.start.state!=="待开工" && <div>{status.start.state} {status.start.error}</div>}
-    {jobs.length>0 && <div className="small">已出片 {produced} / {jobs.length} 段 · 已采用 {adopted} 段{music && " · 配乐："+(music.action || music.state)}</div>}
-    {!status.paused && working.map(j=><div className="small" key={j.segment}>{j.segment} · {j.action || j.state}{j.error && j.error!==j.action && " · "+j.error}
-      {["待核对","需处理"].includes(j.state) && <button className="btn" disabled={busy} onClick={()=>run(encodeURIComponent(j.segment)+"/retry")}>恢复 {j.segment} 原任务</button>}</div>)}
-    {!status.paused && !working.length && jobs.some(j=>j.state==="排队中") && <div className="small">视频等待派发</div>}
-    {!status.paused && music?.error && music.state!=="云端失败" && <button className="btn" disabled={busy} onClick={()=>run("bgm/retry")}>恢复配乐任务</button>}
-    {cut?.state==="修改受阻" && <button className="btn" disabled={busy} onClick={()=>run("finecut/undo")}>撤销上一条修改并重试</button>}
-    {cut?.error && <div className="small">{cut.error}</div>}
-    {status.paused && <div className="small">已经提交的工作可以收尾，恢复后继续下一步。</div>}
+  return <section className="continuous-status film-progress" aria-label="本集交付进度">
+    <p><strong>{status.paused?"已暂停新派发":cutAction || (music?.handoff?"精剪已收到素材":status.start?.state==="待开工"?"正在安排视频与配乐":"本集制作进度")}</strong></p>
+    {!music && status.start && status.start.state!=="待开工" && <p>{status.start.state} {status.start.error}</p>}
+    {jobs.length>0 && <p className="small">已出片 {produced} / {jobs.length} 段 · 已采用 {adopted} 段{music && " · 配乐："+(music.action || music.state)}</p>}
+    {!status.paused && !cutAction && active && <p>{active.segment} · {active.action || active.state}{active.error && active.error!==active.action && " · "+active.error}</p>}
+    {cut?.error && <p>{cut.error}</p>}
+    <div className="row continuous-actions">
+      {cut?.state!=="已出片" && <button className={"btn"+(status.paused?" primary":"")} disabled={busy} onClick={()=>run("pause/"+!status.paused)}>{status.paused?"恢复本集派发":"暂停本集派发"}</button>}
+      {!status.paused && working.filter(j=>["待核对","需处理"].includes(j.state)).map(j=><button key={j.segment} className="btn" disabled={busy} onClick={()=>run(encodeURIComponent(j.segment)+"/retry")}>恢复 {j.segment} 原任务</button>)}
+      {!status.paused && music?.error && music.state!=="云端失败" && <button className="btn" disabled={busy} onClick={()=>run("bgm/retry")}>恢复配乐任务</button>}
+      {cut?.state==="修改受阻" && <button className="btn" disabled={busy} onClick={()=>run("finecut/undo")}>撤销上一条修改并重试</button>}
+    </div>
   </section>;
 }
 export function SharedFilmProgress() {

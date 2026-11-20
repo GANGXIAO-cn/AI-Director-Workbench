@@ -687,3 +687,39 @@ def test_resume_writer_before_submission_without_restarting_other_jobs(setup, mo
     assert (job["state"], job["round"], retry["round"], retry["attempts"]) == ("排队中",1,1,1)
     assert "等待自动重试" in job["error"]
     assert not (q.directory("d","A",1) / "trial.json").exists()
+
+
+def test_conversation_replays_saved_steps_and_separates_review_from_decision(setup):
+    from workbench import filmconversation, production_steps
+
+    q = setup
+    q.enqueue_batch("d", [body("A")])
+    folder = q.directory("d", "A", 0)
+    production_steps.save_step(folder, "独立评审正在审本版视频")
+    production_steps.save_step(folder, "独立评审正在审本版视频")
+    review = folder / "expert"
+    review.mkdir()
+    (review/"independent-review.json").write_text(json.dumps({
+        "visualReview":{"reason":"镜头接得上"}, "evidence":{"expert":{"provider":"codex"}}}))
+    production_steps.save_step(folder, "专家正在决定采用、剪辑或重拍")
+    (review/"video_decision.json").write_text(json.dumps({"result":{"action":"采用","reason":"可直接剪用"}}))
+    status = q.view("d")
+    feed = filmconversation.messages(q, "d", "package", status)
+    assert [m["text"] for m in feed] == ["独立评审正在审本版视频","镜头接得上","专家正在决定采用、剪辑或重拍","可直接剪用"]
+    assert [m["role"] for m in feed] == ["独立评审","独立评审","专家","专家"]
+    assert feed == filmconversation.messages(q, "d","package",status)
+    assert not filmconversation.messages(q, "d","finecut",status)
+
+
+def test_recut_preserves_first_decision_in_conversation(setup):
+    from workbench import filmconversation
+
+    folder = setup.root/"d/finecut/成片复核"
+    folder.mkdir(parents=True)
+    path = folder/"finecut_decision.json"
+    path.write_text(json.dumps({"result":{"action":"revise","reason":"第2段提前切"}}))
+    filmconversation.keep_previous_reply(path)
+    filmconversation.keep_previous_reply(path)
+    path.write_text(json.dumps({"result":{"action":"adopt","reason":"剪点已对齐"}}))
+    messages = filmconversation.messages(setup, "d", "finecut", {})
+    assert [m["text"] for m in messages] == ["第2段提前切","剪点已对齐"]

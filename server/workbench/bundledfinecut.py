@@ -12,6 +12,7 @@ from jsonschema import ValidationError, validate
 from .executors.base import ExecRequest
 from .storage import canonical, sha256_bytes, write_atomic
 from .production_steps import step
+from .filmconversation import keep_previous_reply
 from .videosegment import episode_expert
 
 MIN_FINAL_SECONDS = 60
@@ -227,7 +228,8 @@ def editing_plan(data, delivery, work, inputs, changes=(), baseline=None, previo
                 raise ValueError(str(exc)[:500]) from exc
             req = replace(req, run_id=req.run_id+"-edit",
                           prompt=req.prompt+"\n上一版剪辑表："+json.dumps(plan,ensure_ascii=False)+"\n"+str(exc))
-    write_atomic(path, canonical(dict(stamp=stamp,plan=plan)))
+    keep_previous_reply(path)
+    write_atomic(path, canonical(dict(stamp=stamp,plan=plan,selection=slot)))
     return plan
 
 
@@ -299,7 +301,8 @@ def verify_feedback(data, delivery, work, before, candidate, feedback, plan):
     verdict = result.structured
     if not verdict["finding"].strip():
         raise ValueError("成片反馈验收缺少具体画面依据")
-    write_atomic(review/"result.json", canonical(dict(feedback=feedback, **verdict)))
+    keep_previous_reply(review/"result.json")
+    write_atomic(review/"result.json", canonical(dict(feedback=feedback, selection=slot, **verdict)))
     if not verdict["passed"]:
         from .videoreview import decision_schema, media_verdict
         step("专家 AI 正在根据独立验收意见决定是否返修剪辑")
