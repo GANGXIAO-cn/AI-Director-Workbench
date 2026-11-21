@@ -62,7 +62,7 @@ def writer_changes(source, windows, changes):
         indices = [int(n) for n in re.findall(r"\d+", prefix[0])]
         if not all(i in mapping for i in indices):
             raise ValueError("审片点名的镜号不在本段采用分镜内")
-        if all(i == mapping[i] for i in indices):
+        if all(i == mapping[i] and list(mapping.values()).count(i) == 1 for i in indices):
             result.append(change)
             continue
         targets = " ".join(f"[Shot {n}]" for n in dict.fromkeys(mapping[i] for i in indices))
@@ -134,7 +134,12 @@ def apply_shot_edits(text, edits, notes=(), slots=()):
         last = a
     missing = []
     revised_ranges = shot_ranges(text)
-    for shot in sorted({edit["shot"] for edit in edits}):
+    edited = {edit["shot"] for edit in edits}
+    if ranges.keys() != revised_ranges.keys() or any(
+        original[slice(*ranges[n])] != text[slice(*revised_ranges[n])] for n in ranges.keys() - edited
+    ):
+        raise ValueError("局部返工不能改变镜头边界或未点名镜头的正文")
+    for shot in sorted(edited):
         before = original[slice(*ranges[shot])]
         after = text[slice(*revised_ranges[shot])]
         lost = Counter(literal_text(before)) - Counter(literal_text(after))
@@ -174,18 +179,35 @@ def revision_inputs(source, changes, bindings):
     )
 
 
-def compile_revision(data, delivery, source, changes, bindings, directory):
+def compile_revision(data, delivery, source, changes, bindings, directory, *, assignment=None):
     from .videosegment import episode_expert
 
     materials = revision_inputs(source, changes, bindings)
+    if assignment is not None:
+        materials["本轮返工任务"] = assignment
     key = sha256_bytes(canonical(materials))
     folder = directory / "prompt-revisions" / key
     record = folder / "edits.json"
     notes = [*changes, *(b["note"] for b in bindings)]
-    slots = [b["slot"] for b in bindings]
+    # Continuity frames were already bound in the previous H3 request.
+    slots = [] if changes else [b["slot"] for b in bindings]
+    targets = {int(n) for change in changes if (prefix := review_prefix.match(change))
+               for n in re.findall(r"\d+", prefix[0])}
+
+    def checked(edits):
+        edited = {e["shot"] for e in edits}
+        if targets and edited != targets:
+            raise ValueError(f"只改评审点名的镜号：{sorted(targets)}。本次漏改 {sorted(targets-edited)}，多改 {sorted(edited-targets)}")
+        revised = apply_shot_edits(source, edits, notes, slots)
+        for b in bindings:
+            ref = f"<Picture {b['slot']}>"
+            if ref in source and ref not in revised:
+                raise ValueError("没有保留已绑定的承接图 " + ref)
+        return revised
+
     if record.is_file():
         edits = json.loads(record.read_bytes())["edits"]
-        return apply_shot_edits(source, edits, notes, slots)
+        return checked(edits)
     executor, slot, connection, _ = episode_expert(data, delivery, "create", "package")
     work = folder / "work"
     work.mkdir(parents=True, exist_ok=True)
@@ -195,7 +217,7 @@ def compile_revision(data, delivery, source, changes, bindings, directory):
         "你是本集镜头提示词编辑。reviews 和 frames.note 是给你的内部意见。先确定意见指向的镜头，再把要求落实为人物、动作、道具位置和镜头结束时可见的状态。"
         "每处只返回 shot 镜号、before 原镜头内逐字引用的短句、after 可直接拍摄的新句，沿用原稿语言。英文稿写英文。"
         "镜号仅填在 shot 字段。after 为单段镜头正文，跨镜承接直接描述本镜可见的起始位置和动作，不在正文中引用 [Shot N]。"
-        "不要翻译、附加或转述评语，不写修改过程。保留其余剧情、机位、时间码、对白与引用。新参考图要在相关动作中写清对应 Picture 和实际状态。"
+        "不要翻译、附加或转述评语，不写修改过程。保留其余剧情、机位、时间码、对白与引用。首版新绑定的参考图需写清图号和实际状态。返工时沿用已有承接，只改本轮点名镜头，同镜未点名窗口保留。"
         "每镜须逐字保留的对白和画面文字见下表。改到包含它们的句子时，在同镜保留原文、引号和出现次数。\n"
         + json.dumps(protected, ensure_ascii=False) + "\n以下为原稿及工作台记录。\n" + canonical(materials).decode()
     )
@@ -221,36 +243,7 @@ def compile_revision(data, delivery, source, changes, bindings, directory):
         try:
             validate(result.structured, SCHEMA)
             edits = result.structured["edits"]
-            if changes:
-                targeted = {int(n) for change in changes for prefix in re.findall(r"^((?:\[Shot \d+\] ?)+)", change) for n in re.findall(r"\d+", prefix)}
-                if targeted and all(change.startswith("[Shot ") for change in changes):
-                    edited = {e["shot"] for e in edits}
-                    if not bindings:
-                        if edited != targeted:
-                            raise ValueError(f"只改评审点名的镜号：{sorted(targeted)}。本次漏改 {sorted(targeted-edited)}，多改 {sorted(edited-targeted)}")
-                    else:
-                        missing = targeted - edited
-                        slot_targets = {}
-                        for b in bindings:
-                            s = b["slot"]
-                            found = set()
-                            if isinstance(b.get("shot"), int):
-                                found.add(b["shot"])
-                            note_text = str(b.get("note") or "")
-                            found.update(int(n) for n in re.findall(r"(?:\[Shot\s*|Shot\s*|第\s*)(\d+)(?:\]|镜)?", note_text, re.I))
-                            slot_targets[s] = found
-                        extra = set()
-                        for e in edits:
-                            if e["shot"] in targeted:
-                                continue
-                            matched_slots = [s for s in slots if f"<Picture {s}>" in e["after"]]
-                            if not matched_slots:
-                                extra.add(e["shot"])
-                            elif any(slot_targets[s] and e["shot"] not in slot_targets[s] for s in matched_slots):
-                                extra.add(e["shot"])
-                        if missing or extra:
-                            raise ValueError("只改评审点名的镜号（及指定承接图落点镜）："+"、".join(map(str,sorted(targeted))))
-            revised = apply_shot_edits(source, edits, notes, slots)
+            revised = checked(edits)
             break
         except (ValueError, ValidationError) as exc:
             if attempt:
@@ -260,3 +253,77 @@ def compile_revision(data, delivery, source, changes, bindings, directory):
                           + "\n仅纠正以下校验问题：" + str(exc))
     write_atomic(record, canonical(dict(edits=edits, writer=slot)))
     return revised
+
+
+def submitted_prompt(receipt):
+    texts = [n.get("fieldValue") for n in receipt.get("nodeInfoList", [])
+             if str(n.get("nodeId")) == "263" and n.get("fieldName") == "text"]
+    if len(texts) != 1 or not isinstance(texts[0], str) or not texts[0].strip():
+        raise ValueError("H3 提交记录缺少唯一的提示词正文")
+    return texts[0]
+
+
+def confirmed_rework(data, delivery, segment, out, change, bindings):
+    from .videosegment import frozen_delivery
+    from .videoreview import decision_schema, media_verdict, MediaCallError
+    from .storage import file_sha256
+
+    number = int(out.name.removeprefix("round-"))
+    previous = out.parent / f"round-{number-1}"
+    path = previous / "trial.json"
+    receipt = json.loads(path.read_bytes()) if path.is_file() else {}
+    if not receipt.get("task"):
+        raise ValueError("找不到上一版 H3 已接单的提交记录，无法确定返工底稿")
+    source = submitted_prompt(receipt)
+    review_path = previous / "expert/visual-review.json"
+    review = json.loads(review_path.read_bytes()) if review_path.is_file() else {}
+    decision = review.get("visualReview") or {}
+    change = change or decision.get("localChange")
+    if not change:
+        raise ValueError("上一版缺少本轮返工意见，无法确定要改的镜头")
+    root, manifest = frozen_delivery(data, delivery)
+    board_path = "交接来源/制作方案.json"
+    if file_sha256(root / board_path) != manifest["files"][board_path]:
+        raise ValueError("返修所用分镜与交付版本不一致")
+    windows = [s for s in json.loads((root / board_path).read_bytes())["shots"] if s["segment"] == segment]
+    work = dict(segment=segment, round=number, board=windows, expertReason=decision.get("reason",""))
+    if not review_prefix.match(change):
+        # Older decisions can contain a local instruction without a numbered prefix.
+        indices = (review.get("independentReview") or decision).get("affectedShots")
+        if not indices:
+            shot = dict(type="integer", enum=list(range(1, len(windows)+1)))
+            schema = dict(type="object", additionalProperties=False, required=["shots"],
+                          properties=dict(shots=dict(type="array", minItems=1, items=shot)))
+            try:
+                scope = media_verdict(data, delivery, "expert", "prompt_scope", out,
+                    "从本轮返工意见定位需修的分镜窗口，按 board 数组从1编号，只返回涉及的窗口。"
+                    + json.dumps([work, change], ensure_ascii=False), schema)["result"]
+            except ValueError as exc:
+                raise MediaCallError("专家定位镜头回包无效，将自动重试：" + str(exc)) from exc
+            indices = scope["shots"]
+        change = " ".join(f"[Shot {i}]" for i in indices) + " " + change
+    instructions = writer_changes(source, windows, [change])
+    basis = sha256_bytes(canonical([work, source, instructions, bindings]))
+    feedback_path = out / "prompt-feedback.json"
+    last = json.loads(feedback_path.read_bytes()) if feedback_path.is_file() else {}
+    attempt = 1
+    if last.get("basis") == basis:
+        attempt = last["attempt"] + 1
+        work.update(previousCandidate=last["candidate"], expertFeedback=last["reason"])
+    work["attempt"] = attempt
+    candidate = compile_revision(data, delivery, source, instructions, bindings, out.parent, assignment=work)
+    prompt = ("你是本集专家。提交 H3 前，对照上一版实际提交稿、本轮点名窗口和你的返工决定，"
+              "核对新稿是否落实具体动作、保留未点名镜头和同镜内其余窗口。仅决定确认提交或退回写稿人；"
+              "退回时给出本轮范围内具体补修意见。\n" +
+              json.dumps(dict(segment=segment, round=number, board=windows, instruction=instructions[0],
+                              expertReason=decision.get("reason",""), lastFeedback=work.get("expertFeedback"),
+                              source=source, candidate=candidate), ensure_ascii=False))
+    try:
+        verdict = media_verdict(data, delivery, "expert", "prompt_confirmation", out/"prompt-checks"/str(attempt),
+                                prompt, decision_schema(["确认提交","退回补修"]))["result"]
+    except ValueError as exc:
+        raise MediaCallError("专家确认回包无效，将自动重试：" + str(exc)) from exc
+    if verdict["action"] == "退回补修":
+        write_atomic(feedback_path, canonical(dict(basis=basis, attempt=attempt, reason=verdict["reason"], candidate=candidate)))
+        raise WriterRevisionError("专家退回本轮提示词，写稿 AI 将自动补修：" + verdict["reason"])
+    return candidate

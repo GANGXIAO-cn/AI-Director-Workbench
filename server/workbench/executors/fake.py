@@ -165,6 +165,8 @@ def sections(prompt: str) -> dict:
 def directed(req: ExecRequest, name: str, stage_reply=True):
     if req.purpose == "stress_cold_read":
         return dict(retelling="冷读复述（仅依据剧本正文）：主角按场次推进并完成收束。")
+    if req.purpose == "prompt_confirmation":
+        return dict(action="确认提交", reason="隔离测试已核对本轮修订。")
     if req.purpose == "finecut_plan":
         return dict(reply="沿用采用素材的剪点。",edits=[])
     if req.purpose in ("finecut_review","finecut_decision","video_decision"):

@@ -459,20 +459,13 @@ def prepare(data, delivery, segment, dependencies, accepted, out, changes=()):
                 note=note,
             )
         )
+    from .h3rework import compile_revision, confirmed_rework, submitted_prompt
     if saved.get("task") or saved.get("status") in ("submitting","rejected"):
-        # Polling an already submitted job must use its actual recorded inputs.
-        seg["prompt"] = next(n["fieldValue"] for n in saved["nodeInfoList"] if n["nodeId"]=="263" and n["fieldName"]=="text")
-    elif changes or bindings:
-        from .h3rework import compile_revision, review_prefix, writer_changes
-        instructions = changes
-        if any(review_prefix.match(change) for change in changes):
-            root, manifest = frozen_delivery(data, delivery)
-            path = root / "交接来源/制作方案.json"
-            if file_sha256(path) != manifest["files"][path.relative_to(root).as_posix()]:
-                raise ValueError("返修所用分镜与交付版本不一致")
-            windows = [s for s in json.loads(path.read_bytes())["shots"] if s["segment"] == segment]
-            instructions = writer_changes(seg["prompt"], windows, changes)
-        seg["prompt"] = compile_revision(data,delivery,seg["prompt"],instructions,bindings,out.parent)
+        seg["prompt"] = submitted_prompt(saved)
+    elif out.name.startswith("round-") and int(out.name.removeprefix("round-")) > 0:
+        seg["prompt"] = confirmed_rework(data, delivery, segment, out, changes[-1] if changes else "", bindings)
+    elif bindings:
+        seg["prompt"] = compile_revision(data, delivery, seg["prompt"], [], bindings, out.parent)
     out.mkdir(parents=True, exist_ok=True)
     write_atomic(
         out / "bindings.json", canonical(dict(bindings=bindings, skipped=skipped, changes=list(changes)))

@@ -151,24 +151,22 @@ def test_h3_rework_with_bindings_still_blocks_untargeted_unrelated_shot(tmp_path
     finally:
         vs.episode_expert = orig_expert
 
-    # Touching Shot 1 (targeted) + Shot 2 (designated binding target carrying <Picture 2>) must pass
-    good_exec = StubExec([
+    # A binding in Shot 2 no longer expands the scope of a later retake.
+    binding_only = StubExec([
         {"edits": [
             {"shot": 1, "before": "Hero walks to door.", "after": "Hero steps quickly to door."},
             {"shot": 2, "before": "Hero opens the door.", "after": "Hero opens the door holding <Picture 2>."},
         ]},
-    ])
-    vs.episode_expert = lambda *a, **kw: (good_exec, {"provider": "stub"}, {}, None)
+    ] * 2)
+    vs.episode_expert = lambda *a, **kw: (binding_only, {"provider": "stub"}, {}, None)
     try:
-        revised = h3rework.compile_revision(
-            tmp_path, "d1", source,
-            ["[Shot 1] 加快走向门的速度"],
-            [{"slot": 2, "note": "[Shot 2] 承接前段手部状态", "imageHash": "abc"}],
-            tmp_path / "r2",
-        )
-        assert "Hero steps quickly to door." in revised
-        assert "<Picture 2>" in revised
-        assert "Cat sleeps on sofa." in revised
+        with pytest.raises(ValueError, match="只改评审点名的镜号"):
+            h3rework.compile_revision(
+                tmp_path, "d1", source,
+                ["[Shot 1] 加快走向门的速度"],
+                [{"slot": 2, "note": "[Shot 2] 承接前段手部状态", "imageHash": "abc"}],
+                tmp_path / "r2",
+            )
     finally:
         vs.episode_expert = orig_expert
 

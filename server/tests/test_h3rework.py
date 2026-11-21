@@ -15,6 +15,21 @@ NEW = "The scooter rolls beside the dining table."
 EDIT = dict(shot=2, before=OLD, after=NEW)
 
 
+def prior_submission(out, prompt):
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "trial.json").write_text(json.dumps(dict(task="offline-task", status="downloaded", nodeInfoList=[
+        dict(nodeId="263", fieldName="text", fieldValue=prompt)])))
+
+
+def frozen_board(tmp_path, monkeypatch, windows):
+    from workbench.storage import file_sha256
+    path = tmp_path / "交接来源/制作方案.json"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(json.dumps(dict(shots=windows)))
+    monkeypatch.setattr(videosegment, "frozen_delivery", lambda *_: (
+        tmp_path, dict(files={"交接来源/制作方案.json":file_sha256(path)})))
+
+
 def test_prepare_rework_replaces_only_the_original_shot_and_reuses_it(
     tmp_path, monkeypatch
 ):
@@ -23,6 +38,8 @@ def test_prepare_rework_replaces_only_the_original_shot_and_reuses_it(
     class Expert:
         def start(self, req):
             calls.append(req)
+            if req.purpose == "prompt_confirmation":
+                return SimpleNamespace(ok=True, structured=dict(action="确认提交", reason="符合本轮要求"))
             return SimpleNamespace(ok=True, structured=dict(edits=[EDIT]))
 
     monkeypatch.setattr(
@@ -34,14 +51,16 @@ def test_prepare_rework_replaces_only_the_original_shot_and_reuses_it(
         videosegment, "episode_expert", lambda *_: (Expert(), {}, {}, None)
     )
     out = tmp_path / "round-1"
-    notes = ["餐桌位置错了，需要改走廊反应镜。"]
+    notes = ["[Shot 2] 餐桌位置错了，需要改走廊反应镜。"]
+    prior_submission(tmp_path/"round-0", ORIGINAL)
+    frozen_board(tmp_path, monkeypatch, [dict(id=str(i),segment="SEG01",order=i) for i in [1,2]])
     for _ in range(2):
         prepared, _ = videosegment.prepare(
             tmp_path, "delivery", "SEG01", [], {}, out, notes
         )
         assert prepared[0]["prompt"] == ORIGINAL.replace(OLD, NEW)
         assert json.loads((out / "bindings.json").read_text())["changes"] == notes
-    assert len(calls) == 1 and notes[0] in calls[0].prompt
+    assert [req.purpose for req in calls] == ["revise", "prompt_confirmation"] and notes[0] in calls[0].prompt
     original_request = ORIGINAL + "historical request"
     (out / "trial.json").write_text(
         json.dumps(
@@ -57,7 +76,7 @@ def test_prepare_rework_replaces_only_the_original_shot_and_reuses_it(
     prepared, _ = videosegment.prepare(
         tmp_path, "delivery", "SEG01", [], {}, out, notes
     )
-    assert prepared[0]["prompt"] == original_request and len(calls) == 1
+    assert prepared[0]["prompt"] == original_request and len(calls) == 2
 
 
 @pytest.mark.parametrize(
@@ -278,11 +297,14 @@ def test_prepare_translates_review_windows_to_frozen_prompt_shots(tmp_path, monk
     seen = []
     monkeypatch.setattr(videosegment, "load_segment", lambda *_: (dict(prompt=source, refs=[]), {}, {}))
     monkeypatch.setattr(videosegment, "frozen_delivery", lambda *_: (tmp_path, dict(files={"交接来源/制作方案.json": file_sha256(board)})))
-    def revise(data, delivery, text, changes, bindings, directory):
+    def revise(data, delivery, text, changes, bindings, directory, **kwargs):
         seen.extend(changes)
         return text
     monkeypatch.setattr(h3rework, "compile_revision", revise)
     out = tmp_path / "round-1"
+    from workbench import videoreview
+    monkeypatch.setattr(videoreview, "media_verdict", lambda *args: dict(result=dict(action="确认提交",reason="已核对")))
+    prior_submission(tmp_path/"round-0", source)
     videosegment.prepare(tmp_path, "delivery", "A", [], {}, out, notes)
     assert seen[0].startswith("[Shot 1] [Shot 3] [Shot 4] [Shot 5] ")
     assert "S01-04 对应提示词第 3 镜" in seen[0]
@@ -290,3 +312,144 @@ def test_prepare_translates_review_windows_to_frozen_prompt_shots(tmp_path, monk
     assert h3rework.writer_changes(source, windows, ["[Shot 4] 修正点名动作"])[0].startswith("[Shot 3] ")
     with pytest.raises(ValueError, match="无法对应"):
         h3rework.writer_changes(source, windows[:2], notes)
+
+
+def test_seg01_consecutive_retakes_only_submit_the_current_expert_approved_edit(tmp_path, monkeypatch):
+    from workbench import videoplan
+    from workbench.videoqueue import VideoQueue
+    from workbench.h3online import RunningHub
+    from workbench.executors.base import ExecOutcome
+
+    queue = VideoQueue(tmp_path)
+    delivery, segment = "offline-delivery", "SEG01"
+    monkeypatch.setattr(videoplan, "material", lambda *_: ({segment:[]}, None))
+    queue.enqueue_batch(delivery, [dict(segment=segment, dependencies=[])])
+    queue.account("offline", "https://www.runninghub.ai", "plus", 1, "dummy-offline")
+    windows = [dict(id=f"S01-0{i}", segment=segment, order=i, continuation="same" if i==3 else "cut")
+               for i in range(1,7)]
+    frozen_board(tmp_path, monkeypatch, windows)
+    base = ORIGINAL.replace("\n\noverall_soundscape:", "\n[Shot 3] Three.\n[Shot 4] Four.\n[Shot 5] Five.\n\noverall_soundscape:")
+    monkeypatch.setattr(videosegment, "load_segment", lambda *_: (dict(prompt=base, refs=[], params=dict(seed=42,instanceType="plus")), {}, {}))
+    changes = ["[Shot 1] 第一轮调整开门", "[Shot 4] 第二轮调整走位", "[Shot 6] 第三轮调整收尾"]
+    first = base.replace("The door opens.", "The red door opens.")
+    second = first.replace("Three.", "Three steps forward.")
+    final = second.replace("Five.", "Five steps back.")
+    submissions, approvals, events = [], [], []
+    rejected = []
+    def writer(req):
+        assert req.purpose=="revise"
+        material = json.JSONDecoder().raw_decode(req.prompt.split("以下为原稿及工作台记录。\n")[1])[0]
+        task = material["本轮返工任务"]
+        n = task["round"]
+        assert material["source"] == submissions[-1]
+        assert len(material["reviews"]) == 1 and material["reviews"][0].startswith(f"[Shot {[1,3,5][n-1]}]")
+        assert all(c not in material["reviews"][0] for c in changes[:n-1])
+        # In round three, first try to rewrite a previously approved shot too.
+        edits = [dict(shot=1,before="The door opens.",after="The red door opens.")] if n==1 else [
+            dict(shot=3,before="Three.",after="Three steps forward.")] if n==2 else [
+            dict(shot=5,before="Five.",after="Five steps back." if rejected else "Five stays still.")]
+        if n==3 and not rejected and "上次答复" not in req.prompt:
+            edits.append(dict(shot=1,before="red",after="blue"))
+        if rejected:
+            assert task["expertFeedback"]=="收尾要后退" and "Five stays still." in task["previousCandidate"]
+        events.append(("write",n))
+        return ExecOutcome(ok=True, structured=dict(edits=edits))
+    def expert(req):
+        assert req.purpose=="prompt_confirmation"
+        task = json.loads(req.prompt.split("\n",1)[1])
+        assert task["source"]==submissions[-1]
+        assert task["expertReason"] == f"本轮仅修指定窗口 {task['round']}"
+        if "Five stays still." in task["candidate"]:
+            rejected.append(True)
+            return ExecOutcome(ok=True, structured=dict(action="退回补修", reason="收尾要后退"))
+        approvals.append(task["candidate"])
+        events.append(("approve",task["round"]))
+        return ExecOutcome(ok=True, structured=dict(action="确认提交", reason="已落实且其余镜头沿用"))
+    def select(data,d,role,stage):
+        assert stage=="package" and role in ("create","expert")
+        return SimpleNamespace(start=writer if role=="create" else expert), dict(provider=role), {}, None
+    monkeypatch.setattr(videosegment, "episode_expert", select)
+    monkeypatch.setattr(RunningHub,"graph",lambda *_:{})
+    monkeypatch.setattr(videosegment,"overrides",lambda graph,seg,*args,**kw:[
+        dict(nodeId="263",fieldName="text",fieldValue=seg["prompt"])])
+    def submit(hub, workflow, nodes, instance):
+        text = nodes[0]["fieldValue"]
+        if submissions:
+            assert approvals[-1] == text and events[-1]==("approve",len(submissions))
+        events.append(("submit",len(submissions)))
+        submissions.append(text)
+        return dict(code=0,data=dict(taskId=f"fake-{len(submissions)}"))
+    monkeypatch.setattr(RunningHub,"submit",submit)
+    def fetch(hub, task, path, *args, **kwargs):
+        path.write_bytes(b"local test")
+        return {"code":0}
+    monkeypatch.setattr(videosegment,"fetch_output",fetch)
+    monkeypatch.setattr(videosegment.subprocess,"check_output",lambda *_:b'{"format":{"duration":1},"streams":[{"codec_type":"video"}]}')
+    def review(data,delivery,segment,out,*args):
+        n=int(out.name.split("-")[1])
+        verdict=dict(decision="局部返工" if n<3 else "采用", reason=f"本轮仅修指定窗口 {n+1}",
+                     localChange=changes[n] if n<3 else "")
+        record=dict(visualReview=verdict)
+        (out/"expert").mkdir(exist_ok=True)
+        (out/"expert/visual-review.json").write_text(json.dumps(record))
+        return record
+    monkeypatch.setattr(videosegment,"review",review)
+    for _ in range(5):
+        queue.dispatch()
+        for t in queue.running.values():
+            t.join(5)
+        if rejected and len(submissions)==3:
+            with queue.db() as db:
+                assert db.execute("SELECT state,round FROM job").fetchone()[:] == ("排队中",3)
+                db.execute("UPDATE media_retry SET until=0")  # Advance the local retry clock.
+    assert submissions == [base, first, second, final]
+    assert approvals == submissions[1:]
+    assert events.count(("write",3)) == 3
+    assert queue.view(delivery)["jobs"][0]["state"] == "已采用"
+    # Recovering an already submitted task reads its request, without another model call.
+    before=list(events)
+    recovered,_=videosegment.prepare(tmp_path,delivery,segment,[],{},queue.directory(delivery,segment,3),changes)
+    assert recovered[0]["prompt"] == final and events==before
+
+
+def test_retake_cannot_use_the_delivery_draft_if_previous_prompt_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(videosegment,"load_segment",lambda *_:(dict(prompt=ORIGINAL,refs=[]),{},{}))
+    out = tmp_path/"round-2"
+    prior_submission(tmp_path/"round-0", ORIGINAL)
+    with pytest.raises(ValueError, match="上一版 H3 已接单"):
+        videosegment.prepare(tmp_path,"offline","SEG01",[],{},out,["[Shot 2] 本轮"])
+    assert not (out/"trial.json").exists()
+
+
+def test_pending_expert_confirmation_resumes_without_rewriting_or_resubmitting(tmp_path, monkeypatch):
+    from workbench.executors.base import ExecOutcome
+    from workbench.videoreview import MediaCallError
+    from workbench.filmconversation import messages
+    from workbench.videoqueue import VideoQueue
+
+    q = VideoQueue(tmp_path)
+    out = q.directory("d","SEG01",1)
+    prior_submission(out.parent/"round-0", ORIGINAL)
+    frozen_board(tmp_path, monkeypatch, [dict(id=str(n),segment="SEG01",order=n) for n in [1,2]])
+    monkeypatch.setattr(videosegment,"load_segment",lambda *_:(dict(prompt="different from the receipt",refs=[]),{},{}))
+    roles=[]
+    def selected(data,delivery,role,stage):
+        def start(req):
+            roles.append(role)
+            if role=="create":
+                return ExecOutcome(ok=True,structured=dict(edits=[EDIT]))
+            if roles.count("expert")==1:
+                return ExecOutcome(ok=False,error_class="timeout",diagnostic="fixture")
+            return ExecOutcome(ok=True,structured=dict(action="确认提交",reason="符合本轮要求"))
+        return SimpleNamespace(start=start),dict(provider=role),{},None
+    monkeypatch.setattr(videosegment,"episode_expert",selected)
+    args=(tmp_path,"d","SEG01",[],{},out,["[Shot 2] 修正位置"])
+    with pytest.raises(MediaCallError):
+        videosegment.prepare(*args)
+    assert not (out/"trial.json").exists()
+    for _ in range(2):
+        prepared,_=videosegment.prepare(*args)
+        assert prepared[0]["prompt"]==ORIGINAL.replace(OLD,NEW)
+    assert roles==["create","expert","expert"]
+    feed=messages(q,"d","package",dict(jobs=[dict(segment="SEG01",round=1)]))
+    assert any(m["role"]=="专家" and "提示词确认 · 确认提交" in m["title"] for m in feed)

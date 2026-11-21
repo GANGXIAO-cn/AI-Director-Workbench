@@ -332,7 +332,8 @@ def media_verdict(data, delivery, role, purpose, folder, prompt, schema, images=
     folder.mkdir(parents=True, exist_ok=True)
     if images and not getattr(executor, "reads_images", False):
         raise ValueError("本集独立评审无法读取成片画面")
-    labels = {"video_decision":"专家正在决定采用、剪辑或重拍", "finecut_plan":"写稿 AI 正在拟剪辑表",
+    labels = {"prompt_confirmation":"专家正在确认本轮返工提示词", "prompt_scope":"专家正在定位本轮返工镜头",
+              "video_decision":"专家正在决定采用、剪辑或重拍", "finecut_plan":"写稿 AI 正在拟剪辑表",
               "finecut_review":"独立评审正在看成片画面", "finecut_decision":"专家正在决定是否交片"}
     if purpose in labels:
         step(labels[purpose])

@@ -97,6 +97,8 @@ def messages(queue, delivery, stage, status):
                 key = f"{segment}/{number}"
                 title = f"{segment} · " + (f"第 {number} 次返工" if number else "首版")
                 steps(folder, key, title)
+                for check in (folder/"prompt-checks").glob("*/prompt_confirmation.json"):
+                    verdict(check, key+"/prompt/"+check.parent.name, "专家", title+" · 提示词确认")
                 cloud = timing(folder)
                 add(key+"/cloud", cloud.get("startedAt"), "工作台", title,
                     "已开始跟踪视频任务" if cloud.get("observedOnly") else "H3 已接单")
